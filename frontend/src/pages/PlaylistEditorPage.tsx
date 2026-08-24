@@ -43,6 +43,7 @@ import { api } from "../api/client";
 import type {
   ChannelType,
   DummyEpgMode,
+  EpgSource,
   PaginatedChannels,
   Playlist,
   PlaylistCategory,
@@ -79,6 +80,7 @@ export default function PlaylistEditorPage() {
   const [moveMode, setMoveMode] = useState<"move" | "copy" | null>(null);
   const [detailChannel, setDetailChannel] = useState<PlaylistChannel | null>(null);
   const [manualChannelOpen, setManualChannelOpen] = useState(false);
+  const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebounce(search, 300);
 
@@ -260,6 +262,15 @@ export default function PlaylistEditorPage() {
                   >
                     Copy to...
                   </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconWand size={14} />}
+                    disabled={selectedChannelIds.size === 0}
+                    onClick={() => setBulkEpgOpen(true)}
+                  >
+                    Map EPG...
+                  </Button>
                   <Menu>
                     <Menu.Target>
                       <Button size="xs" variant="light" rightSection={<IconDots size={14} />} disabled={selectedChannelIds.size === 0}>
@@ -407,6 +418,19 @@ export default function PlaylistEditorPage() {
           playlistId={playlistId}
           categoryId={activeCategory.id}
           onCreated={invalidate}
+        />
+      )}
+
+      {playlistId && (
+        <BulkEpgModal
+          opened={bulkEpgOpen}
+          onClose={() => {
+            setBulkEpgOpen(false);
+            setSelectedChannelIds(new Set());
+          }}
+          playlistId={playlistId}
+          channelIds={[...selectedChannelIds]}
+          onChanged={invalidate}
         />
       )}
     </Stack>
@@ -634,6 +658,22 @@ function ChannelDetailModal({
   const channelId = channel.id;
   const [name, setName] = useState(channel.name);
   const [search, setSearch] = useState("");
+  const [epgSourceIds, setEpgSourceIds] = useState<Set<number>>(new Set());
+  const [epgSourcesInitialized, setEpgSourcesInitialized] = useState(false);
+
+  const { data: epgSources } = useQuery<EpgSource[]>({
+    queryKey: ["epg-sources-lite"],
+    queryFn: () => api.get("/api/epg-sources").then((r) => r.data),
+  });
+
+  useEffect(() => {
+    if (epgSources && !epgSourcesInitialized) {
+      setEpgSourceIds(new Set(epgSources.map((s) => s.id)));
+      setEpgSourcesInitialized(true);
+    }
+  }, [epgSources, epgSourcesInitialized]);
+
+  const activeEpgSourceIds = epgSources && epgSourceIds.size === epgSources.length ? undefined : [...epgSourceIds];
 
   const updateMutation = useMutation({
     mutationFn: (payload: Partial<PlaylistChannel>) => api.patch(`/api/playlists/${playlistId}/channels/${channelId}`, payload),
@@ -649,7 +689,10 @@ function ChannelDetailModal({
   });
 
   const autoEpgMutation = useMutation({
-    mutationFn: () => api.post(`/api/playlists/${playlistId}/channels/${channelId}/epg/auto`),
+    mutationFn: () =>
+      api.post(`/api/playlists/${playlistId}/channels/${channelId}/epg/auto`, null, {
+        params: { epg_source_ids: activeEpgSourceIds },
+      }),
     onSuccess: (res) => {
       onChanged();
       notifications.show({
@@ -660,10 +703,12 @@ function ChannelDetailModal({
   });
 
   const { data: searchResults } = useQuery({
-    queryKey: ["epg-search", playlistId, channelId, search],
+    queryKey: ["epg-search", playlistId, channelId, search, activeEpgSourceIds],
     queryFn: () =>
       api
-        .get(`/api/playlists/${playlistId}/channels/${channelId}/epg/search`, { params: { q: search || undefined } })
+        .get(`/api/playlists/${playlistId}/channels/${channelId}/epg/search`, {
+          params: { q: search || undefined, epg_source_ids: activeEpgSourceIds },
+        })
         .then((r) => r.data),
   });
 
@@ -716,6 +761,31 @@ function ChannelDetailModal({
             </Button>
           )}
         </Group>
+        {epgSources && epgSources.length > 1 && (
+          <Group gap={4}>
+            <Text size="xs" c="dimmed">
+              Search:
+            </Text>
+            {epgSources.map((s) => (
+              <Badge
+                key={s.id}
+                size="sm"
+                variant={epgSourceIds.has(s.id) ? "filled" : "outline"}
+                style={{ cursor: "pointer" }}
+                onClick={() =>
+                  setEpgSourceIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(s.id)) next.delete(s.id);
+                    else next.add(s.id);
+                    return next;
+                  })
+                }
+              >
+                {s.name}
+              </Badge>
+            ))}
+          </Group>
+        )}
         <TextInput placeholder="Search EPG channels..." value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
         <Stack gap={4} mah={180} style={{ overflowY: "auto" }}>
           {searchResults?.map((r: { epg_channel_id: number; display_name: string; epg_id: string; score: number }) => (
@@ -766,6 +836,123 @@ function ChannelDetailModal({
             program at that time for the configured duration, with the channel name filling the rest of the day.
           </Text>
         )}
+      </Stack>
+    </Modal>
+  );
+}
+
+function BulkEpgModal({
+  opened,
+  onClose,
+  playlistId,
+  channelIds,
+  onChanged,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+  channelIds: number[];
+  onChanged: () => void;
+}) {
+  const [selectedEpgSourceIds, setSelectedEpgSourceIds] = useState<Set<number>>(new Set());
+  const [sensitivity, setSensitivity] = useState(0.9);
+  const [result, setResult] = useState<{ matched: { channel_name: string; display_name: string }[]; unmatched: { channel_name: string }[] } | null>(null);
+
+  const { data: epgSources } = useQuery<EpgSource[]>({
+    queryKey: ["epg-sources-lite"],
+    queryFn: () => api.get("/api/epg-sources").then((r) => r.data),
+    enabled: opened,
+  });
+
+  // Default to "search everything" the first time sources load for this modal session.
+  useEffect(() => {
+    if (opened && epgSources && selectedEpgSourceIds.size === 0 && result === null) {
+      setSelectedEpgSourceIds(new Set(epgSources.map((s) => s.id)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened, epgSources]);
+
+  const bulkMapMutation = useMutation({
+    mutationFn: () =>
+      api
+        .post(`/api/playlists/${playlistId}/channels/epg/bulk-auto-map`, {
+          channel_ids: channelIds,
+          sensitivity,
+          epg_source_ids: epgSources && selectedEpgSourceIds.size === epgSources.length ? null : [...selectedEpgSourceIds],
+        })
+        .then((r) => r.data),
+    onSuccess: (data) => {
+      setResult(data);
+      onChanged();
+    },
+  });
+
+  function handleClose() {
+    setResult(null);
+    onClose();
+  }
+
+  return (
+    <Modal opened={opened} onClose={handleClose} title={`Map EPG for ${channelIds.length} channel(s)`} size="md">
+      <Stack>
+        <Text size="sm" fw={600}>
+          Search these EPG sources
+        </Text>
+        <Stack gap={4}>
+          {(epgSources ?? []).map((s) => (
+            <Checkbox
+              key={s.id}
+              label={s.name}
+              checked={selectedEpgSourceIds.has(s.id)}
+              onChange={(e) => {
+                const checked = e.currentTarget.checked;
+                setSelectedEpgSourceIds((prev) => {
+                  const next = new Set(prev);
+                  if (checked) next.add(s.id);
+                  else next.delete(s.id);
+                  return next;
+                });
+              }}
+            />
+          ))}
+          {epgSources?.length === 0 && (
+            <Text size="sm" c="dimmed">
+              No EPG sources yet — add one under EPG Sources first.
+            </Text>
+          )}
+        </Stack>
+
+        <NumberInput
+          label="Sensitivity"
+          description="Lower it if close-but-not-exact channel names aren't matching"
+          value={sensitivity}
+          onChange={(v) => setSensitivity(typeof v === "number" ? v : 0.9)}
+          min={0.5}
+          max={1}
+          step={0.05}
+          decimalScale={2}
+        />
+
+        {result && (
+          <Stack gap={4}>
+            <Text size="sm" c="green">
+              Matched {result.matched.length} of {result.matched.length + result.unmatched.length}
+            </Text>
+            {result.unmatched.length > 0 && (
+              <Text size="xs" c="dimmed">
+                Not matched: {result.unmatched.map((u) => u.channel_name).join(", ")}
+              </Text>
+            )}
+          </Stack>
+        )}
+
+        <Button
+          onClick={() => bulkMapMutation.mutate()}
+          loading={bulkMapMutation.isPending}
+          disabled={selectedEpgSourceIds.size === 0}
+        >
+          Auto-map {channelIds.length} channel(s)
+        </Button>
       </Stack>
     </Modal>
   );
@@ -826,6 +1013,7 @@ function ImportModal({
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [channelType, setChannelType] = useState<ChannelType>("live");
   const [selectedSourceCategories, setSelectedSourceCategories] = useState<Set<number>>(new Set());
+  const [importMode, setImportMode] = useState<"per_category" | "merge">("per_category");
   const [targetMode, setTargetMode] = useState<"existing" | "new">("new");
   const [targetCategoryId, setTargetCategoryId] = useState<string | null>(null);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -847,14 +1035,21 @@ function ImportModal({
       api.post(`/api/playlists/${playlistId}/import`, {
         source_id: Number(sourceId),
         channel_type: channelType,
+        mode: importMode,
         category_ids: [...selectedSourceCategories],
-        target_category_id: targetMode === "existing" ? Number(targetCategoryId) : null,
-        target_category_name: targetMode === "new" ? newCategoryName : null,
+        ...(importMode === "merge"
+          ? {
+              target_category_id: targetMode === "existing" ? Number(targetCategoryId) : null,
+              target_category_name: targetMode === "new" ? newCategoryName : null,
+            }
+          : {}),
       }),
     onSuccess: (res) => {
       onImported();
       onClose();
-      notifications.show({ message: `Imported ${res.data.imported} channel(s)`, color: "green" });
+      const count = importMode === "per_category" ? res.data.categories?.length ?? 0 : 1;
+      const label = importMode === "per_category" ? `${count} categor${count === 1 ? "y" : "ies"}` : "1 category";
+      notifications.show({ message: `Imported ${res.data.imported} channel(s) into ${label}`, color: "green" });
     },
     onError: () => notifications.show({ message: "Import failed", color: "red" }),
   });
@@ -886,7 +1081,13 @@ function ImportModal({
         />
 
         <Text size="sm" fw={600}>
-          Categories to import (leave empty to import all enabled)
+          Categories to import
+          {importMode === "merge" && (
+            <Text component="span" size="xs" c="dimmed" fw={400}>
+              {" "}
+              (leave empty to import all enabled)
+            </Text>
+          )}
         </Text>
         <ScrollArea h={160} style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 6 }} p="xs">
           <Stack gap={4}>
@@ -895,14 +1096,15 @@ function ImportModal({
                 key={c.id}
                 label={`${c.name} (${c.channel_count})`}
                 checked={selectedSourceCategories.has(c.id)}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
                   setSelectedSourceCategories((prev) => {
                     const next = new Set(prev);
-                    if (e.currentTarget.checked) next.add(c.id);
+                    if (checked) next.add(c.id);
                     else next.delete(c.id);
                     return next;
-                  })
-                }
+                  });
+                }}
               />
             ))}
             {relevantCategories.length === 0 && (
@@ -914,25 +1116,54 @@ function ImportModal({
         </ScrollArea>
 
         <Text size="sm" fw={600}>
-          Import into
+          Import as
         </Text>
-        <Group>
-          <Button variant={targetMode === "new" ? "filled" : "light"} size="xs" onClick={() => setTargetMode("new")}>
-            New category
+        <Stack gap={4}>
+          <Button
+            variant={importMode === "per_category" ? "filled" : "light"}
+            size="xs"
+            justify="flex-start"
+            onClick={() => setImportMode("per_category")}
+          >
+            One category per selection, keeping the provider's names &amp; order
           </Button>
-          <Button variant={targetMode === "existing" ? "filled" : "light"} size="xs" onClick={() => setTargetMode("existing")}>
-            Existing category
+          <Button
+            variant={importMode === "merge" ? "filled" : "light"}
+            size="xs"
+            justify="flex-start"
+            onClick={() => setImportMode("merge")}
+          >
+            Merge everything into one category I choose
           </Button>
-        </Group>
-        {targetMode === "new" ? (
-          <TextInput placeholder="New category name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.currentTarget.value)} />
+        </Stack>
+
+        {importMode === "per_category" ? (
+          <Text size="xs" c="dimmed">
+            Each selected category becomes (or reuses, if a category with that name already
+            exists here) its own category in this playlist, in the same relative order the
+            provider lists them.
+          </Text>
         ) : (
-          <Select
-            placeholder="Choose category"
-            data={categories.map((c) => ({ value: String(c.id), label: c.name }))}
-            value={targetCategoryId}
-            onChange={setTargetCategoryId}
-          />
+          <>
+            <Group>
+              <Button variant={targetMode === "new" ? "filled" : "light"} size="xs" onClick={() => setTargetMode("new")}>
+                New category
+              </Button>
+              <Button variant={targetMode === "existing" ? "filled" : "light"} size="xs" onClick={() => setTargetMode("existing")}>
+                Existing category
+              </Button>
+            </Group>
+            {targetMode === "new" ? (
+              <TextInput placeholder="New category name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.currentTarget.value)} />
+            ) : (
+              <Select
+                placeholder="Choose category"
+                data={categories.map((c) => ({ value: String(c.id), label: c.name }))}
+                value={targetCategoryId}
+                onChange={setTargetCategoryId}
+              />
+            )}
+          </>
         )}
 
         <Tooltip label="New channels added by the provider later will automatically be imported here too">
@@ -944,7 +1175,14 @@ function ImportModal({
         <Button
           onClick={() => importMutation.mutate()}
           loading={importMutation.isPending}
-          disabled={!sourceId || (targetMode === "new" ? !newCategoryName : !targetCategoryId)}
+          disabled={
+            !sourceId ||
+            (importMode === "per_category"
+              ? selectedSourceCategories.size === 0
+              : targetMode === "new"
+                ? !newCategoryName
+                : !targetCategoryId)
+          }
         >
           Import
         </Button>

@@ -160,7 +160,7 @@ async def list_categories(source_id: int, db: DbSession, _admin: AdminUser) -> l
         .outerjoin(SourceChannel, SourceChannel.source_category_id == SourceCategory.id)
         .where(SourceCategory.source_id == source_id)
         .group_by(SourceCategory.id)
-        .order_by(SourceCategory.name)
+        .order_by(SourceCategory.sort_order, SourceCategory.name)
     )
     out = []
     for cat, count in result.all():

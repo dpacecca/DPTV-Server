@@ -56,12 +56,14 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
                 external_id=cd.external_id,
                 name=cd.name,
                 channel_type=cd.channel_type,
+                sort_order=cd.sort_order,
                 enabled=source.auto_enable_new_groups,
             )
             db.add(cat)
             summary["categories_added"] += 1
         else:
             cat.name = cd.name
+            cat.sort_order = cd.sort_order
             cat.removed_at = None
         cat_by_key[key] = cat
     await db.flush()
