@@ -138,6 +138,22 @@ by its Docker Compose hostname) — don't use it for a native install;
 `deploy/nginx-site.conf` is the one written for this (it proxies to
 `127.0.0.1:8000`, since here both processes share one host).
 
+### Exposing only the XC server publicly (optional)
+
+If you want IPTV players to reach the XC server from outside your LAN
+while keeping the admin UI LAN-only, add a second nginx site from
+`deploy/nginx-site-xc-only.conf` on its own port (8081 by default) that
+proxies *just* the player endpoints (`player_api.php`, `get.php`,
+`xmltv.php`, `live/`, `movie/`, `series/`) and 404s everything else —
+install it alongside `nginx-site.conf`, not instead of it. Point a
+reverse proxy or tunnel (e.g. a
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+public hostname) at that port, and set `DPTV_PUBLIC_BASE_URL` to
+whatever scheme/host actually reaches players from the outside (e.g.
+`https://xc.yourdomain.com` when fronted by Cloudflare, even though this
+nginx site itself only speaks plain HTTP internally — Cloudflare
+terminates TLS at its edge).
+
 ## Project layout
 
 ```
