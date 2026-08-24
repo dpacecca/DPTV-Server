@@ -1,2 +1,133 @@
 # DPTV-Server
-IPTV Server and playlist creator
+
+A self-hosted IPTV playlist manager and Xtream-Codes compatible server —
+import live/VOD/series channels and EPG data from your provider(s), build
+your own curated playlist(s) with a clean web UI, and share them back out
+through DPTV-Server's own built-in XC server so any IPTV player (TiviMate,
+IPTV Smarters, etc.) can connect directly.
+
+Loosely inspired by IPTVBoss, rebuilt as a proper self-hosted web app
+instead of a desktop tool: one server, a browser-based UI, and a database
+instead of local files.
+
+## What it does
+
+- **Import** live, VOD, and series categories/channels from Xtream Codes
+  API or M3U sources.
+- **Build playlists**: select categories/channels from a source and drop
+  them into your own categories; multi-select channels and **move to** /
+  **copy to** another category; rename channels/categories; check
+  "ignore name changes" per channel to stop provider renames overwriting
+  your edits (off by default — provider renames win by default).
+- **EPG mapping**: load one or more XMLTV guide URLs, auto-map channels by
+  fuzzy name match (adjustable sensitivity) or map manually from a search
+  list.
+- **Dummy EPG**: for channels with no real guide, generate a schedule from
+  the channel name itself (configurable program length), or parse embedded
+  event date/times out of the name (e.g. `"Team A vs Team B 08/25 9:00PM"`)
+  to schedule a single real-time event block.
+- **Scheduled sync**: pick one or more times a day to re-sync sources and
+  EPGs. New provider channels can auto-import into linked categories;
+  channels removed by the provider auto-clear after a configurable grace
+  period.
+- **Its own XC server**: `player_api.php`, `get.php` (M3U), `xmltv.php`,
+  and `/live/`, `/movie/`, `/series/` stream endpoints, authenticated by
+  XC users you create (independent of the admin login). Streams are
+  served as **pass-through 302 redirects** to the original provider URL —
+  DPTV-Server never proxies the actual video, so it stays lightweight.
+
+## Architecture
+
+- **Backend**: Python / FastAPI, SQLAlchemy 2.0 (async), PostgreSQL,
+  Alembic migrations, APScheduler for the sync schedule.
+- **Frontend**: React + TypeScript + Vite, Mantine UI.
+- Single admin login for the management UI; separate XC users (username/
+  password pairs) for player access, each enabled per playlist.
+
+## Running it (Debian trixie or any Docker host)
+
+```bash
+cp .env.example .env
+# edit .env: set DPTV_SECRET_KEY, DPTV_ADMIN_PASSWORD, and
+# DPTV_PUBLIC_BASE_URL to http://<this-machine's-ip-or-domain>:8000
+# (this is the URL your IPTV players will use)
+
+docker compose up -d --build
+```
+
+- Web UI: `http://<host>:8080` (log in with `DPTV_ADMIN_USERNAME` /
+  `DPTV_ADMIN_PASSWORD` from `.env`, default `admin` / `admin`).
+- XC server / player endpoints: `http://<host>:8000` (also reachable
+  through the UI's own origin at `8080`, since the frontend container
+  proxies `/player_api.php`, `/get.php`, `/xmltv.php`, `/live/`,
+  `/movie/`, `/series/` straight through to the backend).
+
+Data (Postgres volume + generated output cache) persists in named Docker
+volumes (`dptv-postgres`, `dptv-data`). Alembic migrations run
+automatically on container start.
+
+### First steps in the UI
+
+1. **Sources** → Add Source (Xtream API recommended, or M3U) → click the
+   refresh icon to load categories/channels.
+2. Open the source, enable the categories you want available.
+3. **EPG Sources** → Add EPG Source with an XMLTV URL → refresh.
+4. **Playlists** → New Playlist → open it → **Import from Source** to pull
+   channels into your own categories.
+5. Click a channel to rename it, lock its name, map/auto-map its EPG, or
+   configure dummy EPG.
+6. **XC Users** → Add User → link it to the playlist(s) it should serve →
+   open the link icon for the `player_api`/M3U/XMLTV URLs to paste into
+   your IPTV player.
+7. **Scheduler** → add one or more daily sync times, or hit "Sync Now".
+
+## Running natively (no Docker) as a systemd service
+
+See `deploy/dptv-backend.service` and `deploy/dptv-frontend.service` for
+example unit files. In short:
+
+```bash
+# Backend
+cd backend
+python3 -m venv .venv && . .venv/bin/activate
+pip install .
+export DPTV_DATABASE_URL=postgresql+asyncpg://dptv:dptv@localhost:5432/dptv
+export DPTV_SECRET_KEY=... DPTV_ADMIN_PASSWORD=... DPTV_PUBLIC_BASE_URL=http://your-host:8000
+alembic upgrade head
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Frontend (build static files, serve with any web server / nginx)
+cd frontend
+npm install
+npm run build   # outputs to frontend/dist
+```
+
+Point your web server at `frontend/dist` and reverse-proxy `/api/`,
+`/player_api.php`, `/get.php`, `/xmltv.php`, `/live/`, `/movie/`,
+`/series/` to the backend (see `frontend/nginx.conf` for a working
+example config).
+
+## Project layout
+
+```
+backend/    FastAPI app, SQLAlchemy models, Alembic migrations, services
+  app/models/       Source, Playlist, EPG, XC user, sync schedule tables
+  app/services/     Xtream/M3U client, XMLTV parse/generate, sync engine,
+                     fuzzy EPG mapper, dummy EPG generator
+  app/api/routes/   Admin REST API + the public Xtream-Codes-compatible API
+frontend/   React + Vite + Mantine admin UI
+deploy/     systemd unit examples
+```
+
+## Status / roadmap
+
+Implemented: source/EPG import, playlist builder with move/copy/bulk edit,
+EPG auto/manual mapping, dummy EPG (name + event-parsing), scheduled sync
+with auto-add/auto-remove, XC server with pass-through streaming, XC user
+management, sync history.
+
+Not yet built (lower priority for a self-hosted single-VM setup, since
+IPTVBoss's cloud-sync/email features existed mainly to work around it
+being a desktop app): regex-based "Advanced EPG Dummy" rule editor beyond
+the built-in date/time parser, email notifications, multi-device database
+sync. Contributions/requests welcome.
