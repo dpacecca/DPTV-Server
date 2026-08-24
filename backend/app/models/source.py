@@ -54,6 +54,9 @@ class SourceCategory(Base, TimestampMixin):
     external_id: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(255))
     channel_type: Mapped[ChannelType] = mapped_column(enum_column(ChannelType))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    """Position in the provider's own category list, refreshed on every sync - lets an import
+    preserve the provider's category order instead of whatever order they happened to sync in."""
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

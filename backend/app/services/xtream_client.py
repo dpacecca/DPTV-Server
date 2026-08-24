@@ -22,6 +22,8 @@ class CategoryData:
     external_id: str
     name: str
     channel_type: ChannelType
+    sort_order: int = 0
+    """Position in the provider's own category list (0-based), in the order returned/parsed."""
 
 
 @dataclass
@@ -82,8 +84,13 @@ class XtreamClient:
         async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
             raw_categories = await self._get_json(client, cat_action)
             categories = [
-                CategoryData(external_id=str(c["category_id"]), name=c["category_name"], channel_type=channel_type)
-                for c in raw_categories
+                CategoryData(
+                    external_id=str(c["category_id"]),
+                    name=c["category_name"],
+                    channel_type=channel_type,
+                    sort_order=i,
+                )
+                for i, c in enumerate(raw_categories)
             ]
 
             raw_streams = await self._get_json(client, stream_action)
@@ -157,7 +164,9 @@ async def fetch_m3u_categories_and_channels(source: Source) -> tuple[list[Catego
         group = entry.group_title or "Uncategorized"
         key = (group, entry.channel_type)
         if key not in categories:
-            categories[key] = CategoryData(external_id=group, name=group, channel_type=entry.channel_type)
+            categories[key] = CategoryData(
+                external_id=group, name=group, channel_type=entry.channel_type, sort_order=len(categories)
+            )
 
         if source.provider_uses_tokens:
             stream_id = entry.name

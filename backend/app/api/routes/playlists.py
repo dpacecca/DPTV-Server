@@ -1,6 +1,6 @@
 import re
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -321,14 +321,67 @@ async def remove_source_link(playlist_id: int, category_id: int, link_id: int, d
 class ImportIn(BaseModel):
     source_id: int
     channel_type: ChannelType = ChannelType.LIVE
+    mode: str = "merge"
+    """'merge' (default): all imported channels land in one target category, picked below.
+    'per_category': each selected source category becomes/reuses its own playlist category,
+    with the provider's own name and relative order preserved - target_category_id/name are
+    ignored in this mode. Requires category_ids."""
     category_ids: list[int] | None = None
     """Import all channels of these SourceCategory ids."""
     channel_ids: list[int] | None = None
-    """Import these specific SourceChannel ids."""
+    """Import these specific SourceChannel ids. Only valid with mode='merge'."""
     target_category_id: int | None = None
     target_category_name: str | None = None
     link_for_new_channels: bool = True
     skip_duplicates: bool = True
+
+
+async def _import_source_channels_into(
+    db: DbSession,
+    target_cat: PlaylistCategory,
+    source_channels: list[SourceChannel],
+    skip_duplicates: bool,
+    link_for_new_channels: bool,
+) -> int:
+    existing_source_channel_ids: set[int] = set()
+    if skip_duplicates:
+        existing_result = await db.execute(
+            select(PlaylistChannel.source_channel_id).where(
+                PlaylistChannel.playlist_category_id == target_cat.id,
+                PlaylistChannel.source_channel_id.is_not(None),
+            )
+        )
+        existing_source_channel_ids = {row[0] for row in existing_result.all()}
+
+    imported = 0
+    involved_source_category_ids = set()
+    for sc in source_channels:
+        involved_source_category_ids.add(sc.source_category_id)
+        if skip_duplicates and sc.id in existing_source_channel_ids:
+            continue
+        db.add(
+            PlaylistChannel(
+                playlist_category_id=target_cat.id,
+                source_channel_id=sc.id,
+                name=sc.name,
+                enabled=True,
+            )
+        )
+        imported += 1
+
+    if link_for_new_channels:
+        linked_result = await db.execute(
+            select(PlaylistCategorySourceLink.source_category_id).where(
+                PlaylistCategorySourceLink.playlist_category_id == target_cat.id
+            )
+        )
+        already_linked = {row[0] for row in linked_result.all()}
+        for source_cat_id in involved_source_category_ids - already_linked:
+            db.add(
+                PlaylistCategorySourceLink(playlist_category_id=target_cat.id, source_category_id=source_cat_id)
+            )
+
+    return imported
 
 
 @router.post("/{playlist_id}/import")
@@ -336,6 +389,64 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
     if await db.get(Playlist, playlist_id) is None:
         raise HTTPException(404, "Playlist not found")
 
+    if payload.mode == "per_category":
+        if not payload.category_ids:
+            raise HTTPException(400, "category_ids is required for mode='per_category'")
+
+        cats_result = await db.execute(
+            select(SourceCategory)
+            .where(SourceCategory.id.in_(payload.category_ids))
+            .order_by(SourceCategory.sort_order, SourceCategory.name)
+        )
+        source_cats = cats_result.scalars().all()
+
+        existing_result = await db.execute(
+            select(PlaylistCategory).where(PlaylistCategory.playlist_id == playlist_id)
+        )
+        existing_by_name_type = {(c.name, c.channel_type): c for c in existing_result.scalars().all()}
+        next_sort_order = (max((c.sort_order for c in existing_by_name_type.values()), default=-1)) + 1
+
+        results = []
+        total_imported = 0
+        for source_cat in source_cats:
+            key = (source_cat.name, source_cat.channel_type)
+            target_cat = existing_by_name_type.get(key)
+            created = target_cat is None
+            if target_cat is None:
+                target_cat = PlaylistCategory(
+                    playlist_id=playlist_id,
+                    name=source_cat.name,
+                    channel_type=source_cat.channel_type,
+                    sort_order=next_sort_order,
+                )
+                db.add(target_cat)
+                await db.flush()
+                existing_by_name_type[key] = target_cat
+                next_sort_order += 1
+
+            channels_result = await db.execute(
+                select(SourceChannel).where(
+                    SourceChannel.source_category_id == source_cat.id, SourceChannel.removed_at.is_(None)
+                )
+            )
+            imported = await _import_source_channels_into(
+                db, target_cat, channels_result.scalars().all(), payload.skip_duplicates, payload.link_for_new_channels
+            )
+            total_imported += imported
+            results.append(
+                {
+                    "source_category_id": source_cat.id,
+                    "target_category_id": target_cat.id,
+                    "target_category_name": target_cat.name,
+                    "created": created,
+                    "imported": imported,
+                }
+            )
+
+        await db.commit()
+        return {"imported": total_imported, "categories": results}
+
+    # mode == "merge"
     if payload.target_category_id:
         target_cat = await db.get(PlaylistCategory, payload.target_category_id)
         if target_cat is None or target_cat.playlist_id != playlist_id:
@@ -373,45 +484,9 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
         channel_query = channel_query.where(SourceChannel.source_category_id.in_(source_category_ids))
 
     channels_result = await db.execute(channel_query)
-    source_channels = channels_result.scalars().all()
-
-    existing_source_channel_ids: set[int] = set()
-    if payload.skip_duplicates:
-        existing_result = await db.execute(
-            select(PlaylistChannel.source_channel_id).where(
-                PlaylistChannel.playlist_category_id == target_cat.id,
-                PlaylistChannel.source_channel_id.is_not(None),
-            )
-        )
-        existing_source_channel_ids = {row[0] for row in existing_result.all()}
-
-    imported = 0
-    involved_source_category_ids = set()
-    for sc in source_channels:
-        involved_source_category_ids.add(sc.source_category_id)
-        if payload.skip_duplicates and sc.id in existing_source_channel_ids:
-            continue
-        db.add(
-            PlaylistChannel(
-                playlist_category_id=target_cat.id,
-                source_channel_id=sc.id,
-                name=sc.name,
-                enabled=True,
-            )
-        )
-        imported += 1
-
-    if payload.link_for_new_channels:
-        linked_result = await db.execute(
-            select(PlaylistCategorySourceLink.source_category_id).where(
-                PlaylistCategorySourceLink.playlist_category_id == target_cat.id
-            )
-        )
-        already_linked = {row[0] for row in linked_result.all()}
-        for source_cat_id in involved_source_category_ids - already_linked:
-            db.add(
-                PlaylistCategorySourceLink(playlist_category_id=target_cat.id, source_category_id=source_cat_id)
-            )
+    imported = await _import_source_channels_into(
+        db, target_cat, channels_result.scalars().all(), payload.skip_duplicates, payload.link_for_new_channels
+    )
 
     await db.commit()
     return {"imported": imported, "target_category_id": target_cat.id}
@@ -648,17 +723,33 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
 # ---------- EPG mapping ----------
 
 
+async def _epg_candidates(db: DbSession, epg_source_ids: list[int] | None) -> list[EpgChannel]:
+    """All EPG channels to search against - scoped to selected guides when given, matching
+    IPTVBoss's 'Search Options' (e.g. disabling UK/CA guides when mapping US channels so
+    similarly-named channels from the wrong region don't win the fuzzy match)."""
+    query = select(EpgChannel)
+    if epg_source_ids:
+        query = query.where(EpgChannel.epg_source_id.in_(epg_source_ids))
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
 @router.get("/{playlist_id}/channels/{channel_id}/epg/search")
 async def search_epg(
-    playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser, q: str | None = None, limit: int = 10
+    playlist_id: int,
+    channel_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    limit: int = 10,
+    epg_source_ids: list[int] | None = Query(None),
 ) -> list[dict]:
     pc = await db.get(PlaylistChannel, channel_id)
     if pc is None:
         raise HTTPException(404, "Channel not found")
     query_name = q or pc.name
-    result = await db.execute(select(EpgChannel))
-    all_channels = result.scalars().all()
-    matches = epg_mapper.search_candidates(query_name, all_channels, limit=limit)
+    candidates = await _epg_candidates(db, epg_source_ids)
+    matches = epg_mapper.search_candidates(query_name, candidates, limit=limit)
     return [
         {"epg_channel_id": ch.id, "display_name": ch.display_name, "epg_id": ch.epg_channel_id, "score": score}
         for ch, score in matches
@@ -667,20 +758,53 @@ async def search_epg(
 
 @router.post("/{playlist_id}/channels/{channel_id}/epg/auto")
 async def auto_map_epg(
-    playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser, sensitivity: float = 0.9
+    playlist_id: int,
+    channel_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    sensitivity: float = 0.9,
+    epg_source_ids: list[int] | None = Query(None),
 ) -> dict:
     pc = await db.get(PlaylistChannel, channel_id)
     if pc is None:
         raise HTTPException(404, "Channel not found")
-    result = await db.execute(select(EpgChannel))
-    all_channels = result.scalars().all()
-    best = epg_mapper.auto_match(pc.name, all_channels, sensitivity=sensitivity)
+    candidates = await _epg_candidates(db, epg_source_ids)
+    best = epg_mapper.auto_match(pc.name, candidates, sensitivity=sensitivity)
     if best is None:
         return {"matched": False}
     pc.epg_channel_id = best.id
     pc.epg_match_type = EpgMatchType.AUTO
     await db.commit()
     return {"matched": True, "epg_channel_id": best.id, "display_name": best.display_name}
+
+
+class BulkEpgAutoMapIn(BaseModel):
+    channel_ids: list[int]
+    sensitivity: float = 0.9
+    epg_source_ids: list[int] | None = None
+    """Restrict the search to these EPG sources. Omit/empty to search all of them."""
+
+
+@router.post("/{playlist_id}/channels/epg/bulk-auto-map")
+async def bulk_auto_map_epg(playlist_id: int, payload: BulkEpgAutoMapIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Auto-map EPG for many channels at once, e.g. everything selected in the channel list."""
+    candidates = await _epg_candidates(db, payload.epg_source_ids)
+    result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
+    channels = result.scalars().all()
+
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    for pc in channels:
+        best = epg_mapper.auto_match(pc.name, candidates, sensitivity=payload.sensitivity)
+        if best is None:
+            unmatched.append({"channel_id": pc.id, "channel_name": pc.name})
+            continue
+        pc.epg_channel_id = best.id
+        pc.epg_match_type = EpgMatchType.AUTO
+        matched.append({"channel_id": pc.id, "channel_name": pc.name, "epg_channel_id": best.id, "display_name": best.display_name})
+
+    await db.commit()
+    return {"matched": matched, "unmatched": unmatched}
 
 
 class EpgAssign(BaseModel):
