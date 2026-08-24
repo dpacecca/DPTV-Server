@@ -83,29 +83,60 @@ automatically on container start.
 
 ## Running natively (no Docker) as a systemd service
 
-See `deploy/dptv-backend.service` and `deploy/dptv-frontend.service` for
-example unit files. In short:
+This is the better fit for a Proxmox **LXC container** specifically:
+Docker-in-LXC works but means nesting one container runtime inside
+another for no benefit, since an LXC container already provides the
+process/resource isolation Docker would otherwise be giving you. Running
+the app's own processes directly, managed by systemd, is simpler and
+avoids needing privileged/nesting container features at all.
 
 ```bash
-# Backend
-cd backend
-python3 -m venv .venv && . .venv/bin/activate
-pip install .
-export DPTV_DATABASE_URL=postgresql+asyncpg://dptv:dptv@localhost:5432/dptv
-export DPTV_SECRET_KEY=... DPTV_ADMIN_PASSWORD=... DPTV_PUBLIC_BASE_URL=http://your-host:8000
-alembic upgrade head
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# System packages
+sudo apt update
+sudo apt install -y python3-venv python3-pip postgresql nginx nodejs npm git
 
-# Frontend (build static files, serve with any web server / nginx)
-cd frontend
-npm install
-npm run build   # outputs to frontend/dist
+# Database
+sudo -u postgres psql -c "CREATE ROLE dptv LOGIN PASSWORD 'change-me';"
+sudo -u postgres psql -c "CREATE DATABASE dptv OWNER dptv;"
+
+# App user + code
+sudo useradd --system --create-home --shell /usr/sbin/nologin dptv
+sudo git clone https://github.com/dpacecca/DPTV-Server.git /opt/DPTV-Server
+sudo chown -R dptv:dptv /opt/DPTV-Server
+
+# Backend
+cd /opt/DPTV-Server/backend
+sudo -u dptv python3 -m venv .venv
+sudo -u dptv .venv/bin/pip install .
+
+# Frontend (build once; the static output is what nginx serves)
+cd /opt/DPTV-Server/frontend
+sudo -u dptv npm install
+sudo -u dptv npm run build
 ```
 
-Point your web server at `frontend/dist` and reverse-proxy `/api/`,
-`/player_api.php`, `/get.php`, `/xmltv.php`, `/live/`, `/movie/`,
-`/series/` to the backend (see `frontend/nginx.conf` for a working
-example config).
+Edit `deploy/dptv-backend.service` (the DB password, `DPTV_SECRET_KEY`,
+`DPTV_ADMIN_PASSWORD`, and `DPTV_PUBLIC_BASE_URL` → `http://<host-ip>:8000`),
+then:
+
+```bash
+sudo cp /opt/DPTV-Server/deploy/dptv-backend.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dptv-backend
+
+# Serve the frontend + proxy the API/XC routes through the system's own nginx
+sudo cp /opt/DPTV-Server/deploy/nginx-site.conf /etc/nginx/sites-available/dptv-server
+sudo ln -s /etc/nginx/sites-available/dptv-server /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Web UI and XC server are both then reachable at `http://<host-ip>` (port
+80). `frontend/nginx.conf` is the separate, Docker-specific config baked
+into the `frontend` container image (it proxies to the `backend` service
+by its Docker Compose hostname) — don't use it for a native install;
+`deploy/nginx-site.conf` is the one written for this (it proxies to
+`127.0.0.1:8000`, since here both processes share one host).
 
 ## Project layout
 
