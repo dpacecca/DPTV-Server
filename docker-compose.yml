@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dptv
+      POSTGRES_PASSWORD: dptv
+      POSTGRES_DB: dptv
+    volumes:
+      - dptv-postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dptv"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DPTV_DATABASE_URL: postgresql+asyncpg://dptv:dptv@postgres:5432/dptv
+      DPTV_SECRET_KEY: ${DPTV_SECRET_KEY:-change-me-in-production}
+      DPTV_ADMIN_USERNAME: ${DPTV_ADMIN_USERNAME:-admin}
+      DPTV_ADMIN_PASSWORD: ${DPTV_ADMIN_PASSWORD:-admin}
+      DPTV_PUBLIC_BASE_URL: ${DPTV_PUBLIC_BASE_URL:-http://localhost:8000}
+    volumes:
+      - dptv-data:/app/data
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  dptv-postgres:
+  dptv-data:

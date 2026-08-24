@@ -1,0 +1,18 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Env / secrets
+.env
+backend/.env
+
+# Data
+data/
+*.log
+backend/*.egg-info/
