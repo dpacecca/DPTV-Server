@@ -47,6 +47,13 @@ export interface SourceChannel {
   removed_at: string | null;
 }
 
+export interface PaginatedSourceChannels {
+  items: SourceChannel[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface EpgSource {
   id: number;
   name: string;
@@ -76,6 +83,7 @@ export interface PlaylistChannel {
   dummy_epg_program_minutes: number | null;
 }
 
+/** Category shape used everywhere in the UI: counts only, never the (potentially huge) channel list. */
 export interface PlaylistCategory {
   id: number;
   name: string;
@@ -83,7 +91,7 @@ export interface PlaylistCategory {
   sort_order: number;
   dummy_epg_for_unassigned: boolean;
   dummy_epg_program_minutes: number;
-  channels: PlaylistChannel[];
+  channel_count: number;
 }
 
 export interface Playlist {
@@ -99,6 +107,13 @@ export interface Playlist {
   category_count: number;
   channel_count: number;
   categories?: PlaylistCategory[];
+}
+
+export interface PaginatedChannels {
+  items: PlaylistChannel[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export interface XcUserPlaylistLink {

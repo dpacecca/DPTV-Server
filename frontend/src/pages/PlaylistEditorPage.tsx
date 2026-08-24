@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import {
   ActionIcon,
   Badge,
@@ -6,6 +6,7 @@ import {
   Button,
   Checkbox,
   Group,
+  Loader,
   Menu,
   Modal,
   NumberInput,
@@ -30,14 +31,31 @@ import {
   IconLock,
   IconLockOpen,
   IconPlus,
+  IconSearch,
   IconTrash,
   IconWand,
 } from "@tabler/icons-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useNavigate, useParams } from "react-router-dom";
+import { useDebounce } from "use-debounce";
 import { api } from "../api/client";
-import type { ChannelType, DummyEpgMode, Playlist, PlaylistCategory, PlaylistChannel, Source, SourceCategory } from "../api/types";
+import type {
+  ChannelType,
+  DummyEpgMode,
+  PaginatedChannels,
+  Playlist,
+  PlaylistCategory,
+  PlaylistChannel,
+  Source,
+  SourceCategory,
+} from "../api/types";
 import { EmptyState } from "../App";
+
+const CHANNEL_PAGE_SIZE = 200;
+// Above this many selected channels, bulk actions still work (ids are just integers, cheap to
+// ship) but we warn before firing - a 50k-row UPDATE/DELETE is a lot to ask of one request.
+const LARGE_SELECTION_WARNING = 5000;
 
 function useApiPlaylist(playlistId: string | undefined) {
   return useQuery<Playlist>({
@@ -59,13 +77,18 @@ export default function PlaylistEditorPage() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [moveMode, setMoveMode] = useState<"move" | "copy" | null>(null);
-  const [detailChannelId, setDetailChannelId] = useState<number | null>(null);
+  const [detailChannel, setDetailChannel] = useState<PlaylistChannel | null>(null);
   const [manualChannelOpen, setManualChannelOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch] = useDebounce(search, 300);
 
   const categories = playlist?.categories ?? [];
   const activeCategory = categories.find((c) => c.id === selectedCategoryId) ?? categories[0] ?? null;
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["playlist", playlistId] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["playlist", playlistId] });
+    qc.invalidateQueries({ queryKey: ["playlist-channels", playlistId] });
+  };
 
   const createCategoryMutation = useMutation({
     mutationFn: (name: string) => api.post(`/api/playlists/${playlistId}/categories`, { name, channel_type: "live" }),
@@ -107,6 +130,28 @@ export default function PlaylistEditorPage() {
     },
   });
 
+  function confirmIfLarge(count: number, verb: string) {
+    if (count > LARGE_SELECTION_WARNING) {
+      return confirm(`This will ${verb} ${count} channels in one request. Continue?`);
+    }
+    return true;
+  }
+
+  function runBulk(payload: { action: string; text?: string; find?: string; replace?: string }) {
+    if (!confirmIfLarge(selectedChannelIds.size, "update")) return;
+    bulkMutation.mutate({ channel_ids: [...selectedChannelIds], ...payload });
+  }
+
+  const selectAllMatchingMutation = useMutation({
+    mutationFn: () =>
+      api
+        .get(`/api/playlists/${playlistId}/categories/${activeCategory?.id}/channels/ids`, {
+          params: { q: debouncedSearch || undefined },
+        })
+        .then((r) => r.data.ids as number[]),
+    onSuccess: (ids) => setSelectedChannelIds(new Set(ids)),
+  });
+
   if (isLoading) return <Text>Loading...</Text>;
   if (!playlist) return <Text>Playlist not found</Text>;
 
@@ -126,7 +171,7 @@ export default function PlaylistEditorPage() {
         </Group>
       </Group>
 
-      <Group align="stretch" gap="sm" style={{ flex: 1, minHeight: 0 }}>
+      <Group align="stretch" wrap="nowrap" gap="sm" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         {/* Category list */}
         <Paper withBorder p="xs" w={260} style={{ display: "flex", flexDirection: "column" }}>
           <Group justify="space-between" mb="xs">
@@ -152,12 +197,13 @@ export default function PlaylistEditorPage() {
                   onClick={() => {
                     setSelectedCategoryId(c.id);
                     setSelectedChannelIds(new Set());
+                    setSearch("");
                   }}
                 >
                   <Box>
                     <Text size="sm">{c.name}</Text>
                     <Text size="xs" c="dimmed">
-                      {c.channels.length} channels
+                      {c.channel_count} channels
                     </Text>
                   </Box>
                   <ActionIcon
@@ -183,7 +229,7 @@ export default function PlaylistEditorPage() {
         </Paper>
 
         {/* Channel list */}
-        <Paper withBorder p="xs" style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <Paper withBorder p="xs" style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
           {!activeCategory ? (
             <EmptyState text="Select or create a category to manage its channels" />
           ) : (
@@ -221,16 +267,12 @@ export default function PlaylistEditorPage() {
                       </Button>
                     </Menu.Target>
                     <Menu.Dropdown>
-                      <Menu.Item onClick={() => bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "uppercase" })}>
-                        UPPERCASE names
-                      </Menu.Item>
-                      <Menu.Item onClick={() => bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "sentence_case" })}>
-                        Sentence case names
-                      </Menu.Item>
+                      <Menu.Item onClick={() => runBulk({ action: "uppercase" })}>UPPERCASE names</Menu.Item>
+                      <Menu.Item onClick={() => runBulk({ action: "sentence_case" })}>Sentence case names</Menu.Item>
                       <Menu.Item
                         onClick={() => {
                           const text = prompt("Prefix to add:");
-                          if (text) bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "add_prefix", text });
+                          if (text) runBulk({ action: "add_prefix", text });
                         }}
                       >
                         Add prefix...
@@ -238,7 +280,7 @@ export default function PlaylistEditorPage() {
                       <Menu.Item
                         onClick={() => {
                           const text = prompt("Suffix to add:");
-                          if (text) bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "add_suffix", text });
+                          if (text) runBulk({ action: "add_suffix", text });
                         }}
                       >
                         Add suffix...
@@ -248,28 +290,19 @@ export default function PlaylistEditorPage() {
                           const find = prompt("Find:");
                           if (find === null) return;
                           const replace = prompt("Replace with:") || "";
-                          bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "find_replace", find, replace });
+                          runBulk({ action: "find_replace", find, replace });
                         }}
                       >
                         Find &amp; replace...
                       </Menu.Item>
-                      <Menu.Item onClick={() => bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "lock_name" })}>
-                        Lock names (ignore provider renames)
-                      </Menu.Item>
-                      <Menu.Item onClick={() => bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "unlock_name" })}>
-                        Unlock names
-                      </Menu.Item>
-                      <Menu.Item onClick={() => bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "enable" })}>
-                        Enable
-                      </Menu.Item>
-                      <Menu.Item onClick={() => bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "disable" })}>
-                        Disable
-                      </Menu.Item>
+                      <Menu.Item onClick={() => runBulk({ action: "lock_name" })}>Lock names (ignore provider renames)</Menu.Item>
+                      <Menu.Item onClick={() => runBulk({ action: "unlock_name" })}>Unlock names</Menu.Item>
+                      <Menu.Item onClick={() => runBulk({ action: "enable" })}>Enable</Menu.Item>
+                      <Menu.Item onClick={() => runBulk({ action: "disable" })}>Disable</Menu.Item>
                       <Menu.Item
                         color="red"
                         onClick={() => {
-                          if (confirm(`Delete ${selectedChannelIds.size} channel(s)?`))
-                            bulkMutation.mutate({ channel_ids: [...selectedChannelIds], action: "delete" });
+                          if (confirm(`Delete ${selectedChannelIds.size} channel(s)?`)) runBulk({ action: "delete" });
                         }}
                       >
                         Delete
@@ -279,49 +312,37 @@ export default function PlaylistEditorPage() {
                 </Group>
               </Group>
 
-              <ScrollArea style={{ flex: 1 }}>
-                <Table stickyHeader striped highlightOnHover>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th style={{ width: 30 }}>
-                        <Checkbox
-                          checked={activeCategory.channels.length > 0 && selectedChannelIds.size === activeCategory.channels.length}
-                          indeterminate={selectedChannelIds.size > 0 && selectedChannelIds.size < activeCategory.channels.length}
-                          onChange={(e) =>
-                            setSelectedChannelIds(e.currentTarget.checked ? new Set(activeCategory.channels.map((c) => c.id)) : new Set())
-                          }
-                        />
-                      </Table.Th>
-                      <Table.Th>Name</Table.Th>
-                      <Table.Th>EPG</Table.Th>
-                      <Table.Th>Dummy EPG</Table.Th>
-                      <Table.Th>Enabled</Table.Th>
-                      <Table.Th />
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {activeCategory.channels.map((ch) => (
-                      <ChannelRow
-                        key={ch.id}
-                        channel={ch}
-                        selected={selectedChannelIds.has(ch.id)}
-                        onToggleSelect={() =>
-                          setSelectedChannelIds((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(ch.id)) next.delete(ch.id);
-                            else next.add(ch.id);
-                            return next;
-                          })
-                        }
-                        playlistId={playlistId!}
-                        onOpenDetail={() => setDetailChannelId(ch.id)}
-                        onChanged={invalidate}
-                      />
-                    ))}
-                  </Table.Tbody>
-                </Table>
-                {activeCategory.channels.length === 0 && <EmptyState text="No channels in this category yet." />}
-              </ScrollArea>
+              <Group justify="space-between" mb="xs">
+                <TextInput
+                  size="xs"
+                  placeholder="Search channels..."
+                  leftSection={<IconSearch size={14} />}
+                  value={search}
+                  onChange={(e) => setSearch(e.currentTarget.value)}
+                  w={280}
+                />
+                {selectedChannelIds.size > 0 && (
+                  <Text size="xs" c="dimmed">
+                    {selectedChannelIds.size} selected
+                    {" · "}
+                    <Text component="span" c="indigo" style={{ cursor: "pointer" }} onClick={() => setSelectedChannelIds(new Set())}>
+                      clear
+                    </Text>
+                  </Text>
+                )}
+              </Group>
+
+              <ChannelTable
+                playlistId={playlistId!}
+                category={activeCategory}
+                search={debouncedSearch}
+                selectedChannelIds={selectedChannelIds}
+                setSelectedChannelIds={setSelectedChannelIds}
+                onOpenDetail={setDetailChannel}
+                onChanged={invalidate}
+                onSelectAllMatching={() => selectAllMatchingMutation.mutate()}
+                selectAllPending={selectAllMatchingMutation.isPending}
+              />
             </>
           )}
         </Paper>
@@ -348,7 +369,11 @@ export default function PlaylistEditorPage() {
                 key={c.id}
                 variant="light"
                 justify="space-between"
-                onClick={() => moveMode && moveCopyMutation.mutate({ mode: moveMode, targetCategoryId: c.id })}
+                onClick={() => {
+                  if (!moveMode) return;
+                  if (!confirmIfLarge(selectedChannelIds.size, moveMode)) return;
+                  moveCopyMutation.mutate({ mode: moveMode, targetCategoryId: c.id });
+                }}
               >
                 {c.name}
               </Button>
@@ -366,11 +391,11 @@ export default function PlaylistEditorPage() {
         />
       )}
 
-      {playlistId && detailChannelId && (
+      {playlistId && detailChannel && (
         <ChannelDetailModal
           playlistId={playlistId}
-          channelId={detailChannelId}
-          onClose={() => setDetailChannelId(null)}
+          channel={detailChannel}
+          onClose={() => setDetailChannel(null)}
           onChanged={invalidate}
         />
       )}
@@ -388,6 +413,154 @@ export default function PlaylistEditorPage() {
   );
 }
 
+const ROW_HEIGHT = 44;
+
+// Renders a category's channels as an infinite-scrolling, virtualized table: only the rows
+// actually in (or near) the viewport ever exist in the DOM, and more pages are fetched as the
+// user scrolls. This is what keeps the browser tab responsive on a category with 20k+ channels
+// instead of trying to mount every row at once.
+function ChannelTable({
+  playlistId,
+  category,
+  search,
+  selectedChannelIds,
+  setSelectedChannelIds,
+  onOpenDetail,
+  onChanged,
+  onSelectAllMatching,
+  selectAllPending,
+}: {
+  playlistId: string;
+  category: PlaylistCategory;
+  search: string;
+  selectedChannelIds: Set<number>;
+  setSelectedChannelIds: Dispatch<SetStateAction<Set<number>>>;
+  onOpenDetail: (channel: PlaylistChannel) => void;
+  onChanged: () => void;
+  onSelectAllMatching: () => void;
+  selectAllPending: boolean;
+}) {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
+    queryKey: ["playlist-channels", playlistId, category.id, search],
+    queryFn: ({ pageParam }) =>
+      api
+        .get<PaginatedChannels>(`/api/playlists/${playlistId}/categories/${category.id}/channels`, {
+          params: { q: search || undefined, offset: pageParam, limit: CHANNEL_PAGE_SIZE },
+        })
+        .then((r) => r.data),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
+  });
+
+  const rows = data?.pages.flatMap((p) => p.items) ?? [];
+  const total = data?.pages[0]?.total ?? 0;
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+  });
+
+  useEffect(() => {
+    const items = virtualizer.getVirtualItems();
+    const last = items[items.length - 1];
+    if (!last) return;
+    // Guard against ever fetching pages faster than the viewport can plausibly need them: if
+    // the "visible" range already covers hundreds of rows, the scroll container isn't actually
+    // bounded (a layout regression broke the flex min-height chain) and blindly trusting
+    // getVirtualItems() here would runaway-fetch the entire category instead of paging it.
+    const viewportLooksBounded = items.length < 100;
+    if (viewportLooksBounded && last.index >= rows.length - 1 && hasNextPage && !isFetchingNextPage) {
+      fetchNextPage();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virtualizer.getVirtualItems(), hasNextPage, isFetchingNextPage, rows.length]);
+
+  if (isLoading) {
+    return (
+      <Group justify="center" py="xl">
+        <Loader size="sm" />
+      </Group>
+    );
+  }
+
+  if (rows.length === 0) {
+    return <EmptyState text={search ? "No channels match your search." : "No channels in this category yet."} />;
+  }
+
+  const virtualItems = virtualizer.getVirtualItems();
+
+  return (
+    <Stack gap={4} style={{ flex: 1, minHeight: 0 }}>
+      <ScrollArea viewportRef={parentRef} style={{ flex: 1, minHeight: 0 }}>
+        <Table stickyHeader striped highlightOnHover layout="fixed">
+          {/* Body rows are absolutely positioned (virtualized), so this header row uses the
+              same flex layout + column widths as ChannelRow to keep columns aligned - a plain
+              table-row header would use the table column algorithm instead and drift out of
+              sync with the flex-laid-out body. */}
+          <Table.Thead>
+            <Table.Tr display="flex">
+              <Table.Th w={30}>
+                <Checkbox
+                  checked={rows.length > 0 && rows.every((r) => selectedChannelIds.has(r.id)) && rows.length === total}
+                  indeterminate={selectedChannelIds.size > 0 && !(rows.every((r) => selectedChannelIds.has(r.id)) && rows.length === total)}
+                  onChange={(e) => setSelectedChannelIds(e.currentTarget.checked ? new Set(rows.map((r) => r.id)) : new Set())}
+                />
+              </Table.Th>
+              <Table.Th style={{ flex: 1, minWidth: 0 }}>Name</Table.Th>
+              <Table.Th w={180}>EPG</Table.Th>
+              <Table.Th w={120}>Dummy EPG</Table.Th>
+              <Table.Th w={90}>Enabled</Table.Th>
+              <Table.Th w={40} />
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+            {virtualItems.map((virtualRow) => {
+              const ch = rows[virtualRow.index];
+              if (!ch) return null;
+              return (
+                <ChannelRow
+                  key={ch.id}
+                  channel={ch}
+                  selected={selectedChannelIds.has(ch.id)}
+                  style={{ position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${virtualRow.start}px)`, height: ROW_HEIGHT }}
+                  onToggleSelect={() =>
+                    setSelectedChannelIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(ch.id)) next.delete(ch.id);
+                      else next.add(ch.id);
+                      return next;
+                    })
+                  }
+                  playlistId={playlistId}
+                  onOpenDetail={() => onOpenDetail(ch)}
+                  onChanged={onChanged}
+                />
+              );
+            })}
+          </Table.Tbody>
+        </Table>
+      </ScrollArea>
+      <Group justify="space-between">
+        <Text size="xs" c="dimmed">
+          {rows.length} of {total} loaded{isFetchingNextPage ? " · loading more..." : ""}
+        </Text>
+        {total > rows.length && rows.length > 0 && !(selectedChannelIds.size === total) && (
+          <Button size="xs" variant="subtle" loading={selectAllPending} onClick={onSelectAllMatching}>
+            Select all {total} matching
+          </Button>
+        )}
+      </Group>
+    </Stack>
+  );
+}
+
 function ChannelRow({
   channel,
   selected,
@@ -395,6 +568,7 @@ function ChannelRow({
   playlistId,
   onOpenDetail,
   onChanged,
+  style,
 }: {
   channel: PlaylistChannel;
   selected: boolean;
@@ -402,6 +576,7 @@ function ChannelRow({
   playlistId: string;
   onOpenDetail: () => void;
   onChanged: () => void;
+  style?: CSSProperties;
 }) {
   const toggleEnabled = useMutation({
     mutationFn: (enabled: boolean) => api.patch(`/api/playlists/${playlistId}/channels/${channel.id}`, { enabled }),
@@ -409,17 +584,17 @@ function ChannelRow({
   });
 
   return (
-    <Table.Tr>
-      <Table.Td>
+    <Table.Tr style={style} display="flex">
+      <Table.Td w={30}>
         <Checkbox checked={selected} onChange={onToggleSelect} />
       </Table.Td>
-      <Table.Td style={{ cursor: "pointer" }} onClick={onOpenDetail}>
+      <Table.Td style={{ cursor: "pointer", flex: 1, minWidth: 0 }} onClick={onOpenDetail}>
         <Group gap={6}>
           {channel.name_locked ? <IconLock size={12} /> : null}
           <Text size="sm">{channel.name}</Text>
         </Group>
       </Table.Td>
-      <Table.Td>
+      <Table.Td w={180} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {channel.epg_channel_id ? (
           <Badge color={channel.epg_match_type === "manual" ? "blue" : "teal"} variant="light">
             {channel.epg_display_name}
@@ -430,13 +605,13 @@ function ChannelRow({
           </Badge>
         )}
       </Table.Td>
-      <Table.Td>
+      <Table.Td w={120}>
         <Badge variant="outline">{channel.dummy_epg_mode}</Badge>
       </Table.Td>
-      <Table.Td>
+      <Table.Td w={90}>
         <Switch checked={channel.enabled} onChange={(e) => toggleEnabled.mutate(e.currentTarget.checked)} />
       </Table.Td>
-      <Table.Td>
+      <Table.Td w={40}>
         <ActionIcon variant="subtle" onClick={onOpenDetail}>
           <IconEdit size={16} />
         </ActionIcon>
@@ -447,22 +622,17 @@ function ChannelRow({
 
 function ChannelDetailModal({
   playlistId,
-  channelId,
+  channel,
   onClose,
   onChanged,
 }: {
   playlistId: string;
-  channelId: number;
+  channel: PlaylistChannel;
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const { data: playlist } = useApiPlaylist(playlistId);
-  const channel = useMemo(
-    () => playlist?.categories?.flatMap((c) => c.channels).find((c) => c.id === channelId) ?? null,
-    [playlist, channelId]
-  );
-
-  const [name, setName] = useState(channel?.name ?? "");
+  const channelId = channel.id;
+  const [name, setName] = useState(channel.name);
   const [search, setSearch] = useState("");
 
   const updateMutation = useMutation({
@@ -501,8 +671,6 @@ function ChannelDetailModal({
     mutationFn: (epgChannelId: number | null) => api.patch(`/api/playlists/${playlistId}/channels/${channelId}/epg`, { epg_channel_id: epgChannelId }),
     onSuccess: onChanged,
   });
-
-  if (!channel) return null;
 
   return (
     <Modal opened onClose={onClose} title="Channel Settings" size="lg">

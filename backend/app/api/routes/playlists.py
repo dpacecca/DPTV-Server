@@ -2,7 +2,7 @@ import re
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
@@ -24,6 +24,14 @@ router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
 
 def _full_load():
+    """Eager-loads every category and every channel in one shot.
+
+    Only for paths that genuinely need the whole playlist materialized at once - generating
+    the M3U/XMLTV output files. The admin UI never uses this: a playlist can have tens of
+    thousands of channels, and shipping/rendering all of them at once is exactly the kind of
+    thing that makes a browser-based playlist manager fall over. UI-facing endpoints below use
+    SQL COUNT for category summaries and a paginated/searchable endpoint for channel rows.
+    """
     return (
         selectinload(Playlist.categories)
         .selectinload(PlaylistCategory.channels)
@@ -60,7 +68,8 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
     }
 
 
-def _serialize_category(cat: PlaylistCategory) -> dict:
+def _serialize_category_summary(cat: PlaylistCategory, channel_count: int) -> dict:
+    """Category shape for the UI: counts only, never the channel rows themselves."""
     return {
         "id": cat.id,
         "name": cat.name,
@@ -68,12 +77,23 @@ def _serialize_category(cat: PlaylistCategory) -> dict:
         "sort_order": cat.sort_order,
         "dummy_epg_for_unassigned": cat.dummy_epg_for_unassigned,
         "dummy_epg_program_minutes": cat.dummy_epg_program_minutes,
-        "channels": [_serialize_channel(pc) for pc in sorted(cat.channels, key=lambda c: c.sort_order)],
+        "channel_count": channel_count,
     }
 
 
-def _serialize_playlist(pl: Playlist, full: bool = False) -> dict:
-    base = {
+async def _category_channel_counts(db: DbSession, category_ids: list[int]) -> dict[int, int]:
+    if not category_ids:
+        return {}
+    result = await db.execute(
+        select(PlaylistChannel.playlist_category_id, func.count(PlaylistChannel.id))
+        .where(PlaylistChannel.playlist_category_id.in_(category_ids))
+        .group_by(PlaylistChannel.playlist_category_id)
+    )
+    return dict(result.all())
+
+
+def _serialize_playlist_base(pl: Playlist, category_count: int, channel_count: int) -> dict:
+    return {
         "id": pl.id,
         "name": pl.name,
         "enabled": pl.enabled,
@@ -83,12 +103,9 @@ def _serialize_playlist(pl: Playlist, full: bool = False) -> dict:
         "epg_output_enabled": pl.epg_output_enabled,
         "epg_filename": pl.epg_filename,
         "epg_days_to_keep": pl.epg_days_to_keep,
-        "category_count": len(pl.categories),
-        "channel_count": sum(len(c.channels) for c in pl.categories),
+        "category_count": category_count,
+        "channel_count": channel_count,
     }
-    if full:
-        base["categories"] = [_serialize_category(c) for c in sorted(pl.categories, key=lambda c: c.sort_order)]
-    return base
 
 
 class PlaylistIn(BaseModel):
@@ -104,8 +121,34 @@ class PlaylistIn(BaseModel):
 
 @router.get("")
 async def list_playlists(db: DbSession, _admin: AdminUser) -> list[dict]:
-    result = await db.execute(select(Playlist).options(*_full_load()))
-    return [_serialize_playlist(p) for p in result.unique().scalars().all()]
+    result = await db.execute(
+        select(
+            Playlist,
+            func.count(func.distinct(PlaylistCategory.id)),
+            func.count(PlaylistChannel.id),
+        )
+        .outerjoin(PlaylistCategory, PlaylistCategory.playlist_id == Playlist.id)
+        .outerjoin(PlaylistChannel, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+        .group_by(Playlist.id)
+        .order_by(Playlist.name)
+    )
+    return [_serialize_playlist_base(pl, cat_count, chan_count) for pl, cat_count, chan_count in result.all()]
+
+
+async def _get_playlist_with_category_summaries(db: DbSession, playlist_id: int) -> dict:
+    pl = await db.get(Playlist, playlist_id)
+    if pl is None:
+        raise HTTPException(404, "Playlist not found")
+    cats_result = await db.execute(
+        select(PlaylistCategory)
+        .where(PlaylistCategory.playlist_id == playlist_id)
+        .order_by(PlaylistCategory.sort_order)
+    )
+    categories = cats_result.scalars().all()
+    counts = await _category_channel_counts(db, [c.id for c in categories])
+    base = _serialize_playlist_base(pl, len(categories), sum(counts.values()))
+    base["categories"] = [_serialize_category_summary(c, counts.get(c.id, 0)) for c in categories]
+    return base
 
 
 @router.post("")
@@ -113,14 +156,12 @@ async def create_playlist(payload: PlaylistIn, db: DbSession, _admin: AdminUser)
     pl = Playlist(**payload.model_dump())
     db.add(pl)
     await db.commit()
-    pl = await _get_playlist_full(db, pl.id)
-    return _serialize_playlist(pl, full=True)
+    return await _get_playlist_with_category_summaries(db, pl.id)
 
 
 @router.get("/{playlist_id}")
 async def get_playlist(playlist_id: int, db: DbSession, _admin: AdminUser) -> dict:
-    pl = await _get_playlist_full(db, playlist_id)
-    return _serialize_playlist(pl, full=True)
+    return await _get_playlist_with_category_summaries(db, playlist_id)
 
 
 @router.put("/{playlist_id}")
@@ -131,8 +172,7 @@ async def update_playlist(playlist_id: int, payload: PlaylistIn, db: DbSession, 
     for key, value in payload.model_dump().items():
         setattr(pl, key, value)
     await db.commit()
-    pl = await _get_playlist_full(db, playlist_id)
-    return _serialize_playlist(pl, full=True)
+    return await _get_playlist_with_category_summaries(db, playlist_id)
 
 
 @router.delete("/{playlist_id}")
@@ -168,8 +208,8 @@ async def create_category(playlist_id: int, payload: CategoryIn, db: DbSession, 
     cat = PlaylistCategory(playlist_id=playlist_id, **payload.model_dump())
     db.add(cat)
     await db.commit()
-    await db.refresh(cat, attribute_names=["channels"])
-    return _serialize_category(cat)
+    await db.refresh(cat)
+    return _serialize_category_summary(cat, channel_count=0)
 
 
 @router.patch("/{playlist_id}/categories/{category_id}")
@@ -182,8 +222,9 @@ async def update_category(
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(cat, key, value)
     await db.commit()
-    await db.refresh(cat, attribute_names=["channels"])
-    return _serialize_category(cat)
+    await db.refresh(cat)
+    counts = await _category_channel_counts(db, [cat.id])
+    return _serialize_category_summary(cat, channel_count=counts.get(cat.id, 0))
 
 
 @router.delete("/{playlist_id}/categories/{category_id}")
@@ -374,6 +415,72 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
 
     await db.commit()
     return {"imported": imported, "target_category_id": target_cat.id}
+
+
+MAX_PAGE_SIZE = 500
+
+
+def _category_channels_query(category_id: int, q: str | None, enabled: bool | None):
+    query = select(PlaylistChannel).where(PlaylistChannel.playlist_category_id == category_id)
+    if q:
+        query = query.where(PlaylistChannel.name.ilike(f"%{q}%"))
+    if enabled is not None:
+        query = query.where(PlaylistChannel.enabled == enabled)
+    return query
+
+
+@router.get("/{playlist_id}/categories/{category_id}/channels")
+async def list_category_channels(
+    playlist_id: int,
+    category_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    enabled: bool | None = None,
+    offset: int = 0,
+    limit: int = 200,
+) -> dict:
+    """Paginated, searchable channel listing for one category.
+
+    A playlist category can hold tens of thousands of channels (a straight dump from a large
+    provider catalog), so the admin UI never asks for "all of them" - it pages through this
+    endpoint and virtualizes the rows client-side. `channels/ids` below exists for bulk actions
+    that need every id matching the current filter without paying to serialize every row.
+    """
+    cat = await db.get(PlaylistCategory, category_id)
+    if cat is None or cat.playlist_id != playlist_id:
+        raise HTTPException(404, "Category not found")
+
+    limit = max(1, min(limit, MAX_PAGE_SIZE))
+    base_query = _category_channels_query(category_id, q, enabled)
+
+    total = await db.scalar(select(func.count()).select_from(base_query.subquery()))
+    result = await db.execute(
+        base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
+        .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    items = [_serialize_channel(pc) for pc in result.scalars().all()]
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+
+@router.get("/{playlist_id}/categories/{category_id}/channels/ids")
+async def list_category_channel_ids(
+    playlist_id: int,
+    category_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    enabled: bool | None = None,
+) -> dict:
+    """All channel ids matching the current filter - cheap even at 100k+ rows since it's just
+    integers. Backs "select all matching" in the UI without ever materializing full rows."""
+    cat = await db.get(PlaylistCategory, category_id)
+    if cat is None or cat.playlist_id != playlist_id:
+        raise HTTPException(404, "Category not found")
+    result = await db.execute(_category_channels_query(category_id, q, enabled).with_only_columns(PlaylistChannel.id))
+    return {"ids": [row[0] for row in result.all()]}
 
 
 class ManualChannelIn(BaseModel):

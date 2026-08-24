@@ -1,34 +1,76 @@
 import { Fragment, useState } from "react";
-import { Badge, Button, Collapse, Group, Paper, Stack, Switch, Table, Text, Title } from "@mantine/core";
-import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
+import { Badge, Button, Collapse, Group, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
+import { IconChevronDown, IconChevronRight, IconSearch } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
+import { useDebounce } from "use-debounce";
 import { api } from "../api/client";
-import type { Source, SourceCategory, SourceChannel } from "../api/types";
+import type { PaginatedSourceChannels, Source, SourceCategory } from "../api/types";
 import { EmptyState } from "../App";
 
+const PAGE_SIZE = 200;
+
+// A source category can hold tens of thousands of channels straight from a provider catalog.
+// This fetches (and renders) one page at a time instead of dumping everything into the DOM -
+// the browser resource concern this whole feature exists to address.
 function CategoryChannels({ categoryId }: { categoryId: number }) {
-  const { data: channels, isLoading } = useQuery<SourceChannel[]>({
-    queryKey: ["source-channels", categoryId],
-    queryFn: () => api.get(`/api/sources/categories/${categoryId}/channels`).then((r) => r.data),
+  const [search, setSearch] = useState("");
+  const [debouncedSearch] = useDebounce(search, 300);
+  const [loadedPages, setLoadedPages] = useState(1);
+
+  const { data, isLoading } = useQuery<PaginatedSourceChannels>({
+    queryKey: ["source-channels", categoryId, debouncedSearch, loadedPages],
+    queryFn: () =>
+      api
+        .get(`/api/sources/categories/${categoryId}/channels`, {
+          params: { q: debouncedSearch || undefined, limit: PAGE_SIZE * loadedPages },
+        })
+        .then((r) => r.data),
   });
 
-  if (isLoading) return <Text size="sm" c="dimmed" p="sm">Loading...</Text>;
-  if (!channels?.length) return <Text size="sm" c="dimmed" p="sm">No channels</Text>;
+  if (isLoading && !data) return <Text size="sm" c="dimmed" p="sm">Loading...</Text>;
 
   return (
-    <Table fz="xs" verticalSpacing={4}>
-      <Table.Tbody>
-        {channels.map((c) => (
-          <Table.Tr key={c.id}>
-            <Table.Td>{c.name}</Table.Td>
-            <Table.Td>
-              {c.removed_at ? <Badge color="red" size="xs">removed by provider</Badge> : null}
-            </Table.Td>
-          </Table.Tr>
-        ))}
-      </Table.Tbody>
-    </Table>
+    <Stack gap="xs" p="xs">
+      <TextInput
+        size="xs"
+        placeholder="Search channels..."
+        leftSection={<IconSearch size={14} />}
+        value={search}
+        onChange={(e) => {
+          setSearch(e.currentTarget.value);
+          setLoadedPages(1);
+        }}
+        w={260}
+      />
+      {data?.total === 0 && <Text size="sm" c="dimmed">No channels</Text>}
+      {data && data.total > 0 && (
+        <>
+          <Table fz="xs" verticalSpacing={4}>
+            <Table.Tbody>
+              {data.items.map((c) => (
+                <Table.Tr key={c.id}>
+                  <Table.Td>{c.name}</Table.Td>
+                  <Table.Td>
+                    {c.removed_at ? <Badge color="red" size="xs">removed by provider</Badge> : null}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+          <Group justify="space-between">
+            <Text size="xs" c="dimmed">
+              Showing {data.items.length} of {data.total}
+            </Text>
+            {data.items.length < data.total && (
+              <Button size="xs" variant="subtle" onClick={() => setLoadedPages((n) => n + 1)}>
+                Load more
+              </Button>
+            )}
+          </Group>
+        </>
+      )}
+    </Stack>
   );
 }
 

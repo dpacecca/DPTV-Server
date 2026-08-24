@@ -182,13 +182,27 @@ async def update_category(category_id: int, enabled: bool, db: DbSession, _admin
 
 
 @router.get("/categories/{category_id}/channels")
-async def list_channels(category_id: int, db: DbSession, _admin: AdminUser) -> list[ChannelOut]:
-    result = await db.execute(
-        select(SourceChannel).where(SourceChannel.source_category_id == category_id).order_by(SourceChannel.name)
-    )
-    out = []
+async def list_channels(
+    category_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = 200,
+) -> dict:
+    """Paginated/searchable - a source category can hold tens of thousands of channels
+    straight from a provider catalog, so this never returns the whole thing at once."""
+    limit = max(1, min(limit, 500))
+    query = select(SourceChannel).where(SourceChannel.source_category_id == category_id)
+    if q:
+        query = query.where(SourceChannel.name.ilike(f"%{q}%"))
+
+    total = await db.scalar(select(func.count()).select_from(query.subquery()))
+    result = await db.execute(query.order_by(SourceChannel.name).offset(offset).limit(limit))
+
+    items = []
     for c in result.scalars().all():
         item = ChannelOut.model_validate(c)
         item.removed_at = c.removed_at.isoformat() if c.removed_at else None
-        out.append(item)
-    return out
+        items.append(item)
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
