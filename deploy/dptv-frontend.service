@@ -1,0 +1,21 @@
+[Unit]
+Description=DPTV-Server frontend (static files via nginx)
+After=network.target dptv-backend.service
+
+# This unit just documents the expected setup: build the frontend once
+# with `npm run build` (see README), then point a normal nginx (or any
+# static file server) at frontend/dist, reverse-proxying the API/XC
+# routes to the backend per frontend/nginx.conf. Nginx itself typically
+# runs as its own system-managed service (nginx.service), not this unit -
+# this file is provided as a starting point if you prefer to run nginx
+# in a dedicated instance for DPTV-Server.
+
+[Service]
+Type=simple
+User=www-data
+ExecStart=/usr/sbin/nginx -c /opt/DPTV-Server/deploy/nginx.conf -g "daemon off;"
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

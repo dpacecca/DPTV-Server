@@ -1,0 +1,21 @@
+[Unit]
+Description=DPTV-Server backend (Xtream-Codes compatible API + admin API)
+After=network.target postgresql.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+User=dptv
+WorkingDirectory=/opt/DPTV-Server/backend
+Environment=DPTV_DATABASE_URL=postgresql+asyncpg://dptv:dptv@localhost:5432/dptv
+Environment=DPTV_SECRET_KEY=change-me
+Environment=DPTV_ADMIN_USERNAME=admin
+Environment=DPTV_ADMIN_PASSWORD=change-me
+Environment=DPTV_PUBLIC_BASE_URL=http://your-host:8000
+ExecStartPre=/opt/DPTV-Server/backend/.venv/bin/alembic upgrade head
+ExecStart=/opt/DPTV-Server/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+[Install]
+WantedBy=multi-user.target
