@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
+from app.config import get_settings
 from app.models.base import ChannelType, DummyEpgMode, EpgMatchType
 from app.models.epg import EpgChannel
 from app.models.playlist import (
@@ -16,7 +17,7 @@ from app.models.playlist import (
 )
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
-from app.services import epg_mapper
+from app.services import duplicate_scanner, epg_mapper, scan_jobs
 from app.services.epg_writer import build_xmltv
 from app.services.m3u_writer import build_m3u
 
@@ -718,6 +719,124 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
         count += 1
     await db.commit()
     return {"affected": count}
+
+
+# ---------- Quality scan / duplicate detection ----------
+
+
+class ScanDuplicatesIn(BaseModel):
+    channel_ids: list[int] | None = None
+    """Scan only these channels. Omit to scan every channel currently in the category."""
+    concurrency: int | None = None
+    timeout_seconds: float | None = None
+
+
+@router.post("/{playlist_id}/categories/{category_id}/scan-duplicates")
+async def scan_duplicates(
+    playlist_id: int, category_id: int, payload: ScanDuplicatesIn, db: DbSession, _admin: AdminUser
+) -> dict:
+    """Kicks off a background quality scan (ffprobe against each channel's stream URL) of a
+    category's channels. Probing dozens of live streams over the network is far too slow for
+    one request/response cycle, so this returns a job id immediately and the UI polls
+    GET .../scan-jobs/{job_id} for progress and, once done, the duplicate groups found."""
+    cat = await db.get(PlaylistCategory, category_id)
+    if cat is None or cat.playlist_id != playlist_id:
+        raise HTTPException(404, "Category not found")
+
+    query = select(PlaylistChannel.id).where(PlaylistChannel.playlist_category_id == category_id)
+    if payload.channel_ids:
+        query = query.where(PlaylistChannel.id.in_(payload.channel_ids))
+    result = await db.execute(query)
+    channel_ids = [row[0] for row in result.all()]
+    if not channel_ids:
+        raise HTTPException(400, "No channels to scan")
+
+    settings = get_settings()
+    concurrency = payload.concurrency or settings.scan_default_concurrency
+    concurrency = max(1, min(concurrency, settings.scan_max_concurrency))
+    job = scan_jobs.start_scan_job(
+        playlist_id,
+        category_id,
+        channel_ids,
+        concurrency=concurrency,
+        timeout_seconds=payload.timeout_seconds or settings.scan_default_timeout_seconds,
+    )
+    return {"job_id": job.id, "total": job.total}
+
+
+@router.get("/{playlist_id}/scan-jobs/{job_id}")
+async def get_scan_job(playlist_id: int, job_id: str, _admin: AdminUser) -> dict:
+    job = scan_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Scan job not found")
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "total": job.total,
+        "completed": job.completed,
+        "error": job.error,
+        "results": job.results,
+        "duplicate_groups": job.duplicate_groups,
+    }
+
+
+class DedupeGroupIn(BaseModel):
+    keep_channel_id: int
+    remove_channel_ids: list[int]
+
+
+class ApplyDedupeIn(BaseModel):
+    groups: list[DedupeGroupIn]
+
+
+@router.post("/{playlist_id}/channels/dedupe/apply")
+async def apply_dedupe(playlist_id: int, payload: ApplyDedupeIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Deletes the losing channels from each duplicate group. The frontend sends the exact
+    keep/remove split (defaulted from the scan's ranking but editable by the admin before
+    applying), so this doesn't re-derive "best" itself - it just enforces that a group's keeper
+    is never deleted even if the two lists overlap."""
+    keep_ids = {g.keep_channel_id for g in payload.groups}
+    remove_ids = {cid for g in payload.groups for cid in g.remove_channel_ids} - keep_ids
+    if not remove_ids:
+        return {"removed": 0}
+    result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(remove_ids)))
+    channels = result.scalars().all()
+    for pc in channels:
+        await db.delete(pc)
+    await db.commit()
+    return {"removed": len(channels)}
+
+
+class TagResolutionIn(BaseModel):
+    channel_ids: list[int]
+
+
+@router.post("/{playlist_id}/channels/tag-resolution")
+async def tag_resolution(playlist_id: int, payload: TagResolutionIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Appends the last-detected resolution (e.g. "CNN [1080p]") to each channel's name, from
+    its most recent scan-duplicates probe. Requires a prior successful scan - channels that were
+    never probed, or whose probe didn't detect a resolution, are skipped rather than guessed at.
+    Re-tagging after a later re-scan replaces the old tag instead of stacking a new one on."""
+    result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
+    channels = result.scalars().all()
+
+    tagged: list[dict] = []
+    skipped_locked: list[int] = []
+    skipped_not_scanned: list[int] = []
+    for pc in channels:
+        if pc.name_locked:
+            skipped_locked.append(pc.id)
+            continue
+        label = duplicate_scanner.resolution_label(pc.detected_height)
+        if label is None:
+            skipped_not_scanned.append(pc.id)
+            continue
+        base_name = duplicate_scanner.TRAILING_QUALITY_TAG.sub("", pc.name)
+        pc.name = f"{base_name} [{label}]"
+        tagged.append({"channel_id": pc.id, "name": pc.name})
+
+    await db.commit()
+    return {"tagged": tagged, "skipped_locked": skipped_locked, "skipped_not_scanned": skipped_not_scanned}
 
 
 # ---------- EPG mapping ----------

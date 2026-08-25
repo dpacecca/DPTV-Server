@@ -33,6 +33,7 @@ import {
   IconPlus,
   IconSearch,
   IconTrash,
+  IconVideo,
   IconWand,
 } from "@tabler/icons-react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -81,6 +82,7 @@ export default function PlaylistEditorPage() {
   const [detailChannel, setDetailChannel] = useState<PlaylistChannel | null>(null);
   const [manualChannelOpen, setManualChannelOpen] = useState(false);
   const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
+  const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebounce(search, 300);
 
@@ -271,6 +273,9 @@ export default function PlaylistEditorPage() {
                   >
                     Map EPG...
                   </Button>
+                  <Button size="xs" variant="light" leftSection={<IconVideo size={14} />} onClick={() => setScanDuplicatesOpen(true)}>
+                    Scan Duplicates...
+                  </Button>
                   <Menu>
                     <Menu.Target>
                       <Button size="xs" variant="light" rightSection={<IconDots size={14} />} disabled={selectedChannelIds.size === 0}>
@@ -430,6 +435,17 @@ export default function PlaylistEditorPage() {
           }}
           playlistId={playlistId}
           channelIds={[...selectedChannelIds]}
+          onChanged={invalidate}
+        />
+      )}
+
+      {playlistId && activeCategory && (
+        <ScanDuplicatesModal
+          opened={scanDuplicatesOpen}
+          onClose={() => setScanDuplicatesOpen(false)}
+          playlistId={playlistId}
+          categoryId={activeCategory.id}
+          categoryName={activeCategory.name}
           onChanged={invalidate}
         />
       )}
@@ -953,6 +969,256 @@ function BulkEpgModal({
         >
           Auto-map {channelIds.length} channel(s)
         </Button>
+      </Stack>
+    </Modal>
+  );
+}
+
+interface ScanChannelResult {
+  channel_id: number;
+  name: string;
+  status: string;
+  fps: number | null;
+  bitrate_kbps: number | null;
+  resolution_label: string | null;
+}
+
+interface DuplicateGroup {
+  key: string;
+  channel_ids: number[];
+  best_channel_id: number | null;
+}
+
+interface ScanJobResult {
+  job_id: string;
+  status: "running" | "done" | "error";
+  total: number;
+  completed: number;
+  error: string | null;
+  results: ScanChannelResult[];
+  duplicate_groups: DuplicateGroup[];
+}
+
+// Scans a whole category (not just the current selection) because a duplicate pair is only
+// findable if both members get probed - selecting just one of them would miss the match. The
+// scan itself runs as a background job (GET .../scan-jobs/{id} polled below) rather than one
+// request/response, since probing dozens of live streams over the network is too slow to fit in
+// a single HTTP round trip without risking a proxy/browser timeout.
+function ScanDuplicatesModal({
+  opened,
+  onClose,
+  playlistId,
+  categoryId,
+  categoryName,
+  onChanged,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+  categoryId: number;
+  categoryName: string;
+  onChanged: () => void;
+}) {
+  const [concurrency, setConcurrency] = useState(2);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [keepChoice, setKeepChoice] = useState<Record<string, number>>({});
+  const [tagResolution, setTagResolution] = useState(false);
+  const [applySummary, setApplySummary] = useState<{ removed: number; tagged: number } | null>(null);
+
+  const startMutation = useMutation({
+    mutationFn: () =>
+      api
+        .post(`/api/playlists/${playlistId}/categories/${categoryId}/scan-duplicates`, { concurrency })
+        .then((r) => r.data as { job_id: string; total: number }),
+    onSuccess: (data) => {
+      setJobId(data.job_id);
+      setKeepChoice({});
+      setApplySummary(null);
+    },
+  });
+
+  const { data: job } = useQuery<ScanJobResult>({
+    queryKey: ["scan-job", playlistId, jobId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/scan-jobs/${jobId}`).then((r) => r.data),
+    enabled: !!jobId,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 1200 : false),
+  });
+
+  // Default each group's keep choice to the scan's own best-quality pick, once per completed job.
+  useEffect(() => {
+    if (job?.status === "done" && Object.keys(keepChoice).length === 0 && job.duplicate_groups.length > 0) {
+      const defaults: Record<string, number> = {};
+      for (const g of job.duplicate_groups) {
+        if (g.best_channel_id) defaults[g.key] = g.best_channel_id;
+      }
+      setKeepChoice(defaults);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status]);
+
+  const resultById = new Map((job?.results ?? []).map((r) => [r.channel_id, r]));
+  const failedNotInGroups = (job?.results ?? []).filter(
+    (r) => r.status !== "ok" && !(job?.duplicate_groups ?? []).some((g) => g.channel_ids.includes(r.channel_id))
+  );
+
+  const applyMutation = useMutation({
+    mutationFn: async () => {
+      const groups = (job?.duplicate_groups ?? [])
+        .filter((g) => keepChoice[g.key])
+        .map((g) => ({
+          keep_channel_id: keepChoice[g.key],
+          remove_channel_ids: g.channel_ids.filter((id) => id !== keepChoice[g.key]),
+        }))
+        .filter((g) => g.remove_channel_ids.length > 0);
+      const removeIds = new Set(groups.flatMap((g) => g.remove_channel_ids));
+
+      let removed = 0;
+      if (groups.length > 0) {
+        const r = await api.post(`/api/playlists/${playlistId}/channels/dedupe/apply`, { groups });
+        removed = r.data.removed;
+      }
+
+      let tagged = 0;
+      if (tagResolution) {
+        const channelIds = (job?.results ?? []).map((r) => r.channel_id).filter((id) => !removeIds.has(id));
+        if (channelIds.length > 0) {
+          const r = await api.post(`/api/playlists/${playlistId}/channels/tag-resolution`, { channel_ids: channelIds });
+          tagged = r.data.tagged.length;
+        }
+      }
+      return { removed, tagged };
+    },
+    onSuccess: (data) => {
+      setApplySummary(data);
+      onChanged();
+    },
+  });
+
+  function handleClose() {
+    setJobId(null);
+    setKeepChoice({});
+    setTagResolution(false);
+    setApplySummary(null);
+    onClose();
+  }
+
+  return (
+    <Modal opened={opened} onClose={handleClose} title={`Scan "${categoryName}" for duplicates`} size="lg">
+      <Stack>
+        {!jobId && (
+          <>
+            <Text size="sm" c="dimmed">
+              Probes every channel's stream (via ffprobe) to detect its real resolution,
+              framerate, and bitrate, then groups channels that look like the same feed at
+              different qualities (e.g. "ESPN" / "ESPN HD"). This hits every stream directly and
+              can take a while for a large category — keep concurrency low if your provider caps
+              concurrent connections.
+            </Text>
+            <NumberInput
+              label="Concurrency"
+              description="How many streams to probe at once"
+              value={concurrency}
+              onChange={(v) => setConcurrency(typeof v === "number" ? v : 2)}
+              min={1}
+              max={8}
+            />
+            <Button onClick={() => startMutation.mutate()} loading={startMutation.isPending}>
+              Start Scan
+            </Button>
+          </>
+        )}
+
+        {jobId && job?.status === "running" && (
+          <Stack align="center" py="md">
+            <Loader size="sm" />
+            <Text size="sm">
+              Scanning... {job.completed} / {job.total}
+            </Text>
+          </Stack>
+        )}
+
+        {jobId && job?.status === "error" && (
+          <Text size="sm" c="red">
+            Scan failed: {job.error}
+          </Text>
+        )}
+
+        {jobId && job?.status === "done" && !applySummary && (
+          <>
+            {job.duplicate_groups.length === 0 ? (
+              <Text size="sm" c="dimmed">
+                No duplicate channels found in this category.
+              </Text>
+            ) : (
+              <Stack gap="md">
+                <Text size="sm" fw={600}>
+                  {job.duplicate_groups.length} duplicate group(s) found — pick which channel to keep in each
+                </Text>
+                {job.duplicate_groups.map((g) => (
+                  <Paper key={g.key} withBorder p="xs">
+                    <Text size="xs" fw={600} tt="capitalize" mb={4}>
+                      {g.key}
+                    </Text>
+                    <Stack gap={2}>
+                      {g.channel_ids.map((cid) => {
+                        const r = resultById.get(cid);
+                        return (
+                          <Group key={cid} justify="space-between" wrap="nowrap">
+                            <Group gap="xs" wrap="nowrap">
+                              <Checkbox
+                                size="xs"
+                                checked={keepChoice[g.key] === cid}
+                                onChange={() => setKeepChoice((prev) => ({ ...prev, [g.key]: cid }))}
+                              />
+                              <Text size="xs">{r?.name}</Text>
+                            </Group>
+                            <Text size="xs" c={r?.status === "ok" ? "dimmed" : "red"}>
+                              {r?.status === "ok"
+                                ? `${r.resolution_label ?? "?"} · ${r.fps ?? "?"}fps · ${r.bitrate_kbps ?? "?"}kbps`
+                                : r?.status}
+                            </Text>
+                          </Group>
+                        );
+                      })}
+                    </Stack>
+                  </Paper>
+                ))}
+              </Stack>
+            )}
+
+            {failedNotInGroups.length > 0 && (
+              <Text size="xs" c="dimmed">
+                Couldn't probe: {failedNotInGroups.map((r) => r.name).join(", ")}
+              </Text>
+            )}
+
+            <Checkbox
+              label='Also tag detected resolution into channel names (e.g. "ESPN [1080p]")'
+              checked={tagResolution}
+              onChange={(e) => setTagResolution(e.currentTarget.checked)}
+            />
+
+            <Button
+              onClick={() => applyMutation.mutate()}
+              loading={applyMutation.isPending}
+              disabled={Object.keys(keepChoice).length === 0 && !tagResolution}
+            >
+              Apply
+            </Button>
+          </>
+        )}
+
+        {applySummary && (
+          <Stack gap={4}>
+            <Text size="sm" c="green">
+              Removed {applySummary.removed} duplicate channel(s)
+              {tagResolution ? `, tagged ${applySummary.tagged} channel name(s)` : ""}.
+            </Text>
+            <Button variant="light" onClick={handleClose}>
+              Done
+            </Button>
+          </Stack>
+        )}
       </Stack>
     </Modal>
   );

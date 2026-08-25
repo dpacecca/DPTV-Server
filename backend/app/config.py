@@ -22,6 +22,16 @@ class Settings(BaseSettings):
 
     http_timeout_seconds: float = 30.0
 
+    ffprobe_path: str = "ffprobe"
+    """Path to the ffprobe binary, used to detect stream resolution/framerate/bitrate when
+    scanning a category for duplicate channels. Requires the `ffmpeg` system package."""
+    scan_default_concurrency: int = 2
+    """How many streams to probe at once by default. Kept low because IPTV providers commonly
+    cap concurrent connections per account, and a scan is a background admin action, not
+    something that needs to race to finish."""
+    scan_max_concurrency: int = 8
+    scan_default_timeout_seconds: float = 8.0
+
 
 @lru_cache
 def get_settings() -> Settings:
