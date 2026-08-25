@@ -154,6 +154,32 @@ whatever scheme/host actually reaches players from the outside (e.g.
 nginx site itself only speaks plain HTTP internally — Cloudflare
 terminates TLS at its edge).
 
+### Updating a native install
+
+`deploy/update.sh` runs the full update sequence for the native/systemd
+setup above: `git pull`, reinstall backend deps, rebuild the frontend, then
+`systemctl restart dptv-backend` (which also re-runs `alembic upgrade head`
+via the service's `ExecStartPre`, so pending DB migrations are applied
+automatically on restart — no separate migration step needed).
+
+Run it directly:
+
+```bash
+sudo /opt/DPTV-Server/deploy/update.sh
+```
+
+Or install it once as a plain `update` command:
+
+```bash
+sudo ln -s /opt/DPTV-Server/deploy/update.sh /usr/local/bin/update
+```
+
+after which updating is just:
+
+```bash
+sudo update
+```
+
 ## Project layout
 
 ```
@@ -163,7 +189,7 @@ backend/    FastAPI app, SQLAlchemy models, Alembic migrations, services
                      fuzzy EPG mapper, dummy EPG generator
   app/api/routes/   Admin REST API + the public Xtream-Codes-compatible API
 frontend/   React + Vite + Mantine admin UI
-deploy/     systemd unit examples
+deploy/     systemd unit examples, update script for native installs
 ```
 
 ## Status / roadmap
