@@ -1,8 +1,10 @@
-from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, TimestampMixin, enum_column
+from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, ProbeStatus, TimestampMixin, enum_column
 
 
 class Playlist(Base, TimestampMixin):
@@ -90,6 +92,15 @@ class PlaylistChannel(Base, TimestampMixin):
 
     dummy_epg_mode: Mapped[DummyEpgMode] = mapped_column(enum_column(DummyEpgMode), default=DummyEpgMode.INHERIT)
     dummy_epg_program_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    detected_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detected_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detected_fps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detected_bitrate_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    probe_status: Mapped[ProbeStatus | None] = mapped_column(enum_column(ProbeStatus), nullable=True)
+    last_probed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """Quality metrics from the last "scan for duplicates" ffprobe pass, if this channel has
+    ever been scanned. Used both to rank duplicate candidates and to tag resolution into names."""
 
     category: Mapped["PlaylistCategory"] = relationship(back_populates="channels")
     source_channel: Mapped["SourceChannel | None"] = relationship()

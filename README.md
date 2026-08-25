@@ -35,6 +35,13 @@ instead of local files.
   XC users you create (independent of the admin login). Streams are
   served as **pass-through 302 redirects** to the original provider URL —
   DPTV-Server never proxies the actual video, so it stays lightweight.
+- **Duplicate quality scan**: scan a category's channels (probed via
+  `ffprobe`) to detect actual resolution/framerate/bitrate, group channels
+  that are the same feed at different qualities (e.g. "ESPN" / "ESPN HD" /
+  "ESPN FHD"), and remove all but the best one — or tag the detected
+  resolution into the channel name (e.g. `ESPN [1080p]`) instead of
+  removing anything. Requires the `ffmpeg` package on the server (see
+  Running it below).
 
 ## Architecture
 
@@ -93,7 +100,7 @@ avoids needing privileged/nesting container features at all.
 ```bash
 # System packages
 sudo apt update
-sudo apt install -y python3-venv python3-pip postgresql nginx nodejs npm git
+sudo apt install -y python3-venv python3-pip postgresql nginx nodejs npm git ffmpeg
 
 # Database
 sudo -u postgres psql -c "CREATE ROLE dptv LOGIN PASSWORD 'change-me';"
@@ -197,7 +204,9 @@ deploy/     systemd unit examples, update script for native installs
 Implemented: source/EPG import, playlist builder with move/copy/bulk edit,
 EPG auto/manual mapping, dummy EPG (name + event-parsing), scheduled sync
 with auto-add/auto-remove, XC server with pass-through streaming, XC user
-management, sync history.
+management, sync history, duplicate-channel quality scanning (ffprobe-based
+resolution/framerate/bitrate detection, keep-the-best dedup, resolution
+tagging into channel names).
 
 Not yet built (lower priority for a self-hosted single-VM setup, since
 IPTVBoss's cloud-sync/email features existed mainly to work around it

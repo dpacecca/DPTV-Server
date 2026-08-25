@@ -59,3 +59,14 @@ class SyncStatus(str, enum.Enum):
     SUCCESS = "success"
     FAILED = "failed"
     PARTIAL = "partial"
+
+
+class ProbeStatus(str, enum.Enum):
+    """Outcome of the last ffprobe quality scan for a channel."""
+
+    OK = "ok"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+    UNREACHABLE = "unreachable"
+    NO_VIDEO_STREAM = "no_video_stream"
+    NO_URL = "no_url"
