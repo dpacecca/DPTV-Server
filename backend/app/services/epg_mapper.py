@@ -1,17 +1,7 @@
-import re
-
 from rapidfuzz import fuzz, process
 
 from app.models.epg import EpgChannel
-
-_NOISE_RE = re.compile(
-    r"\b(hd|fhd|uhd|4k|sd|hevc|h265|h264|us|usa|uk|ca|vip|backup|feed)\b|[^\w\s]", re.IGNORECASE
-)
-
-
-def normalize_name(name: str) -> str:
-    name = _NOISE_RE.sub(" ", name)
-    return re.sub(r"\s+", " ", name).strip().lower()
+from app.services.name_normalize import normalize_name
 
 
 def search_candidates(
