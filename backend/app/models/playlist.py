@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -24,6 +24,25 @@ class Playlist(Base, TimestampMixin):
     categories: Mapped[list["PlaylistCategory"]] = relationship(
         back_populates="playlist", cascade="all, delete-orphan", order_by="PlaylistCategory.sort_order"
     )
+
+
+class DummyEpgRule(Base, TimestampMixin):
+    """A custom regex tried against a channel's name when its dummy EPG mode is "event", before
+    falling back to the built-in date/time parser. Playlist-wide (not per-category) - which
+    channels use "event" mode at all is already controlled by dummy_epg_mode, so this is just
+    "how" event mode parses, tried in sort_order with the first match winning."""
+
+    __tablename__ = "dummy_epg_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    pattern: Mapped[str] = mapped_column(Text)
+    """Python regex. Must define named groups (?P<hour>..) and (?P<minute>..); optionally
+    (?P<ampm>..), (?P<month>..), (?P<day>..), (?P<year>..), and (?P<title>..) (the cleaned
+    program title - if omitted, the matched portion is stripped out of the name instead)."""
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class PlaylistCategory(Base, TimestampMixin):

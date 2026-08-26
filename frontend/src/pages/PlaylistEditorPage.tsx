@@ -23,7 +23,10 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import {
+  IconArrowDown,
   IconArrowRight,
+  IconArrowUp,
+  IconClock,
   IconCopy,
   IconDots,
   IconDownload,
@@ -83,6 +86,7 @@ export default function PlaylistEditorPage() {
   const [manualChannelOpen, setManualChannelOpen] = useState(false);
   const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
   const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
+  const [dummyEpgRulesOpen, setDummyEpgRulesOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebounce(search, 300);
 
@@ -169,6 +173,9 @@ export default function PlaylistEditorPage() {
           <Title order={3}>{playlist.name}</Title>
         </Group>
         <Group>
+          <Button leftSection={<IconClock size={16} />} variant="light" onClick={() => setDummyEpgRulesOpen(true)}>
+            Dummy EPG Rules...
+          </Button>
           <Button leftSection={<IconDownload size={16} />} variant="light" onClick={() => setImportOpen(true)}>
             Import from Source
           </Button>
@@ -447,6 +454,14 @@ export default function PlaylistEditorPage() {
           categoryId={activeCategory.id}
           categoryName={activeCategory.name}
           onChanged={invalidate}
+        />
+      )}
+
+      {playlistId && (
+        <DummyEpgRulesModal
+          opened={dummyEpgRulesOpen}
+          onClose={() => setDummyEpgRulesOpen(false)}
+          playlistId={playlistId}
         />
       )}
     </Stack>
@@ -1451,6 +1466,274 @@ function ImportModal({
           }
         >
           Import
+        </Button>
+      </Stack>
+    </Modal>
+  );
+}
+
+interface DummyEpgRule {
+  id: number;
+  name: string;
+  pattern: string;
+  enabled: boolean;
+  sort_order: number;
+}
+
+interface DummyEpgRuleTestResult {
+  matched: boolean;
+  error: string | null;
+  start?: string;
+  title?: string;
+}
+
+// Manages the playlist-wide custom regex rules tried (in order, first match wins) when a
+// channel's dummy EPG mode is "event", before falling back to the built-in month/day parser -
+// for naming conventions the built-in parser doesn't handle (different date order, separators,
+// or a title that needs its own capture group).
+function DummyEpgRulesModal({
+  opened,
+  onClose,
+  playlistId,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+}) {
+  const qc = useQueryClient();
+  const [newName, setNewName] = useState("");
+  const [newPattern, setNewPattern] = useState("");
+  const [sampleName, setSampleName] = useState("");
+  const [testResult, setTestResult] = useState<DummyEpgRuleTestResult | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editPattern, setEditPattern] = useState("");
+
+  const { data: rules } = useQuery<DummyEpgRule[]>({
+    queryKey: ["dummy-epg-rules", playlistId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
+    enabled: opened,
+  });
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["dummy-epg-rules", playlistId] });
+  const errorMessage = (err: unknown) =>
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Request failed";
+
+  const createMutation = useMutation({
+    mutationFn: () => api.post(`/api/playlists/${playlistId}/dummy-epg-rules`, { name: newName, pattern: newPattern }),
+    onSuccess: () => {
+      invalidate();
+      setNewName("");
+      setNewPattern("");
+      setTestResult(null);
+      notifications.show({ message: "Rule added", color: "green" });
+    },
+    onError: (err) => notifications.show({ message: errorMessage(err), color: "red" }),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (payload: { id: number; name?: string; pattern?: string; enabled?: boolean }) => {
+      const { id, ...body } = payload;
+      return api.patch(`/api/playlists/${playlistId}/dummy-epg-rules/${id}`, body);
+    },
+    onSuccess: () => {
+      invalidate();
+      setEditingId(null);
+    },
+    onError: (err) => notifications.show({ message: errorMessage(err), color: "red" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/playlists/${playlistId}/dummy-epg-rules/${id}`),
+    onSuccess: invalidate,
+  });
+
+  const reorderMutation = useMutation({
+    mutationFn: (items: { id: number; sort_order: number }[]) =>
+      api.post(`/api/playlists/${playlistId}/dummy-epg-rules/reorder`, items),
+    onSuccess: invalidate,
+  });
+
+  const testMutation = useMutation({
+    mutationFn: () =>
+      api
+        .post(`/api/playlists/${playlistId}/dummy-epg-rules/test`, { pattern: newPattern, sample_name: sampleName })
+        .then((r) => r.data as DummyEpgRuleTestResult),
+    onSuccess: setTestResult,
+  });
+
+  function moveRule(index: number, direction: -1 | 1) {
+    if (!rules) return;
+    const target = index + direction;
+    if (target < 0 || target >= rules.length) return;
+    const reordered = [...rules];
+    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    reorderMutation.mutate(reordered.map((r, i) => ({ id: r.id, sort_order: i })));
+  }
+
+  function handleClose() {
+    setEditingId(null);
+    setTestResult(null);
+    onClose();
+  }
+
+  return (
+    <Modal opened={opened} onClose={handleClose} title="Dummy EPG Rules" size="lg">
+      <Stack>
+        <Text size="xs" c="dimmed">
+          When a channel's Dummy EPG mode is "Parse event date/time from name", these rules are
+          tried in order (first match wins) to pull a date/time and clean title out of the
+          channel name, before falling back to the built-in parser. A pattern must define named
+          groups (?P&lt;hour&gt;..) and (?P&lt;minute&gt;..); optionally (?P&lt;ampm&gt;..),
+          (?P&lt;month&gt;..), (?P&lt;day&gt;..), (?P&lt;year&gt;..), and (?P&lt;title&gt;..) (the
+          cleaned title — if omitted, the matched portion is stripped out of the name instead).
+        </Text>
+
+        <Stack gap={4}>
+          {(rules ?? []).map((rule, i) => (
+            <Paper key={rule.id} withBorder p="xs">
+              {editingId === rule.id ? (
+                <Stack gap={6}>
+                  <TextInput size="xs" label="Name" value={editName} onChange={(e) => setEditName(e.currentTarget.value)} />
+                  <TextInput
+                    size="xs"
+                    label="Pattern"
+                    value={editPattern}
+                    onChange={(e) => setEditPattern(e.currentTarget.value)}
+                    styles={{ input: { fontFamily: "monospace" } }}
+                  />
+                  <Group gap="xs">
+                    <Button
+                      size="xs"
+                      onClick={() => updateMutation.mutate({ id: rule.id, name: editName, pattern: editPattern })}
+                      loading={updateMutation.isPending}
+                    >
+                      Save
+                    </Button>
+                    <Button size="xs" variant="subtle" onClick={() => setEditingId(null)}>
+                      Cancel
+                    </Button>
+                  </Group>
+                </Stack>
+              ) : (
+                <Group justify="space-between" wrap="nowrap">
+                  <Box style={{ minWidth: 0 }}>
+                    <Group gap={6}>
+                      <Text size="sm" fw={600}>
+                        {rule.name}
+                      </Text>
+                      {!rule.enabled && (
+                        <Badge size="xs" color="gray">
+                          Disabled
+                        </Badge>
+                      )}
+                    </Group>
+                    <Text size="xs" c="dimmed" ff="monospace" style={{ wordBreak: "break-all" }}>
+                      {rule.pattern}
+                    </Text>
+                  </Box>
+                  <Group gap={4} wrap="nowrap">
+                    <ActionIcon variant="subtle" size="sm" disabled={i === 0} onClick={() => moveRule(i, -1)}>
+                      <IconArrowUp size={14} />
+                    </ActionIcon>
+                    <ActionIcon
+                      variant="subtle"
+                      size="sm"
+                      disabled={i === (rules?.length ?? 0) - 1}
+                      onClick={() => moveRule(i, 1)}
+                    >
+                      <IconArrowDown size={14} />
+                    </ActionIcon>
+                    <Switch
+                      size="xs"
+                      checked={rule.enabled}
+                      onChange={(e) => updateMutation.mutate({ id: rule.id, enabled: e.currentTarget.checked })}
+                    />
+                    <ActionIcon
+                      variant="subtle"
+                      size="sm"
+                      onClick={() => {
+                        setEditingId(rule.id);
+                        setEditName(rule.name);
+                        setEditPattern(rule.pattern);
+                      }}
+                    >
+                      <IconEdit size={14} />
+                    </ActionIcon>
+                    <ActionIcon
+                      variant="subtle"
+                      color="red"
+                      size="sm"
+                      onClick={() => {
+                        if (confirm(`Delete rule "${rule.name}"?`)) deleteMutation.mutate(rule.id);
+                      }}
+                    >
+                      <IconTrash size={14} />
+                    </ActionIcon>
+                  </Group>
+                </Group>
+              )}
+            </Paper>
+          ))}
+          {rules?.length === 0 && (
+            <Text size="sm" c="dimmed">
+              No custom rules yet — "event" mode uses the built-in month/day parser.
+            </Text>
+          )}
+        </Stack>
+
+        <Text size="sm" fw={600} mt="sm">
+          Add a rule
+        </Text>
+        <TextInput
+          size="xs"
+          label="Name"
+          placeholder="e.g. DD-MM sports format"
+          value={newName}
+          onChange={(e) => setNewName(e.currentTarget.value)}
+        />
+        <TextInput
+          size="xs"
+          label="Pattern"
+          placeholder="(?P<title>.+?)\s+(?P<day>\d{1,2})-(?P<month>\d{1,2})\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+          value={newPattern}
+          onChange={(e) => setNewPattern(e.currentTarget.value)}
+          styles={{ input: { fontFamily: "monospace" } }}
+        />
+
+        <Group align="flex-end" gap="xs">
+          <TextInput
+            size="xs"
+            label="Test against a sample channel name"
+            placeholder="Real Madrid vs Barcelona 25-08 21:00"
+            value={sampleName}
+            onChange={(e) => setSampleName(e.currentTarget.value)}
+            style={{ flex: 1 }}
+          />
+          <Button
+            size="xs"
+            variant="light"
+            onClick={() => testMutation.mutate()}
+            loading={testMutation.isPending}
+            disabled={!newPattern || !sampleName}
+          >
+            Test
+          </Button>
+        </Group>
+        {testResult &&
+          (testResult.matched ? (
+            <Text size="xs" c="green">
+              Matched — title: "{testResult.title}", start:{" "}
+              {testResult.start ? new Date(testResult.start).toLocaleString() : "?"}
+            </Text>
+          ) : (
+            <Text size="xs" c={testResult.error ? "red" : "orange"}>
+              {testResult.error ?? "No match against this sample name."}
+            </Text>
+          ))}
+
+        <Button onClick={() => createMutation.mutate()} loading={createMutation.isPending} disabled={!newName || !newPattern}>
+          Add Rule
         </Button>
       </Stack>
     </Modal>

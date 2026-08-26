@@ -23,45 +23,111 @@ def _strip_matches(text: str, *matches: re.Match) -> str:
     return text or text
 
 
-def parse_event_datetime(channel_name: str, now: datetime | None = None) -> tuple[datetime, str] | None:
-    """Extract a date/time embedded in a channel name, e.g. 'Team A vs Team B 08/24 8:00PM ET'.
+REQUIRED_RULE_GROUPS = ("hour", "minute")
+OPTIONAL_RULE_GROUPS = ("ampm", "month", "day", "year", "title")
 
-    Returns (event_start_utc, cleaned_title) or None if no time could be found.
-    """
-    now = now or datetime.now(timezone.utc)
-    time_match = TIME_RE.search(channel_name)
-    if not time_match:
-        return None
-    date_match = DATE_RE.search(channel_name)
 
-    hour = int(time_match.group("hour"))
-    minute = int(time_match.group("minute"))
-    ampm = (time_match.group("ampm") or "").lower().replace(".", "")
-    if ampm == "pm" and hour != 12:
+def validate_rule_pattern(pattern_text: str) -> re.Pattern:
+    """Compiles a custom dummy-EPG rule pattern and checks it defines the group names the
+    parser needs. Raises ValueError (not re.error) with a message meant to be shown to the
+    admin who wrote the pattern, so the API layer can turn it straight into a 400."""
+    try:
+        compiled = re.compile(pattern_text)
+    except re.error as exc:
+        raise ValueError(f"Invalid regex: {exc}") from exc
+    missing = [g for g in REQUIRED_RULE_GROUPS if g not in compiled.groupindex]
+    if missing:
+        raise ValueError(f"Pattern must include named group(s): {', '.join(f'(?P<{g}>...)' for g in missing)}")
+    return compiled
+
+
+def _build_event_datetime(
+    hour_str: str, minute_str: str, ampm: str | None, month_str: str | None, day_str: str | None,
+    year_str: str | None, now: datetime,
+) -> datetime | None:
+    hour = int(hour_str)
+    minute = int(minute_str)
+    ampm_norm = (ampm or "").lower().replace(".", "")
+    if ampm_norm == "pm" and hour != 12:
         hour += 12
-    elif ampm == "am" and hour == 12:
+    elif ampm_norm == "am" and hour == 12:
         hour = 0
     if hour > 23:
         return None
 
-    if date_match:
-        month = int(date_match.group("month"))
-        day = int(date_match.group("day"))
-        year_raw = date_match.group("year")
-        if year_raw:
-            year = int(year_raw)
+    if month_str and day_str:
+        month, day = int(month_str), int(day_str)
+        if year_str:
+            year = int(year_str)
             if year < 100:
                 year += 2000
         else:
             year = now.year
         try:
-            event_dt = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+            return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
         except ValueError:
             return None
-    else:
-        event_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if event_dt < now - timedelta(hours=6):
-            event_dt += timedelta(days=1)
+
+    event_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if event_dt < now - timedelta(hours=6):
+        event_dt += timedelta(days=1)
+    return event_dt
+
+
+def _apply_custom_rule(channel_name: str, pattern: re.Pattern, now: datetime) -> tuple[datetime, str] | None:
+    m = pattern.search(channel_name)
+    if not m:
+        return None
+    groups = m.groupdict()
+    hour_str, minute_str = groups.get("hour"), groups.get("minute")
+    if not hour_str or not minute_str:
+        return None
+    event_dt = _build_event_datetime(
+        hour_str, minute_str, groups.get("ampm"), groups.get("month"), groups.get("day"), groups.get("year"), now
+    )
+    if event_dt is None:
+        return None
+    title = groups.get("title")
+    if not title:
+        title = _strip_matches(channel_name, m)
+    return event_dt, title.strip()
+
+
+def parse_event_datetime(
+    channel_name: str, now: datetime | None = None, custom_patterns: list[re.Pattern] | None = None
+) -> tuple[datetime, str] | None:
+    """Extract a date/time embedded in a channel name, e.g. 'Team A vs Team B 08/24 8:00PM ET'.
+
+    Tries each of `custom_patterns` in order first (playlist-configured rules, for naming
+    conventions the built-in parser doesn't handle - different date order, different separators,
+    a title that needs its own capture group instead of "everything but the date/time"), falling
+    back to the built-in month/day + time parser below if none of them match.
+
+    Returns (event_start_utc, cleaned_title) or None if no time could be found.
+    """
+    now = now or datetime.now(timezone.utc)
+
+    for pattern in custom_patterns or []:
+        result = _apply_custom_rule(channel_name, pattern, now)
+        if result:
+            return result
+
+    time_match = TIME_RE.search(channel_name)
+    if not time_match:
+        return None
+    date_match = DATE_RE.search(channel_name)
+
+    event_dt = _build_event_datetime(
+        time_match.group("hour"),
+        time_match.group("minute"),
+        time_match.group("ampm"),
+        date_match.group("month") if date_match else None,
+        date_match.group("day") if date_match else None,
+        date_match.group("year") if date_match else None,
+        now,
+    )
+    if event_dt is None:
+        return None
 
     title = _strip_matches(channel_name, time_match, date_match) if date_match else _strip_matches(
         channel_name, time_match
@@ -84,9 +150,13 @@ def generate_name_dummy(
 
 
 def generate_event_dummy(
-    channel_name: str, window_start: datetime, window_hours: int, program_minutes: int
+    channel_name: str,
+    window_start: datetime,
+    window_hours: int,
+    program_minutes: int,
+    custom_patterns: list[re.Pattern] | None = None,
 ) -> list[DummyProgram]:
-    parsed = parse_event_datetime(channel_name, now=window_start)
+    parsed = parse_event_datetime(channel_name, now=window_start, custom_patterns=custom_patterns)
     if parsed is None:
         return generate_name_dummy(channel_name, window_start, window_hours, program_minutes)
 

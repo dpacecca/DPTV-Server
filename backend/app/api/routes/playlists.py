@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType
 from app.models.epg import EpgChannel
 from app.models.playlist import (
+    DummyEpgRule,
     Playlist,
     PlaylistCategory,
     PlaylistCategorySourceLink,
@@ -17,7 +18,7 @@ from app.models.playlist import (
 )
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
-from app.services import duplicate_scanner, epg_mapper, scan_jobs
+from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
 from app.services.epg_writer import build_xmltv
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
@@ -1042,6 +1043,115 @@ async def assign_epg(playlist_id: int, channel_id: int, payload: EpgAssign, db: 
     pc.epg_match_type = EpgMatchType.MANUAL if payload.epg_channel_id else EpgMatchType.NONE
     await db.commit()
     return {"ok": True}
+
+
+# ---------- Dummy EPG rules (advanced "event" mode parsing) ----------
+
+
+def _serialize_dummy_epg_rule(rule: DummyEpgRule) -> dict:
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "pattern": rule.pattern,
+        "enabled": rule.enabled,
+        "sort_order": rule.sort_order,
+    }
+
+
+def _validate_pattern_or_400(pattern: str) -> None:
+    try:
+        dummy_epg.validate_rule_pattern(pattern)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class DummyEpgRuleIn(BaseModel):
+    name: str
+    pattern: str
+    enabled: bool = True
+
+
+@router.get("/{playlist_id}/dummy-epg-rules")
+async def list_dummy_epg_rules(playlist_id: int, db: DbSession, _admin: AdminUser) -> list[dict]:
+    result = await db.execute(
+        select(DummyEpgRule).where(DummyEpgRule.playlist_id == playlist_id).order_by(DummyEpgRule.sort_order)
+    )
+    return [_serialize_dummy_epg_rule(r) for r in result.scalars().all()]
+
+
+@router.post("/{playlist_id}/dummy-epg-rules")
+async def create_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleIn, db: DbSession, _admin: AdminUser) -> dict:
+    _validate_pattern_or_400(payload.pattern)
+    count = await db.scalar(
+        select(func.count()).select_from(DummyEpgRule).where(DummyEpgRule.playlist_id == playlist_id)
+    )
+    rule = DummyEpgRule(playlist_id=playlist_id, sort_order=count, **payload.model_dump())
+    db.add(rule)
+    await db.commit()
+    return _serialize_dummy_epg_rule(rule)
+
+
+class DummyEpgRuleUpdate(BaseModel):
+    name: str | None = None
+    pattern: str | None = None
+    enabled: bool | None = None
+
+
+@router.patch("/{playlist_id}/dummy-epg-rules/{rule_id}")
+async def update_dummy_epg_rule(
+    playlist_id: int, rule_id: int, payload: DummyEpgRuleUpdate, db: DbSession, _admin: AdminUser
+) -> dict:
+    rule = await db.get(DummyEpgRule, rule_id)
+    if rule is None or rule.playlist_id != playlist_id:
+        raise HTTPException(404, "Rule not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "pattern" in updates:
+        _validate_pattern_or_400(updates["pattern"])
+    for key, value in updates.items():
+        setattr(rule, key, value)
+    await db.commit()
+    return _serialize_dummy_epg_rule(rule)
+
+
+@router.delete("/{playlist_id}/dummy-epg-rules/{rule_id}")
+async def delete_dummy_epg_rule(playlist_id: int, rule_id: int, db: DbSession, _admin: AdminUser) -> dict:
+    rule = await db.get(DummyEpgRule, rule_id)
+    if rule is None or rule.playlist_id != playlist_id:
+        raise HTTPException(404, "Rule not found")
+    await db.delete(rule)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/{playlist_id}/dummy-epg-rules/reorder")
+async def reorder_dummy_epg_rules(playlist_id: int, items: list[ReorderItem], db: DbSession, _admin: AdminUser) -> dict:
+    positions = {item.id: item.sort_order for item in items}
+    result = await db.execute(select(DummyEpgRule).where(DummyEpgRule.id.in_(positions.keys())))
+    for rule in result.scalars().all():
+        if rule.playlist_id == playlist_id:
+            rule.sort_order = positions[rule.id]
+    await db.commit()
+    return {"ok": True}
+
+
+class DummyEpgRuleTestIn(BaseModel):
+    pattern: str
+    sample_name: str
+
+
+@router.post("/{playlist_id}/dummy-epg-rules/test")
+async def test_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleTestIn, _admin: AdminUser) -> dict:
+    """Tries a not-yet-saved pattern against a sample channel name so the admin can see whether
+    it matches, and what it parses out, before committing to it."""
+    try:
+        compiled = dummy_epg.validate_rule_pattern(payload.pattern)
+    except ValueError as exc:
+        return {"matched": False, "error": str(exc)}
+    result = dummy_epg.parse_event_datetime(payload.sample_name, custom_patterns=[compiled])
+    if result is None:
+        return {"matched": False, "error": None}
+    event_start, title = result
+    return {"matched": True, "error": None, "start": event_start.isoformat(), "title": title}
 
 
 # ---------- Output ----------
