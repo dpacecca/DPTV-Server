@@ -1,13 +1,13 @@
 import re
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
-from app.models.base import ChannelType, DummyEpgMode, EpgMatchType
+from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType
 from app.models.epg import EpgChannel
 from app.models.playlist import (
     Playlist,
@@ -19,6 +19,7 @@ from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services import duplicate_scanner, epg_mapper, scan_jobs
 from app.services.epg_writer import build_xmltv
+from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
 
 router = APIRouter(prefix="/api/playlists", tags=["playlists"])
@@ -158,6 +159,108 @@ async def create_playlist(payload: PlaylistIn, db: DbSession, _admin: AdminUser)
     db.add(pl)
     await db.commit()
     return await _get_playlist_with_category_summaries(db, pl.id)
+
+
+_STREAM_ID_RE = re.compile(r"/(?:live|movie|series)/[^/]+/[^/]+/([^/.]+)(?:\.[a-zA-Z0-9]+)?/?$")
+
+
+def _extract_stream_id(url: str) -> str | None:
+    """Pulls the stream id out of an Xtream-style pass-through URL
+    (".../live/{user}/{pass}/{id}.{ext}"), so a channel can still be matched to its source
+    channel even if the id's own extension differs from what's on record (e.g. a re-exported
+    playlist normalized every URL to .m3u8)."""
+    m = _STREAM_ID_RE.search(url)
+    return m.group(1) if m else None
+
+
+@router.post("/import-m3u")
+async def import_m3u_playlist(
+    db: DbSession,
+    _admin: AdminUser,
+    file: UploadFile = File(...),
+    source_id: int = Form(...),
+    playlist_name: str = Form(...),
+) -> dict:
+    """Creates a new playlist from an uploaded M3U file (e.g. exported from another tool like
+    IPTVBoss), matching each entry back to a channel already synced from `source_id` by its
+    stream URL - so the imported playlist keeps working through this source (re-sync aware,
+    survives the provider rotating credentials) instead of hardcoding the URLs the file shipped
+    with. A channel that can't be matched still imports fine, just using its own URL directly."""
+    source = await db.get(Source, source_id)
+    if source is None:
+        raise HTTPException(404, "Source not found")
+
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+    entries = parse_m3u(text)
+    if not entries:
+        raise HTTPException(400, "No channels found in this M3U file")
+
+    result = await db.execute(
+        select(SourceChannel)
+        .join(SourceCategory, SourceChannel.source_category_id == SourceCategory.id)
+        .where(SourceCategory.source_id == source_id)
+    )
+    source_channels = result.scalars().all()
+    by_url = {sc.stream_url: sc for sc in source_channels if sc.stream_url}
+    by_stream_id = (
+        {(sc.stream_type, sc.external_stream_id): sc for sc in source_channels}
+        if source.type == SourceType.XTREAM
+        else {}
+    )
+
+    playlist = Playlist(name=playlist_name)
+    db.add(playlist)
+    await db.flush()
+
+    categories: dict[tuple[str, ChannelType], PlaylistCategory] = {}
+    matched = 0
+    unmatched_names: list[str] = []
+
+    for i, entry in enumerate(entries):
+        group = entry.group_title or "Uncategorized"
+        key = (group, entry.channel_type)
+        cat = categories.get(key)
+        if cat is None:
+            cat = PlaylistCategory(
+                playlist_id=playlist.id, name=group, channel_type=entry.channel_type, sort_order=len(categories)
+            )
+            db.add(cat)
+            await db.flush()
+            categories[key] = cat
+
+        matched_channel = by_url.get(entry.url)
+        if matched_channel is None:
+            stream_id = _extract_stream_id(entry.url)
+            if stream_id:
+                matched_channel = by_stream_id.get((entry.channel_type, stream_id))
+
+        db.add(
+            PlaylistChannel(
+                playlist_category_id=cat.id,
+                source_channel_id=matched_channel.id if matched_channel else None,
+                name=entry.name,
+                manual_stream_url=None if matched_channel else entry.url,
+                sort_order=i,
+            )
+        )
+        if matched_channel:
+            matched += 1
+        else:
+            unmatched_names.append(entry.name)
+
+    await db.commit()
+    return {
+        "playlist_id": playlist.id,
+        "categories": len(categories),
+        "channels": len(entries),
+        "matched": matched,
+        "unmatched": len(unmatched_names),
+        "unmatched_names": unmatched_names[:50],
+    }
 
 
 @router.get("/{playlist_id}")
