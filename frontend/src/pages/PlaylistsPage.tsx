@@ -1,10 +1,25 @@
 import { useState } from "react";
-import { ActionIcon, Badge, Button, Group, Modal, Paper, Stack, Switch, Table, TextInput, Title } from "@mantine/core";
-import { IconPlus, IconTrash } from "@tabler/icons-react";
+import {
+  ActionIcon,
+  Badge,
+  Button,
+  FileInput,
+  Group,
+  Modal,
+  Paper,
+  Select,
+  Stack,
+  Switch,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from "@mantine/core";
+import { IconPlus, IconTrash, IconUpload } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
-import type { Playlist } from "../api/types";
+import type { Playlist, Source } from "../api/types";
 import { EmptyState } from "../App";
 
 export default function PlaylistsPage() {
@@ -12,6 +27,7 @@ export default function PlaylistsPage() {
   const navigate = useNavigate();
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
+  const [importM3uOpen, setImportM3uOpen] = useState(false);
 
   const { data: playlists, isLoading } = useQuery<Playlist[]>({
     queryKey: ["playlists"],
@@ -37,9 +53,14 @@ export default function PlaylistsPage() {
     <Stack>
       <Group justify="space-between">
         <Title order={3}>Playlists</Title>
-        <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
-          New Playlist
-        </Button>
+        <Group gap="xs">
+          <Button variant="light" leftSection={<IconUpload size={16} />} onClick={() => setImportM3uOpen(true)}>
+            Import M3U...
+          </Button>
+          <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
+            New Playlist
+          </Button>
+        </Group>
       </Group>
 
       <Paper withBorder p="md">
@@ -93,6 +114,126 @@ export default function PlaylistsPage() {
           </Button>
         </Stack>
       </Modal>
+
+      <ImportM3uModal opened={importM3uOpen} onClose={() => setImportM3uOpen(false)} />
     </Stack>
+  );
+}
+
+interface ImportM3uResult {
+  playlist_id: number;
+  categories: number;
+  channels: number;
+  matched: number;
+  unmatched: number;
+  unmatched_names: string[];
+}
+
+// Brings in a playlist authored elsewhere (e.g. exported from IPTVBoss) as a new playlist here,
+// matching each channel back to a source already synced in DPTV-Server by its stream URL - so
+// the result keeps working through that source (re-syncs, survives credential rotation) instead
+// of being frozen to whatever URLs happened to be in the file.
+function ImportM3uModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [file, setFile] = useState<File | null>(null);
+  const [playlistName, setPlaylistName] = useState("");
+  const [sourceId, setSourceId] = useState<string | null>(null);
+  const [result, setResult] = useState<ImportM3uResult | null>(null);
+
+  const { data: sources } = useQuery<Source[]>({
+    queryKey: ["sources"],
+    queryFn: () => api.get("/api/sources").then((r) => r.data),
+    enabled: opened,
+  });
+
+  const importMutation = useMutation({
+    mutationFn: () => {
+      const form = new FormData();
+      form.append("file", file as File);
+      form.append("source_id", sourceId as string);
+      form.append("playlist_name", playlistName);
+      return api.post<ImportM3uResult>("/api/playlists/import-m3u", form).then((r) => r.data);
+    },
+    onSuccess: (data) => {
+      setResult(data);
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+    },
+  });
+
+  function handleClose() {
+    const playlistId = result?.playlist_id;
+    setFile(null);
+    setPlaylistName("");
+    setSourceId(null);
+    setResult(null);
+    onClose();
+    if (playlistId) navigate(`/playlists/${playlistId}`);
+  }
+
+  return (
+    <Modal opened={opened} onClose={handleClose} title="Import M3U Playlist" size="md">
+      <Stack>
+        <Text size="sm" c="dimmed">
+          Import an M3U file exported from another tool (e.g. IPTVBoss) as a new playlist,
+          matching each channel back to a source you've already synced here by its stream URL -
+          so it keeps working through that source instead of the URLs baked into the file.
+          Channels that can't be matched still import fine, just using their own URL directly.
+        </Text>
+
+        <FileInput
+          label="M3U file"
+          placeholder="Choose file..."
+          accept=".m3u,.m3u8,text/plain"
+          value={file}
+          onChange={setFile}
+          disabled={!!result}
+          required
+        />
+        <TextInput
+          label="Playlist name"
+          value={playlistName}
+          onChange={(e) => setPlaylistName(e.currentTarget.value)}
+          disabled={!!result}
+          required
+        />
+        <Select
+          label="Match against source"
+          placeholder="Choose a source"
+          data={(sources ?? []).map((s) => ({ value: String(s.id), label: s.name }))}
+          value={sourceId}
+          onChange={setSourceId}
+          disabled={!!result}
+          required
+        />
+
+        {result && (
+          <Stack gap={4}>
+            <Text size="sm" c="green">
+              Imported {result.channels} channel(s) into {result.categories} categor{result.categories === 1 ? "y" : "ies"}
+              {" — "}matched {result.matched}, {result.unmatched} unmatched.
+            </Text>
+            {result.unmatched_names.length > 0 && (
+              <Text size="xs" c="dimmed">
+                Unmatched: {result.unmatched_names.join(", ")}
+                {result.unmatched > result.unmatched_names.length ? ", ..." : ""}
+              </Text>
+            )}
+          </Stack>
+        )}
+
+        {!result ? (
+          <Button
+            onClick={() => importMutation.mutate()}
+            loading={importMutation.isPending}
+            disabled={!file || !playlistName || !sourceId}
+          >
+            Import
+          </Button>
+        ) : (
+          <Button onClick={handleClose}>Open Playlist</Button>
+        )}
+      </Stack>
+    </Modal>
   );
 }
