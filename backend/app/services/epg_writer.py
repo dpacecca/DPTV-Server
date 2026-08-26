@@ -1,3 +1,5 @@
+import logging
+import re
 from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
 
@@ -6,8 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import DummyEpgMode
 from app.models.epg import EpgProgram
-from app.models.playlist import Playlist, PlaylistChannel
+from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
 from app.services import dummy_epg
+
+logger = logging.getLogger("dptv.epg_writer")
 
 DEFAULT_WINDOW_HOURS = 24 * 3
 
@@ -32,9 +36,27 @@ def _resolve_program_minutes(pc: PlaylistChannel) -> int:
     return pc.category.dummy_epg_program_minutes
 
 
+async def _load_event_rules(db: AsyncSession, playlist_id: int) -> list[re.Pattern]:
+    result = await db.execute(
+        select(DummyEpgRule)
+        .where(DummyEpgRule.playlist_id == playlist_id, DummyEpgRule.enabled.is_(True))
+        .order_by(DummyEpgRule.sort_order)
+    )
+    patterns: list[re.Pattern] = []
+    for rule in result.scalars().all():
+        try:
+            patterns.append(dummy_epg.validate_rule_pattern(rule.pattern))
+        except ValueError:
+            # Already validated on save - only reachable if a pattern was edited directly in the
+            # DB. Skip rather than fail the whole XMLTV output over one bad rule.
+            logger.warning("Skipping invalid dummy EPG rule %r (id=%s)", rule.name, rule.id)
+    return patterns
+
+
 async def build_xmltv(db: AsyncSession, playlist: Playlist, window_hours: int = DEFAULT_WINDOW_HOURS) -> bytes:
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(hours=window_hours)
+    event_rules = await _load_event_rules(db, playlist.id)
 
     channel_xml: list[str] = []
     programme_xml: list[str] = []
@@ -77,7 +99,7 @@ async def build_xmltv(db: AsyncSession, playlist: Playlist, window_hours: int = 
             continue
         minutes = _resolve_program_minutes(pc)
         if mode == DummyEpgMode.EVENT:
-            dummies = dummy_epg.generate_event_dummy(pc.name, now, window_hours, minutes)
+            dummies = dummy_epg.generate_event_dummy(pc.name, now, window_hours, minutes, custom_patterns=event_rules)
         else:
             dummies = dummy_epg.generate_name_dummy(pc.name, now, window_hours, minutes)
         for d in dummies:

@@ -201,15 +201,16 @@ deploy/     systemd unit examples, update script for native installs
 
 ## Status / roadmap
 
-Implemented: source/EPG import, playlist builder with move/copy/bulk edit,
-EPG auto/manual mapping, dummy EPG (name + event-parsing), scheduled sync
-with auto-add/auto-remove, XC server with pass-through streaming, XC user
-management, sync history, duplicate-channel quality scanning (ffprobe-based
-resolution/framerate/bitrate detection, keep-the-best dedup, resolution
-tagging into channel names).
+Implemented: source/EPG import, M3U playlist import matched to an existing
+source, playlist builder with move/copy/bulk edit, EPG auto/manual mapping,
+dummy EPG (name + event-parsing, with a per-playlist library of custom
+regex rules for naming conventions the built-in parser doesn't handle),
+scheduled sync with auto-add/auto-remove, XC server with pass-through
+streaming, XC user management, sync history, duplicate-channel quality
+scanning (ffprobe-based resolution/framerate/bitrate detection,
+keep-the-best dedup, resolution tagging into channel names).
 
 Not yet built (lower priority for a self-hosted single-VM setup, since
 IPTVBoss's cloud-sync/email features existed mainly to work around it
-being a desktop app): regex-based "Advanced EPG Dummy" rule editor beyond
-the built-in date/time parser, email notifications, multi-device database
-sync. Contributions/requests welcome.
+being a desktop app): email notifications, multi-device database sync.
+Contributions/requests welcome.
