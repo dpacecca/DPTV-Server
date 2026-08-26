@@ -1,10 +1,8 @@
 import re
 
-_QUALITY_TOKEN = r"(?:U?HD|FHD|SD|\d{3,4}p|4K|8K)"
-_BRACKETED_TAG = re.compile(rf"[\(\[]\s*{_QUALITY_TOKEN}\s*[\)\]]", re.IGNORECASE)
-_BARE_TAG = re.compile(rf"(?<!\w){_QUALITY_TOKEN}(?!\w)", re.IGNORECASE)
-_PUNCTUATION = re.compile(r"[^\w\s]")
-_WHITESPACE = re.compile(r"\s+")
+from app.services.name_normalize import normalize_name as _normalize_name
+
+_QUALITY_TOKEN = r"(?:U?HD|FHD|RAW|SD|\d{3,4}p|4K|8K)"
 
 TRAILING_QUALITY_TAG = re.compile(rf"\s*[\(\[]\s*{_QUALITY_TOKEN}\s*[\)\]]\s*$", re.IGNORECASE)
 """Matches a quality tag this feature itself would have appended (e.g. " [1080p]"), so
@@ -12,19 +10,16 @@ re-tagging after a re-scan replaces the old tag instead of stacking a new one on
 
 
 def normalize_channel_name(name: str) -> str:
-    """Strips quality/resolution tags (HD, FHD, 1080p, 4K, ...) so e.g. "CNN HD" and
-    "CNN FHD" both normalize to "cnn" and are recognized as the same channel at different
-    quality levels. Case/punctuation-insensitive.
+    """Strips a leading "REGION:" prefix and quality/source tags (HD, FHD, RAW, 4K, ...) so e.g.
+    "UK: CNN HD" and "CNN FHD" both normalize to "cnn" and are recognized as the same channel at
+    different qualities. Shares its rules with EPG matching (see app.services.name_normalize) so
+    a channel is grouped the same way here as it's matched there.
 
     Deliberately an exact match after normalization, not a fuzzy one - grouping two channels
     that aren't actually the same one, and later deleting one of them, is a much worse failure
     mode than missing a duplicate whose names differ in some other way.
     """
-    s = _BRACKETED_TAG.sub(" ", name)
-    s = _BARE_TAG.sub(" ", s)
-    s = _PUNCTUATION.sub(" ", s)
-    s = _WHITESPACE.sub(" ", s).strip().lower()
-    return s
+    return _normalize_name(name)
 
 
 _RESOLUTION_BUCKETS = [
