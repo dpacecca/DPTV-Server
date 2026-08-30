@@ -1490,6 +1490,7 @@ interface DummyEpgRule {
   id: number;
   name: string;
   pattern: string;
+  timezone: string | null;
   enabled: boolean;
   sort_order: number;
 }
@@ -1519,11 +1520,20 @@ function DummyEpgRulesModal({
   const qc = useQueryClient();
   const [newName, setNewName] = useState("");
   const [newPattern, setNewPattern] = useState("");
+  const [newTimezone, setNewTimezone] = useState<string | null>(null);
   const [sampleName, setSampleName] = useState("");
   const [testResult, setTestResult] = useState<DummyEpgRuleTestResult | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editPattern, setEditPattern] = useState("");
+  const [editTimezone, setEditTimezone] = useState<string | null>(null);
+
+  const { data: timezones } = useQuery<string[]>({
+    queryKey: ["timezones"],
+    queryFn: () => api.get("/api/playlists/timezones").then((r) => r.data),
+    enabled: opened,
+    staleTime: Infinity,
+  });
 
   const { data: rules } = useQuery<DummyEpgRule[]>({
     queryKey: ["dummy-epg-rules", playlistId],
@@ -1536,11 +1546,17 @@ function DummyEpgRulesModal({
     (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Request failed";
 
   const createMutation = useMutation({
-    mutationFn: () => api.post(`/api/playlists/${playlistId}/dummy-epg-rules`, { name: newName, pattern: newPattern }),
+    mutationFn: () =>
+      api.post(`/api/playlists/${playlistId}/dummy-epg-rules`, {
+        name: newName,
+        pattern: newPattern,
+        timezone: newTimezone,
+      }),
     onSuccess: () => {
       invalidate();
       setNewName("");
       setNewPattern("");
+      setNewTimezone(null);
       setTestResult(null);
       notifications.show({ message: "Rule added", color: "green" });
     },
@@ -1548,7 +1564,7 @@ function DummyEpgRulesModal({
   });
 
   const updateMutation = useMutation({
-    mutationFn: (payload: { id: number; name?: string; pattern?: string; enabled?: boolean }) => {
+    mutationFn: (payload: { id: number; name?: string; pattern?: string; timezone?: string | null; enabled?: boolean }) => {
       const { id, ...body } = payload;
       return api.patch(`/api/playlists/${playlistId}/dummy-epg-rules/${id}`, body);
     },
@@ -1573,7 +1589,11 @@ function DummyEpgRulesModal({
   const testMutation = useMutation({
     mutationFn: () =>
       api
-        .post(`/api/playlists/${playlistId}/dummy-epg-rules/test`, { pattern: newPattern, sample_name: sampleName })
+        .post(`/api/playlists/${playlistId}/dummy-epg-rules/test`, {
+          pattern: newPattern,
+          sample_name: sampleName,
+          timezone: newTimezone,
+        })
         .then((r) => r.data as DummyEpgRuleTestResult),
     onSuccess: setTestResult,
   });
@@ -1618,8 +1638,14 @@ function DummyEpgRulesModal({
     setSampleName("");
     setNewPattern("");
     setNewName("");
+    setNewTimezone(null);
     onClose();
   }
+
+  const timezoneOptions = ["", ...(timezones ?? [])].map((tz) => ({
+    value: tz,
+    label: tz === "" ? "UTC (default)" : tz,
+  }));
 
   return (
     <Modal opened={opened} onClose={handleClose} title="Dummy EPG Rules" size="lg">
@@ -1631,6 +1657,11 @@ function DummyEpgRulesModal({
           groups (?P&lt;hour&gt;..) and (?P&lt;minute&gt;..); optionally (?P&lt;ampm&gt;..),
           (?P&lt;month&gt;..), (?P&lt;day&gt;..), (?P&lt;year&gt;..), and (?P&lt;title&gt;..) (the
           cleaned title — if omitted, the matched portion is stripped out of the name instead).
+          Since channel names never say which timezone that hour/minute is in, each rule has its
+          own Timezone setting — the parsed event keeps that zone's offset all the way to the XMLTV
+          output, where every player already localizes it to the viewer's own device. The lead-up
+          to the event is filled with 3-hour "Up Next: &lt;event&gt; at &lt;time&gt;" blocks
+          (in that same zone) instead of one generic filler.
         </Text>
 
         <Stack gap={4}>
@@ -1646,10 +1677,21 @@ function DummyEpgRulesModal({
                     onChange={(e) => setEditPattern(e.currentTarget.value)}
                     styles={{ input: { fontFamily: "monospace" } }}
                   />
+                  <Select
+                    size="xs"
+                    label="Timezone"
+                    description="Zone the pattern's hour/minute is expressed in"
+                    data={timezoneOptions}
+                    value={editTimezone ?? ""}
+                    onChange={(v) => setEditTimezone(v || null)}
+                    searchable
+                  />
                   <Group gap="xs">
                     <Button
                       size="xs"
-                      onClick={() => updateMutation.mutate({ id: rule.id, name: editName, pattern: editPattern })}
+                      onClick={() =>
+                        updateMutation.mutate({ id: rule.id, name: editName, pattern: editPattern, timezone: editTimezone })
+                      }
                       loading={updateMutation.isPending}
                     >
                       Save
@@ -1666,6 +1708,9 @@ function DummyEpgRulesModal({
                       <Text size="sm" fw={600}>
                         {rule.name}
                       </Text>
+                      <Badge size="xs" variant="light">
+                        {rule.timezone || "UTC"}
+                      </Badge>
                       {!rule.enabled && (
                         <Badge size="xs" color="gray">
                           Disabled
@@ -1700,6 +1745,7 @@ function DummyEpgRulesModal({
                         setEditingId(rule.id);
                         setEditName(rule.name);
                         setEditPattern(rule.pattern);
+                        setEditTimezone(rule.timezone);
                       }}
                     >
                       <IconEdit size={14} />
@@ -1743,6 +1789,15 @@ function DummyEpgRulesModal({
           value={newPattern}
           onChange={(e) => setNewPattern(e.currentTarget.value)}
           styles={{ input: { fontFamily: "monospace" } }}
+        />
+        <Select
+          size="xs"
+          label="Timezone"
+          description="Zone the pattern's hour/minute is expressed in - channel names never say, so this is how the parser knows"
+          data={timezoneOptions}
+          value={newTimezone ?? ""}
+          onChange={(v) => setNewTimezone(v || null)}
+          searchable
         />
 
         <Group align="flex-end" gap="xs">

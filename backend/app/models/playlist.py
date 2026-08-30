@@ -41,6 +41,12 @@ class DummyEpgRule(Base, TimestampMixin):
     """Python regex. Must define named groups (?P<hour>..) and (?P<minute>..); optionally
     (?P<ampm>..), (?P<month>..), (?P<day>..), (?P<year>..), and (?P<title>..) (the cleaned
     program title - if omitted, the matched portion is stripped out of the name instead)."""
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    """IANA zone name the parsed hour/minute is expressed in (e.g. "America/New_York") - channel
+    names never carry their own zone marker, so this is how the admin tells the parser which one
+    to assume. None means UTC (unchanged legacy behavior). The resulting event datetime keeps
+    this zone's offset all the way through to XMLTV output, where every player already localizes
+    a timezone-aware programme time to the viewer's own device - no separate conversion step."""
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 

@@ -1,9 +1,29 @@
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo as tzinfo_type
+from zoneinfo import ZoneInfo, available_timezones
 
 DATE_RE = re.compile(r"\b(?P<month>\d{1,2})[/\-](?P<day>\d{1,2})(?:[/\-](?P<year>\d{2,4}))?\b")
 TIME_RE = re.compile(r"\b(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp]\.?[Mm]\.?)?\b")
+
+
+def list_timezones() -> list[str]:
+    """IANA zone names for the rule editor's timezone dropdown - proper Continent/City names
+    plus UTC, not the legacy/deprecated aliases zoneinfo also returns."""
+    names = {tz for tz in available_timezones() if "/" in tz} | {"UTC"}
+    return sorted(names)
+
+
+def resolve_timezone(tz_name: str | None) -> tzinfo_type:
+    """A channel name never carries its own zone marker, so a rule's configured timezone (or
+    UTC, if unset) is how the admin tells the parser which zone its hour/minute is expressed in.
+    Falls back to UTC for a since-renamed/invalid zone name rather than failing the whole parse."""
+    if not tz_name:
+        return timezone.utc
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001
+        return timezone.utc
 
 
 @dataclass
@@ -43,8 +63,13 @@ def validate_rule_pattern(pattern_text: str) -> re.Pattern:
 
 def _build_event_datetime(
     hour_str: str, minute_str: str, ampm: str | None, month_str: str | None, day_str: str | None,
-    year_str: str | None, now: datetime,
+    year_str: str | None, now: datetime, tz: tzinfo_type = timezone.utc,
 ) -> datetime | None:
+    """`now` stays UTC (the caller's reference clock); the returned datetime is in `tz` - the
+    zone the embedded hour/minute is assumed to be expressed in - so it carries the correct
+    offset all the way to XMLTV output without a separate "convert to local" step: a
+    timezone-aware programme time is exactly what every XMLTV player already localizes for the
+    viewer on its own."""
     hour = int(hour_str)
     minute = int(minute_str)
     ampm_norm = (ampm or "").lower().replace(".", "")
@@ -62,19 +87,22 @@ def _build_event_datetime(
             if year < 100:
                 year += 2000
         else:
-            year = now.year
+            year = now.astimezone(tz).year
         try:
-            return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+            return datetime(year, month, day, hour, minute, tzinfo=tz)
         except ValueError:
             return None
 
-    event_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if event_dt < now - timedelta(hours=6):
+    now_local = now.astimezone(tz)
+    event_dt = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if event_dt < now_local - timedelta(hours=6):
         event_dt += timedelta(days=1)
     return event_dt
 
 
-def _apply_custom_rule(channel_name: str, pattern: re.Pattern, now: datetime) -> tuple[datetime, str] | None:
+def _apply_custom_rule(
+    channel_name: str, pattern: re.Pattern, now: datetime, tz: tzinfo_type = timezone.utc
+) -> tuple[datetime, str] | None:
     m = pattern.search(channel_name)
     if not m:
         return None
@@ -83,7 +111,7 @@ def _apply_custom_rule(channel_name: str, pattern: re.Pattern, now: datetime) ->
     if not hour_str or not minute_str:
         return None
     event_dt = _build_event_datetime(
-        hour_str, minute_str, groups.get("ampm"), groups.get("month"), groups.get("day"), groups.get("year"), now
+        hour_str, minute_str, groups.get("ampm"), groups.get("month"), groups.get("day"), groups.get("year"), now, tz
     )
     if event_dt is None:
         return None
@@ -94,21 +122,25 @@ def _apply_custom_rule(channel_name: str, pattern: re.Pattern, now: datetime) ->
 
 
 def parse_event_datetime(
-    channel_name: str, now: datetime | None = None, custom_patterns: list[re.Pattern] | None = None
+    channel_name: str,
+    now: datetime | None = None,
+    custom_patterns: list[tuple[re.Pattern, str | None]] | None = None,
 ) -> tuple[datetime, str] | None:
     """Extract a date/time embedded in a channel name, e.g. 'Team A vs Team B 08/24 8:00PM ET'.
 
-    Tries each of `custom_patterns` in order first (playlist-configured rules, for naming
-    conventions the built-in parser doesn't handle - different date order, different separators,
-    a title that needs its own capture group instead of "everything but the date/time"), falling
-    back to the built-in month/day + time parser below if none of them match.
+    Tries each of `custom_patterns` - (compiled pattern, IANA timezone name or None for UTC)
+    pairs - in order first (playlist-configured rules, for naming conventions the built-in
+    parser doesn't handle: different date order, different separators, a source timezone other
+    than UTC, a title that needs its own capture group instead of "everything but the
+    date/time"), falling back to the built-in UTC month/day + time parser below if none match.
 
-    Returns (event_start_utc, cleaned_title) or None if no time could be found.
+    Returns (event_start, cleaned_title) or None if no time could be found. event_start is
+    timezone-aware in whichever zone actually matched.
     """
     now = now or datetime.now(timezone.utc)
 
-    for pattern in custom_patterns or []:
-        result = _apply_custom_rule(channel_name, pattern, now)
+    for pattern, tz_name in custom_patterns or []:
+        result = _apply_custom_rule(channel_name, pattern, now, resolve_timezone(tz_name))
         if result:
             return result
 
@@ -242,26 +274,45 @@ def generate_name_dummy(
     return programs
 
 
+UP_NEXT_BLOCK_MINUTES = 180
+
+
+def _format_local_time(dt: datetime) -> str:
+    """"9:00 PM", not "09:00 PM" - dt is already in whichever zone it should display as."""
+    return dt.strftime("%I:%M %p").lstrip("0") or dt.strftime("%I:%M %p")
+
+
 def generate_event_dummy(
     channel_name: str,
     window_start: datetime,
     window_hours: int,
     program_minutes: int,
-    custom_patterns: list[re.Pattern] | None = None,
+    custom_patterns: list[tuple[re.Pattern, str | None]] | None = None,
 ) -> list[DummyProgram]:
     parsed = parse_event_datetime(channel_name, now=window_start, custom_patterns=custom_patterns)
     if parsed is None:
         return generate_name_dummy(channel_name, window_start, window_hours, program_minutes)
 
     event_start, title = parsed
+    display_title = title or channel_name
     event_stop = event_start + timedelta(minutes=max(program_minutes, 15))
-    programs = [DummyProgram(start=event_start, stop=event_stop, title=title or channel_name)]
 
-    # Fill the rest of the requested window with a generic filler so players always show *something*.
     filler_start = window_start.replace(minute=0, second=0, microsecond=0)
     window_end = window_start + timedelta(hours=window_hours)
+
+    # Countdown to the event: fixed 3-hour "Up Next" blocks (not one giant filler) so a guide
+    # grid repeatedly shows what's coming and when, in the same zone the event itself displays in.
+    before: list[DummyProgram] = []
     if filler_start < event_start:
-        programs.insert(0, DummyProgram(start=filler_start, stop=event_start, title=channel_name))
+        up_next_title = f"Up Next: {display_title} at {_format_local_time(event_start)}"
+        slot_start = filler_start
+        while slot_start < event_start:
+            slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), event_start)
+            before.append(DummyProgram(start=slot_start, stop=slot_end, title=up_next_title))
+            slot_start = slot_end
+
+    after: list[DummyProgram] = []
     if event_stop < window_end:
-        programs.append(DummyProgram(start=event_stop, stop=window_end, title=channel_name))
-    return programs
+        after.append(DummyProgram(start=event_stop, stop=window_end, title=channel_name))
+
+    return before + [DummyProgram(start=event_start, stop=event_stop, title=display_title)] + after

@@ -264,6 +264,14 @@ async def import_m3u_playlist(
     }
 
 
+@router.get("/timezones")
+async def list_timezones(_admin: AdminUser) -> list[str]:
+    """For the dummy EPG rule editor's timezone dropdown. A literal path segment registered
+    ahead of GET /{playlist_id} below - that route would otherwise greedily match "timezones"
+    as a (non-numeric, 422-failing) playlist_id."""
+    return dummy_epg.list_timezones()
+
+
 @router.get("/{playlist_id}")
 async def get_playlist(playlist_id: int, db: DbSession, _admin: AdminUser) -> dict:
     return await _get_playlist_with_category_summaries(db, playlist_id)
@@ -1053,6 +1061,7 @@ def _serialize_dummy_epg_rule(rule: DummyEpgRule) -> dict:
         "id": rule.id,
         "name": rule.name,
         "pattern": rule.pattern,
+        "timezone": rule.timezone,
         "enabled": rule.enabled,
         "sort_order": rule.sort_order,
     }
@@ -1068,6 +1077,8 @@ def _validate_pattern_or_400(pattern: str) -> None:
 class DummyEpgRuleIn(BaseModel):
     name: str
     pattern: str
+    timezone: str | None = None
+    """IANA zone (e.g. "America/New_York") the pattern's hour/minute is expressed in. None = UTC."""
     enabled: bool = True
 
 
@@ -1094,6 +1105,7 @@ async def create_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleIn, db: D
 class DummyEpgRuleUpdate(BaseModel):
     name: str | None = None
     pattern: str | None = None
+    timezone: str | None = None
     enabled: bool | None = None
 
 
@@ -1137,17 +1149,18 @@ async def reorder_dummy_epg_rules(playlist_id: int, items: list[ReorderItem], db
 class DummyEpgRuleTestIn(BaseModel):
     pattern: str
     sample_name: str
+    timezone: str | None = None
 
 
 @router.post("/{playlist_id}/dummy-epg-rules/test")
 async def test_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleTestIn, _admin: AdminUser) -> dict:
-    """Tries a not-yet-saved pattern against a sample channel name so the admin can see whether
-    it matches, and what it parses out, before committing to it."""
+    """Tries a not-yet-saved pattern (and timezone) against a sample channel name so the admin
+    can see whether it matches, and what it parses out, before committing to it."""
     try:
         compiled = dummy_epg.validate_rule_pattern(payload.pattern)
     except ValueError as exc:
         return {"matched": False, "error": str(exc)}
-    result = dummy_epg.parse_event_datetime(payload.sample_name, custom_patterns=[compiled])
+    result = dummy_epg.parse_event_datetime(payload.sample_name, custom_patterns=[(compiled, payload.timezone)])
     if result is None:
         return {"matched": False, "error": None}
     event_start, title = result
