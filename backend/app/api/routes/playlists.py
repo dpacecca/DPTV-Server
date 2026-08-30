@@ -19,7 +19,7 @@ from app.models.playlist import (
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
-from app.services.epg_writer import build_xmltv
+from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
 
@@ -671,6 +671,60 @@ async def list_category_channel_ids(
     return {"ids": [row[0] for row in result.all()]}
 
 
+PREVIEW_MAX_CHANNELS = MAX_PAGE_SIZE
+PREVIEW_MAX_HOURS = 72
+
+
+@router.get("/{playlist_id}/categories/{category_id}/epg-preview")
+async def preview_category_epg(
+    playlist_id: int, category_id: int, db: DbSession, _admin: AdminUser, hours: int = 24
+) -> dict:
+    """What each enabled channel in this category would actually show in the guide right now -
+    real programs where EPG-mapped, dummy-generated ones otherwise (including custom event rules
+    and "Up Next" blocks) - computed by the exact same code XMLTV output uses, so this can never
+    silently disagree with what a real player pulls. Capped to PREVIEW_MAX_CHANNELS/_HOURS since
+    this runs synchronously (unlike the duplicate scanner, generating dummy programs is pure
+    in-memory computation, but a huge category over a long window is still real work to both
+    compute and ship back as JSON)."""
+    cat = await db.get(PlaylistCategory, category_id)
+    if cat is None or cat.playlist_id != playlist_id:
+        raise HTTPException(404, "Category not found")
+
+    hours = max(1, min(hours, PREVIEW_MAX_HOURS))
+    total = await db.scalar(
+        select(func.count())
+        .select_from(PlaylistChannel)
+        .where(PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True))
+    )
+    result = await db.execute(
+        select(PlaylistChannel)
+        .where(PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True))
+        .options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
+        .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
+        .limit(PREVIEW_MAX_CHANNELS)
+    )
+    channels = list(result.scalars().all())
+
+    channel_programs = await compute_channel_programs(db, channels, playlist_id, window_hours=hours)
+    return {
+        "hours": hours,
+        "total_channels": total,
+        "truncated": total > len(channels),
+        "channels": [
+            {
+                "channel_id": cp.channel.id,
+                "name": cp.channel.name,
+                "dummy_epg_mode": cp.channel.dummy_epg_mode,
+                "programs": [
+                    {"start": p.start.isoformat(), "stop": p.stop.isoformat(), "title": p.title}
+                    for p in cp.programs
+                ],
+            }
+            for cp in channel_programs
+        ],
+    }
+
+
 class ManualChannelIn(BaseModel):
     name: str
     stream_url: str | None = None
@@ -794,14 +848,23 @@ async def delete_channel(playlist_id: int, channel_id: int, db: DbSession, _admi
 class BulkAction(BaseModel):
     channel_ids: list[int]
     action: str
-    """One of: uppercase, sentence_case, add_prefix, add_suffix, find_replace, enable, disable, delete, lock_name, unlock_name."""
+    """One of: uppercase, sentence_case, add_prefix, add_suffix, find_replace, enable, disable,
+    delete, lock_name, unlock_name, set_dummy_epg_mode."""
     find: str | None = None
     replace: str | None = None
     text: str | None = None
+    dummy_epg_mode: DummyEpgMode | None = None
+    """For set_dummy_epg_mode."""
+    dummy_epg_program_minutes: int | None = None
+    """For set_dummy_epg_mode - omit to leave each channel's existing program length as-is
+    (e.g. when only switching several channels into "event" mode without also fixing minutes)."""
 
 
 @router.post("/{playlist_id}/channels/bulk")
 async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSession, _admin: AdminUser) -> dict:
+    if payload.action == "set_dummy_epg_mode" and payload.dummy_epg_mode is None:
+        raise HTTPException(400, "dummy_epg_mode is required for the set_dummy_epg_mode action")
+
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     channels = result.scalars().all()
     count = 0
@@ -824,6 +887,10 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
             pc.name_locked = True
         elif payload.action == "unlock_name":
             pc.name_locked = False
+        elif payload.action == "set_dummy_epg_mode":
+            pc.dummy_epg_mode = payload.dummy_epg_mode
+            if payload.dummy_epg_program_minutes is not None:
+                pc.dummy_epg_program_minutes = payload.dummy_epg_program_minutes
         elif payload.action == "delete":
             await db.delete(pc)
         else:

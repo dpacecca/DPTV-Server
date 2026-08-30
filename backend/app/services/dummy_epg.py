@@ -302,12 +302,15 @@ def generate_event_dummy(
 
     # Countdown to the event: fixed 3-hour "Up Next" blocks (not one giant filler) so a guide
     # grid repeatedly shows what's coming and when, in the same zone the event itself displays in.
+    # Capped at window_end like every other filler here - an event days beyond the requested
+    # window (e.g. a far-future PPV date) must not blow up into hundreds of countdown blocks.
     before: list[DummyProgram] = []
-    if filler_start < event_start:
+    up_next_end = min(event_start, window_end)
+    if filler_start < up_next_end:
         up_next_title = f"Up Next: {display_title} at {_format_local_time(event_start)}"
         slot_start = filler_start
-        while slot_start < event_start:
-            slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), event_start)
+        while slot_start < up_next_end:
+            slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), up_next_end)
             before.append(DummyProgram(start=slot_start, stop=slot_end, title=up_next_title))
             slot_start = slot_end
 
