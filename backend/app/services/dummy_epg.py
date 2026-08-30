@@ -135,6 +135,99 @@ def parse_event_datetime(
     return event_dt, title
 
 
+_ISO_DATE_RE = re.compile(r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})")
+_SUGGEST_DATE_RE = re.compile(r"(?P<num1>\d{1,2})(?P<sep>[/\-])(?P<num2>\d{1,2})(?:(?P=sep)(?P<year>\d{2,4}))?")
+
+
+@dataclass
+class RuleSuggestion:
+    pattern: str
+    start: datetime
+    title: str
+
+
+def suggest_rule_pattern(sample_name: str, now: datetime | None = None) -> RuleSuggestion | None:
+    """Reverse-engineers a candidate custom dummy-EPG rule pattern from one real channel name, so
+    an admin doesn't have to hand-write regex - just point it at a channel and review/tweak/save
+    the suggestion.
+
+    Detects an embedded time (and, if present, a date near it) using the same shapes the
+    built-in parser understands, infers the date's month/day order from context (an
+    out-of-range value settles it; otherwise the separator is used as a convention signal -
+    "/" defaults to month/day like the built-in parser, "-" defaults to day/month, since that's
+    the split this app's own rule examples already use), and generates a *general* pattern - not
+    a literal copy of this one name - using \\d{1,2}/\\s+ shapes so it also matches sibling
+    channels that follow the same naming convention with different values.
+    """
+    now = now or datetime.now(timezone.utc)
+    time_match = TIME_RE.search(sample_name)
+    if not time_match:
+        return None
+
+    # ISO-shaped "YYYY-MM-DD" is checked first and takes priority - it's unambiguous (a 4-digit
+    # leading year can't be mistaken for a day/month), whereas the generic 2-part scan below
+    # would otherwise mis-parse it (e.g. reading "26-08" out of the tail of "2026-08-30").
+    iso_match = _ISO_DATE_RE.search(sample_name)
+    date_match = iso_match or _SUGGEST_DATE_RE.search(sample_name)
+
+    date_fragment = None
+    if iso_match:
+        date_fragment = r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})"
+    elif date_match:
+        sep = date_match.group("sep")
+        num1, num2 = int(date_match.group("num1")), int(date_match.group("num2"))
+        if num1 > 12 and num2 <= 12:
+            month_first = False
+        elif num2 > 12 and num1 <= 12:
+            month_first = True
+        else:
+            month_first = sep == "/"
+        esc_sep = re.escape(sep)
+        if month_first:
+            date_fragment = rf"(?P<month>\d{{1,2}}){esc_sep}(?P<day>\d{{1,2}})"
+        else:
+            date_fragment = rf"(?P<day>\d{{1,2}}){esc_sep}(?P<month>\d{{1,2}})"
+        if date_match.group("year"):
+            date_fragment += rf"{esc_sep}(?P<year>\d{{2,4}})"
+
+    time_fragment = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+    if time_match.group("ampm"):
+        time_fragment += r"\s*(?P<ampm>[AaPp]\.?[Mm]\.?)"
+
+    if date_match and date_match.start() < time_match.start():
+        fragments = [date_fragment, time_fragment]
+        match_start, match_end = date_match.start(), time_match.end()
+    elif date_match:
+        fragments = [time_fragment, date_fragment]
+        match_start, match_end = time_match.start(), date_match.end()
+    else:
+        fragments = [time_fragment]
+        match_start, match_end = time_match.start(), time_match.end()
+    joined = r"\s+".join(fragments)
+
+    prefix = sample_name[:match_start].strip(" -|:()")
+    suffix = sample_name[match_end:].strip(" -|:()")
+    if prefix:
+        # A permissive [\s\-:|()]+ boundary (not just \s+) so a connective dash/colon/pipe/paren
+        # right before the date/time - "UFC 300 - 15-09-2026...", "Title 2026 (2026-08-30
+        # 20:50:29)" - separates from the title instead of being swallowed into it.
+        pattern = rf"(?P<title>.+?)[\s\-:|()]+{joined}"
+    elif suffix:
+        pattern = rf"{joined}[\s\-:|()]+(?P<title>.+)"
+    else:
+        pattern = joined
+
+    try:
+        compiled = validate_rule_pattern(pattern)
+    except ValueError:
+        return None
+    parsed = _apply_custom_rule(sample_name, compiled, now)
+    if parsed is None:
+        return None
+    start, title = parsed
+    return RuleSuggestion(pattern=pattern, start=start, title=title)
+
+
 def generate_name_dummy(
     channel_name: str, window_start: datetime, window_hours: int, program_minutes: int
 ) -> list[DummyProgram]:
