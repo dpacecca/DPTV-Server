@@ -43,6 +43,18 @@ def _strip_matches(text: str, *matches: re.Match) -> str:
     return text or text
 
 
+_PIPE_PREFIX_RE = re.compile(r"^\s*[A-Z]{2,4}(?:\s*\([^)]*\))?\s*\|\s*")
+
+
+def _clean_title(text: str) -> str:
+    """Strips a leading "REGION (detail) | " style tag some providers glue onto every channel
+    name (e.g. "AU (STAN 46) | Real Event Name") - never part of the actual event title.
+    Deliberately narrow (a short ALL-CAPS region/network code, optionally with a parenthetical,
+    right before the pipe) rather than "anything before the first |", so a title that legitimately
+    contains a pipe (e.g. "Boxing: Fighter A | Fighter B") isn't damaged."""
+    return _PIPE_PREFIX_RE.sub("", text, count=1).strip()
+
+
 REQUIRED_RULE_GROUPS = ("hour", "minute")
 OPTIONAL_RULE_GROUPS = ("ampm", "month", "day", "year", "title")
 
@@ -118,7 +130,7 @@ def _apply_custom_rule(
     title = groups.get("title")
     if not title:
         title = _strip_matches(channel_name, m)
-    return event_dt, title.strip()
+    return event_dt, _clean_title(title)
 
 
 def parse_event_datetime(
@@ -164,7 +176,7 @@ def parse_event_datetime(
     title = _strip_matches(channel_name, time_match, date_match) if date_match else _strip_matches(
         channel_name, time_match
     )
-    return event_dt, title
+    return event_dt, _clean_title(title)
 
 
 _ISO_DATE_RE = re.compile(r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})")
@@ -277,9 +289,29 @@ def generate_name_dummy(
 UP_NEXT_BLOCK_MINUTES = 180
 
 
+FINISHED_TITLE = "Scheduled event finished"
+
+
 def _format_local_time(dt: datetime) -> str:
     """"9:00 PM", not "09:00 PM" - dt is already in whichever zone it should display as."""
     return dt.strftime("%I:%M %p").lstrip("0") or dt.strftime("%I:%M %p")
+
+
+def _format_local_date(dt: datetime) -> str:
+    """"31/8/2026" - day/month/year, no leading zeros."""
+    return f"{dt.day}/{dt.month}/{dt.year}"
+
+
+def _tile(start: datetime, end: datetime, title: str) -> list[DummyProgram]:
+    """Fixed UP_NEXT_BLOCK_MINUTES-sized blocks covering [start, end), last one clipped -
+    shared by both the pre-event countdown and the post-event filler below."""
+    programs: list[DummyProgram] = []
+    slot_start = start
+    while slot_start < end:
+        slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), end)
+        programs.append(DummyProgram(start=slot_start, stop=slot_end, title=title))
+        slot_start = slot_end
+    return programs
 
 
 def generate_event_dummy(
@@ -304,18 +336,13 @@ def generate_event_dummy(
     # grid repeatedly shows what's coming and when, in the same zone the event itself displays in.
     # Capped at window_end like every other filler here - an event days beyond the requested
     # window (e.g. a far-future PPV date) must not blow up into hundreds of countdown blocks.
-    before: list[DummyProgram] = []
-    up_next_end = min(event_start, window_end)
-    if filler_start < up_next_end:
-        up_next_title = f"Up Next: {display_title} at {_format_local_time(event_start)}"
-        slot_start = filler_start
-        while slot_start < up_next_end:
-            slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), up_next_end)
-            before.append(DummyProgram(start=slot_start, stop=slot_end, title=up_next_title))
-            slot_start = slot_end
+    up_next_title = (
+        f"Up Next: {display_title} starts {_format_local_time(event_start)} on {_format_local_date(event_start)}"
+    )
+    before = _tile(filler_start, min(event_start, window_end), up_next_title)
 
-    after: list[DummyProgram] = []
-    if event_stop < window_end:
-        after.append(DummyProgram(start=event_stop, stop=window_end, title=channel_name))
+    # Same 3-hour tiling after the event ends, so the guide doesn't fall back to one giant block
+    # (or the raw channel name) once it's over.
+    after = _tile(event_stop, window_end, FINISHED_TITLE)
 
     return before + [DummyProgram(start=event_start, stop=event_stop, title=display_title)] + after
