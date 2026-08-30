@@ -54,15 +54,40 @@ export interface PaginatedSourceChannels {
   limit: number;
 }
 
+export interface IptvOrgSelection {
+  mode: "country" | "category";
+  values: string[];
+}
+
 export interface EpgSource {
   id: number;
   name: string;
-  url: string;
+  source_kind: "url" | "iptv_org";
+  url: string | null;
+  iptv_org_selection: IptvOrgSelection | null;
   refresh_interval_minutes: number;
   last_refreshed_at: string | null;
   last_refresh_status: string | null;
   last_refresh_error: string | null;
   channel_count: number;
+}
+
+export interface IptvOrgCountryOption {
+  name: string;
+  channel_count: number;
+  matched_channel_count: number;
+}
+
+export interface IptvOrgCategoryOption {
+  id: string;
+  name: string;
+  channel_count: number;
+}
+
+export interface IptvOrgCatalog {
+  available: boolean;
+  countries: IptvOrgCountryOption[];
+  categories: IptvOrgCategoryOption[];
 }
 
 export interface PlaylistChannel {

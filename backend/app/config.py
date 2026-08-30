@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     scan_max_concurrency: int = 8
     scan_default_timeout_seconds: float = 8.0
 
+    iptv_org_epg_dir: str | None = None
+    """Path to a local clone of github.com/iptv-org/epg (with `npm install` already run), used
+    to scrape iptv-org's site-specific EPG guides on demand. None disables the feature entirely -
+    it's an optional system dependency (Node.js + the vendored checkout), not bundled."""
+    iptv_org_grab_timeout_seconds: float = 900.0
+    """Some sites (e.g. ones with 500+ channels) genuinely take minutes to scrape."""
+
 
 @lru_cache
 def get_settings() -> Settings:

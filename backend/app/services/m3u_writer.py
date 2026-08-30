@@ -2,6 +2,7 @@ from app.config import get_settings
 from app.models.base import ChannelType
 from app.models.playlist import Playlist
 from app.models.xc_user import XcUser
+from app.services.channel_logo import resolve_channel_logo
 
 settings = get_settings()
 
@@ -23,7 +24,7 @@ def build_m3u(playlist: Playlist, xc_user: XcUser) -> str:
             if not pc.enabled:
                 continue
             tvg_id = pc.epg_channel.epg_channel_id if pc.epg_channel_id and pc.epg_channel else ""
-            logo = pc.logo_url_override or (pc.source_channel.logo_url if pc.source_channel else "") or ""
+            logo = resolve_channel_logo(pc) or ""
             ext = "ts" if category.channel_type == ChannelType.LIVE else "mp4"
             url = playlist_channel_stream_url(xc_user, category.channel_type, pc.id, ext)
             attrs = f'tvg-id="{tvg_id}" tvg-logo="{logo}" group-title="{category.name}"'

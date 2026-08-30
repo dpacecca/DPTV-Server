@@ -12,7 +12,14 @@ class EpgSource(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    url: Mapped[str] = mapped_column(Text)
+    source_kind: Mapped[str] = mapped_column(String(20), default="url")
+    """"url" (a plain XMLTV/.xml.gz fetch) or "iptv_org" (server-side iptv-org/epg scrape)."""
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """Required when source_kind == "url"; unused for "iptv_org" sources."""
+    iptv_org_selection: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """JSON-encoded {"mode": "country"|"category", "values": [...]} recording what was picked,
+    so a refresh can re-resolve the current channel catalog instead of a frozen snapshot, and
+    the admin UI can show/edit the selection. Only set when source_kind == "iptv_org"."""
     refresh_interval_minutes: Mapped[int] = mapped_column(Integer, default=720)
 
     last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

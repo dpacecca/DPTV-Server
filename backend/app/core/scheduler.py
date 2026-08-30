@@ -2,17 +2,27 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
 from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
+from app.services.iptv_org_epg import refresh_logo_cache
 from app.services.sync_engine import run_full_sync
 
 logger = logging.getLogger("dptv.scheduler")
 
 scheduler = AsyncIOScheduler()
+
+
+async def _refresh_logo_cache_job() -> None:
+    try:
+        await refresh_logo_cache()
+    except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
+        logger.exception("Failed to refresh iptv-org logo cache")
 
 
 async def _run_scheduled_sync(schedule_id: int) -> None:
@@ -52,3 +62,17 @@ async def start_scheduler() -> None:
         scheduler.start()
     async with SessionLocal() as db:
         await reload_schedules(db)
+    scheduler.add_job(
+        _refresh_logo_cache_job,
+        trigger=IntervalTrigger(hours=24),
+        id="iptv-org-logo-cache-refresh",
+        replace_existing=True,
+    )
+    # Fire once immediately in the background so the cache is warm shortly after startup,
+    # without delaying the rest of app startup on a network fetch.
+    scheduler.add_job(
+        _refresh_logo_cache_job,
+        trigger=DateTrigger(),
+        id="iptv-org-logo-cache-refresh-initial",
+        replace_existing=True,
+    )

@@ -28,8 +28,14 @@ services:
       DPTV_ADMIN_USERNAME: ${DPTV_ADMIN_USERNAME:-admin}
       DPTV_ADMIN_PASSWORD: ${DPTV_ADMIN_PASSWORD:-admin}
       DPTV_PUBLIC_BASE_URL: ${DPTV_PUBLIC_BASE_URL:-http://localhost:8000}
+      # Optional: browse/add EPG sources by country or category, scraped by
+      # github.com/iptv-org/epg. Requires a checkout on the host with `npm
+      # install` already run (see README's "Optional: iptv-org/epg scraper")
+      # and the matching volume mount below, both uncommented.
+      # DPTV_IPTV_ORG_EPG_DIR: /iptv-org-epg
     volumes:
       - dptv-data:/app/data
+      # - /path/on/host/to/iptv-org-epg:/iptv-org-epg
     ports:
       - "8000:8000"
     command: >
