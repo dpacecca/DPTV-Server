@@ -31,6 +31,7 @@ import {
   IconDots,
   IconDownload,
   IconEdit,
+  IconEye,
   IconLock,
   IconLockOpen,
   IconPlus,
@@ -87,6 +88,8 @@ export default function PlaylistEditorPage() {
   const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
   const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
   const [dummyEpgRulesOpen, setDummyEpgRulesOpen] = useState(false);
+  const [bulkDummyEpgOpen, setBulkDummyEpgOpen] = useState(false);
+  const [epgPreviewOpen, setEpgPreviewOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebounce(search, 300);
 
@@ -283,6 +286,9 @@ export default function PlaylistEditorPage() {
                   <Button size="xs" variant="light" leftSection={<IconVideo size={14} />} onClick={() => setScanDuplicatesOpen(true)}>
                     Scan Duplicates...
                   </Button>
+                  <Button size="xs" variant="light" leftSection={<IconEye size={14} />} disabled={!activeCategory} onClick={() => setEpgPreviewOpen(true)}>
+                    Preview EPG...
+                  </Button>
                   <Menu>
                     <Menu.Target>
                       <Button size="xs" variant="light" rightSection={<IconDots size={14} />} disabled={selectedChannelIds.size === 0}>
@@ -322,6 +328,7 @@ export default function PlaylistEditorPage() {
                       <Menu.Item onClick={() => runBulk({ action: "unlock_name" })}>Unlock names</Menu.Item>
                       <Menu.Item onClick={() => runBulk({ action: "enable" })}>Enable</Menu.Item>
                       <Menu.Item onClick={() => runBulk({ action: "disable" })}>Disable</Menu.Item>
+                      <Menu.Item onClick={() => setBulkDummyEpgOpen(true)}>Set Dummy EPG mode...</Menu.Item>
                       <Menu.Item
                         color="red"
                         onClick={() => {
@@ -462,6 +469,29 @@ export default function PlaylistEditorPage() {
           opened={dummyEpgRulesOpen}
           onClose={() => setDummyEpgRulesOpen(false)}
           playlistId={playlistId}
+        />
+      )}
+
+      {playlistId && (
+        <BulkDummyEpgModal
+          opened={bulkDummyEpgOpen}
+          onClose={() => {
+            setBulkDummyEpgOpen(false);
+            setSelectedChannelIds(new Set());
+          }}
+          playlistId={playlistId}
+          channelIds={[...selectedChannelIds]}
+          onChanged={invalidate}
+        />
+      )}
+
+      {playlistId && activeCategory && (
+        <EpgPreviewModal
+          opened={epgPreviewOpen}
+          onClose={() => setEpgPreviewOpen(false)}
+          playlistId={playlistId}
+          categoryId={activeCategory.id}
+          categoryName={activeCategory.name}
         />
       )}
     </Stack>
@@ -1843,6 +1873,207 @@ function DummyEpgRulesModal({
         <Button onClick={() => createMutation.mutate()} loading={createMutation.isPending} disabled={!newName || !newPattern}>
           Add Rule
         </Button>
+      </Stack>
+    </Modal>
+  );
+}
+
+// Applying a Dummy EPG mode is currently one channel at a time in Channel Detail; this is the
+// bulk equivalent, reusing the existing bulk-action endpoint. Once several channels are in
+// "event" mode, the playlist's Dummy EPG Rules already apply to every one of them automatically
+// (they're playlist-wide, not per-channel) - so this bulk mode-set is the missing piece for
+// "apply a rule to multiple channels" rather than the rule itself needing any per-channel setup.
+function BulkDummyEpgModal({
+  opened,
+  onClose,
+  playlistId,
+  channelIds,
+  onChanged,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+  channelIds: number[];
+  onChanged: () => void;
+}) {
+  const [mode, setMode] = useState<DummyEpgMode>("event");
+  const [minutes, setMinutes] = useState<number | "">("");
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.post(`/api/playlists/${playlistId}/channels/bulk`, {
+        channel_ids: channelIds,
+        action: "set_dummy_epg_mode",
+        dummy_epg_mode: mode,
+        dummy_epg_program_minutes: minutes === "" ? null : minutes,
+      }),
+    onSuccess: () => {
+      onChanged();
+      onClose();
+      notifications.show({ message: `Set Dummy EPG mode for ${channelIds.length} channel(s)`, color: "green" });
+    },
+    onError: (err) =>
+      notifications.show({
+        message: (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Request failed",
+        color: "red",
+      }),
+  });
+
+  return (
+    <Modal opened={opened} onClose={onClose} title={`Set Dummy EPG Mode for ${channelIds.length} channel(s)`} size="sm">
+      <Stack>
+        <Select
+          label="Mode"
+          data={[
+            { value: "inherit", label: "Inherit from category" },
+            { value: "off", label: "Off" },
+            { value: "name", label: "Channel name as program" },
+            { value: "event", label: "Parse event date/time from name" },
+          ]}
+          value={mode}
+          onChange={(v) => setMode((v as DummyEpgMode) ?? "event")}
+        />
+        <NumberInput
+          label="Program length (minutes)"
+          description="Leave blank to keep each channel's existing length"
+          value={minutes}
+          onChange={(v) => setMinutes(v === "" ? "" : Number(v))}
+          min={5}
+        />
+        <Button onClick={() => mutation.mutate()} loading={mutation.isPending} disabled={channelIds.length === 0}>
+          Apply to {channelIds.length} channel(s)
+        </Button>
+      </Stack>
+    </Modal>
+  );
+}
+
+interface EpgPreviewProgram {
+  start: string;
+  stop: string;
+  title: string;
+}
+
+interface EpgPreviewChannel {
+  channel_id: number;
+  name: string;
+  dummy_epg_mode: DummyEpgMode;
+  programs: EpgPreviewProgram[];
+}
+
+interface EpgPreviewResult {
+  hours: number;
+  total_channels: number;
+  truncated: boolean;
+  channels: EpgPreviewChannel[];
+}
+
+// Shows exactly what XMLTV output would contain for this category right now - real programs
+// where EPG-mapped, dummy-generated ones otherwise (including custom event rules and "Up Next"
+// blocks) - computed server-side by the same code the real feed uses, so this can't drift from
+// what a player actually pulls.
+function EpgPreviewModal({
+  opened,
+  onClose,
+  playlistId,
+  categoryId,
+  categoryName,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+  categoryId: number;
+  categoryName: string;
+}) {
+  const [hours, setHours] = useState(24);
+
+  const { data, isLoading, isError } = useQuery<EpgPreviewResult>({
+    queryKey: ["epg-preview", playlistId, categoryId, hours],
+    queryFn: () =>
+      api
+        .get(`/api/playlists/${playlistId}/categories/${categoryId}/epg-preview`, { params: { hours } })
+        .then((r) => r.data),
+    enabled: opened,
+  });
+
+  return (
+    <Modal opened={opened} onClose={onClose} title={`EPG Preview — ${categoryName}`} size="xl">
+      <Stack>
+        <Group justify="space-between" align="flex-end">
+          <Select
+            label="Window"
+            data={[
+              { value: "6", label: "Next 6 hours" },
+              { value: "12", label: "Next 12 hours" },
+              { value: "24", label: "Next 24 hours" },
+              { value: "48", label: "Next 2 days" },
+              { value: "72", label: "Next 3 days" },
+            ]}
+            value={String(hours)}
+            onChange={(v) => setHours(Number(v) || 24)}
+            w={200}
+          />
+          {data && (
+            <Text size="xs" c="dimmed">
+              {data.total_channels} channel(s){data.truncated ? ` — showing first ${data.channels.length}` : ""}
+            </Text>
+          )}
+        </Group>
+
+        {isLoading && (
+          <Group justify="center" py="xl">
+            <Loader size="sm" />
+          </Group>
+        )}
+        {isError && (
+          <Text size="sm" c="red">
+            Failed to load preview.
+          </Text>
+        )}
+
+        <ScrollArea h={520}>
+          <Stack gap="sm">
+            {data?.channels.map((ch) => (
+              <Paper key={ch.channel_id} withBorder p="xs">
+                <Group gap={6} mb={4}>
+                  <Text size="sm" fw={600}>
+                    {ch.name}
+                  </Text>
+                  <Badge size="xs" variant="outline">
+                    {ch.dummy_epg_mode}
+                  </Badge>
+                </Group>
+                {ch.programs.length === 0 ? (
+                  <Text size="xs" c="dimmed">
+                    No programs in this window (dummy EPG is off, or nothing mapped).
+                  </Text>
+                ) : (
+                  <Table>
+                    <Table.Tbody>
+                      {ch.programs.map((p, i) => (
+                        <Table.Tr key={i}>
+                          <Table.Td w={260}>
+                            <Text size="xs" c="dimmed">
+                              {new Date(p.start).toLocaleString()} – {new Date(p.stop).toLocaleTimeString()}
+                            </Text>
+                          </Table.Td>
+                          <Table.Td>
+                            <Text size="xs">{p.title}</Text>
+                          </Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                )}
+              </Paper>
+            ))}
+            {data && data.channels.length === 0 && (
+              <Text size="sm" c="dimmed">
+                No enabled channels in this category.
+              </Text>
+            )}
+          </Stack>
+        </ScrollArea>
       </Stack>
     </Modal>
   );
