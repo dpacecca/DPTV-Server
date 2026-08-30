@@ -15,6 +15,7 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconPlus, IconTrash, IconUpload } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -158,6 +159,14 @@ function ImportM3uModal({ opened, onClose }: { opened: boolean; onClose: () => v
     onSuccess: (data) => {
       setResult(data);
       qc.invalidateQueries({ queryKey: ["playlists"] });
+    },
+    onError: (err) => {
+      const detail = (err as { response?: { data?: { detail?: string }; status?: number } })?.response;
+      const message =
+        detail?.status === 413
+          ? "That file is too large for the server to accept right now (ask whoever runs this server to raise nginx's client_max_body_size)."
+          : detail?.data?.detail || "Import failed - check the file is a valid M3U and try again.";
+      notifications.show({ message, color: "red", autoClose: 8000 });
     },
   });
 
