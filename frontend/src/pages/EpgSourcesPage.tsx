@@ -96,7 +96,13 @@ export default function EpgSourcesPage() {
       <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title="Add EPG Source">
         <Stack>
           <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} required />
-          <TextInput label="XMLTV URL" value={url} onChange={(e) => setUrl(e.currentTarget.value)} required />
+          <TextInput
+            label="XMLTV URL"
+            description="Plain .xml or gzip-compressed .xml.gz both work"
+            value={url}
+            onChange={(e) => setUrl(e.currentTarget.value)}
+            required
+          />
           <NumberInput
             label="Refresh interval (minutes)"
             value={refreshInterval}
