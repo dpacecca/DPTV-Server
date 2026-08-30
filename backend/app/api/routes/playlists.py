@@ -1154,6 +1154,25 @@ async def test_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleTestIn, _ad
     return {"matched": True, "error": None, "start": event_start.isoformat(), "title": title}
 
 
+class DummyEpgRuleSuggestIn(BaseModel):
+    sample_name: str
+
+
+@router.post("/{playlist_id}/dummy-epg-rules/suggest")
+async def suggest_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleSuggestIn, _admin: AdminUser) -> dict:
+    """Reverse-engineers a candidate rule pattern from one real channel name, so an admin doesn't
+    have to hand-write regex - just point it at a channel and review/tweak/save the suggestion."""
+    suggestion = dummy_epg.suggest_rule_pattern(payload.sample_name)
+    if suggestion is None:
+        return {"suggested": False}
+    return {
+        "suggested": True,
+        "pattern": suggestion.pattern,
+        "start": suggestion.start.isoformat(),
+        "title": suggestion.title,
+    }
+
+
 # ---------- Output ----------
 
 

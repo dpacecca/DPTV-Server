@@ -691,6 +691,7 @@ function ChannelDetailModal({
   const [search, setSearch] = useState("");
   const [epgSourceIds, setEpgSourceIds] = useState<Set<number>>(new Set());
   const [epgSourcesInitialized, setEpgSourcesInitialized] = useState(false);
+  const [suggestRulesOpen, setSuggestRulesOpen] = useState(false);
 
   const { data: epgSources } = useQuery<EpgSource[]>({
     queryKey: ["epg-sources-lite"],
@@ -862,12 +863,25 @@ function ChannelDetailModal({
           />
         </Group>
         {channel.dummy_epg_mode === "event" && (
-          <Text size="xs" c="dimmed">
-            Looks for a date/time in the channel name (e.g. "Team A vs Team B 08/25 9:00PM") and schedules a single
-            program at that time for the configured duration, with the channel name filling the rest of the day.
-          </Text>
+          <Stack gap={4}>
+            <Text size="xs" c="dimmed">
+              Looks for a date/time in the channel name (e.g. "Team A vs Team B 08/25 9:00PM") and schedules a single
+              program at that time for the configured duration, with the channel name filling the rest of the day.
+              Custom rules (playlist-wide) are tried first for naming conventions the built-in parser can't handle.
+            </Text>
+            <Button size="xs" variant="light" onClick={() => setSuggestRulesOpen(true)} style={{ alignSelf: "flex-start" }}>
+              Suggest Rule from This Name...
+            </Button>
+          </Stack>
         )}
       </Stack>
+
+      <DummyEpgRulesModal
+        opened={suggestRulesOpen}
+        onClose={() => setSuggestRulesOpen(false)}
+        playlistId={playlistId}
+        initialSampleName={suggestRulesOpen ? name : undefined}
+      />
     </Modal>
   );
 }
@@ -1495,10 +1509,12 @@ function DummyEpgRulesModal({
   opened,
   onClose,
   playlistId,
+  initialSampleName,
 }: {
   opened: boolean;
   onClose: () => void;
   playlistId: string;
+  initialSampleName?: string;
 }) {
   const qc = useQueryClient();
   const [newName, setNewName] = useState("");
@@ -1562,6 +1578,31 @@ function DummyEpgRulesModal({
     onSuccess: setTestResult,
   });
 
+  const suggestMutation = useMutation({
+    mutationFn: (name: string) =>
+      api
+        .post(`/api/playlists/${playlistId}/dummy-epg-rules/suggest`, { sample_name: name })
+        .then((r) => r.data as { suggested: boolean; pattern?: string; start?: string; title?: string }),
+    onSuccess: (data) => {
+      if (!data.suggested || !data.pattern) {
+        setTestResult({ matched: false, error: "Couldn't find a date/time in that name to build a rule from." });
+        return;
+      }
+      setNewPattern(data.pattern);
+      setTestResult({ matched: true, error: null, start: data.start, title: data.title });
+    },
+  });
+
+  // Opened from a channel's "Suggest Rule..." button: pre-fill the sample name and suggest
+  // immediately, so the admin lands straight on a candidate pattern for that exact channel.
+  useEffect(() => {
+    if (opened && initialSampleName) {
+      setSampleName(initialSampleName);
+      suggestMutation.mutate(initialSampleName);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened, initialSampleName]);
+
   function moveRule(index: number, direction: -1 | 1) {
     if (!rules) return;
     const target = index + direction;
@@ -1574,6 +1615,9 @@ function DummyEpgRulesModal({
   function handleClose() {
     setEditingId(null);
     setTestResult(null);
+    setSampleName("");
+    setNewPattern("");
+    setNewName("");
     onClose();
   }
 
@@ -1710,6 +1754,15 @@ function DummyEpgRulesModal({
             onChange={(e) => setSampleName(e.currentTarget.value)}
             style={{ flex: 1 }}
           />
+          <Button
+            size="xs"
+            variant="light"
+            onClick={() => suggestMutation.mutate(sampleName)}
+            loading={suggestMutation.isPending}
+            disabled={!sampleName}
+          >
+            Suggest
+          </Button>
           <Button
             size="xs"
             variant="light"
