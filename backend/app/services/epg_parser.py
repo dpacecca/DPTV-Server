@@ -1,7 +1,21 @@
+import gzip
 from dataclasses import dataclass
 from datetime import datetime
 
 from lxml import etree
+
+GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _maybe_decompress(data: bytes) -> bytes:
+    """Transparently unwraps a gzip-compressed XMLTV file (e.g. an EPG source URL pointing at
+    guide.xml.gz). Detected by the gzip magic bytes rather than the URL's extension or a
+    Content-Encoding header, since a plain static-file server serving a .gz file as its response
+    body won't set the latter - the body just *is* gzip data that the client has to unwrap
+    itself. Uncompressed XMLTV (starting with "<") passes through untouched."""
+    if data[:2] == GZIP_MAGIC:
+        return gzip.decompress(data)
+    return data
 
 
 @dataclass
@@ -30,7 +44,9 @@ def _parse_xmltv_time(value: str) -> datetime:
 
 
 def parse_xmltv(xml_bytes: bytes) -> tuple[list[ParsedEpgChannel], list[ParsedEpgProgram]]:
-    """Streams the XMLTV file so multi-hundred-MB guides don't blow up memory."""
+    """Streams the XMLTV file so multi-hundred-MB guides don't blow up memory. Transparently
+    handles a gzip-compressed guide (.xml.gz) - see _maybe_decompress."""
+    xml_bytes = _maybe_decompress(xml_bytes)
     channels: list[ParsedEpgChannel] = []
     programs: list[ParsedEpgProgram] = []
 
