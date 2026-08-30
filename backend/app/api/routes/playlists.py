@@ -18,6 +18,7 @@ from app.models.playlist import (
 )
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
+from app.services.channel_logo import resolve_channel_logo
 from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
 from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
@@ -59,7 +60,7 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
         "number": pc.number,
         "enabled": pc.enabled,
         "sort_order": pc.sort_order,
-        "logo_url": pc.logo_url_override or (pc.source_channel.logo_url if pc.source_channel else None),
+        "logo_url": resolve_channel_logo(pc),
         "manual_stream_url": pc.manual_stream_url,
         "provider_name": pc.source_channel.name if pc.source_channel else None,
         "source_channel_id": pc.source_channel_id,

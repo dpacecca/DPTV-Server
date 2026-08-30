@@ -1,14 +1,17 @@
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.base import ChannelType, EpgMatchType, SyncStatus, SyncTrigger
 from app.models.epg import EpgChannel, EpgSource
 from app.models.playlist import PlaylistCategorySourceLink, PlaylistChannel
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun
-from app.services import epg_mapper
+from app.services import epg_mapper, iptv_org_epg
 from app.services.epg_parser import parse_xmltv
 from app.services.xtream_client import ChannelData, XtreamClient, fetch_m3u_categories_and_channels
 from app.models.base import SourceType
@@ -164,11 +167,34 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
     return summary
 
 
+async def _grab_iptv_org_xmltv(epg_source: EpgSource) -> bytes:
+    """Re-resolves the source's saved country/category selection against the current channel
+    catalog (rather than a frozen snapshot from creation time) and runs the vendored
+    iptv-org/epg scraper to produce a fresh XMLTV document."""
+    selection = json.loads(epg_source.iptv_org_selection or "{}")
+    mode = selection.get("mode")
+    values = selection.get("values") or []
+    if mode == "country":
+        entries = await iptv_org_epg.grab_entries_for_countries(values)
+    elif mode == "category":
+        entries = await iptv_org_epg.grab_entries_for_categories(values)
+    else:
+        raise RuntimeError(f"EPG source {epg_source.name!r} has no valid iptv-org selection")
+
+    settings = get_settings()
+    output_path = Path(settings.data_dir) / "iptv_org_grabs" / f"epg_source_{epg_source.id}.xml"
+    await iptv_org_epg.run_grab(entries, output_path)
+    return output_path.read_bytes()
+
+
 async def sync_epg_source(db: AsyncSession, epg_source: EpgSource) -> dict:
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        resp = await client.get(epg_source.url)
-        resp.raise_for_status()
-        raw = resp.content
+    if epg_source.source_kind == "iptv_org":
+        raw = await _grab_iptv_org_xmltv(epg_source)
+    else:
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            resp = await client.get(epg_source.url)
+            resp.raise_for_status()
+            raw = resp.content
 
     parsed_channels, parsed_programs = parse_xmltv(raw)
 

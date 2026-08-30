@@ -13,6 +13,7 @@ from app.models.epg import EpgProgram
 from app.models.playlist import Playlist, PlaylistCategory, PlaylistChannel
 from app.models.source import Source
 from app.models.xc_user import XcUser, XcUserPlaylist
+from app.services.channel_logo import resolve_channel_logo
 from app.services.epg_writer import build_xmltv
 from app.services.m3u_writer import build_m3u
 from app.services.xtream_client import XtreamClient
@@ -88,7 +89,7 @@ def _live_stream_json(cat: PlaylistCategory, pc: PlaylistChannel) -> dict:
         "name": pc.name,
         "stream_type": "live",
         "stream_id": pc.id,
-        "stream_icon": pc.logo_url_override or (pc.source_channel.logo_url if pc.source_channel else ""),
+        "stream_icon": resolve_channel_logo(pc) or "",
         "epg_channel_id": pc.epg_channel.epg_channel_id if pc.epg_channel else None,
         "category_id": str(cat.id),
         "custom_sid": "",
@@ -104,7 +105,7 @@ def _vod_stream_json(cat: PlaylistCategory, pc: PlaylistChannel) -> dict:
         "name": pc.name,
         "stream_type": "movie",
         "stream_id": pc.id,
-        "stream_icon": pc.logo_url_override or (pc.source_channel.logo_url if pc.source_channel else ""),
+        "stream_icon": resolve_channel_logo(pc) or "",
         "category_id": str(cat.id),
         "container_extension": ext,
     }
@@ -115,7 +116,7 @@ def _series_json(cat: PlaylistCategory, pc: PlaylistChannel) -> dict:
         "num": pc.id,
         "series_id": pc.id,
         "name": pc.name,
-        "cover": pc.logo_url_override or (pc.source_channel.logo_url if pc.source_channel else ""),
+        "cover": resolve_channel_logo(pc) or "",
         "category_id": str(cat.id),
     }
 

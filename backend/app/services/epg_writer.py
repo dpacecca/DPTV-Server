@@ -11,6 +11,7 @@ from app.models.base import DummyEpgMode
 from app.models.epg import EpgProgram
 from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
 from app.services import dummy_epg
+from app.services.channel_logo import resolve_channel_logo
 
 logger = logging.getLogger("dptv.epg_writer")
 
@@ -136,7 +137,7 @@ async def build_xmltv(db: AsyncSession, playlist: Playlist, window_hours: int = 
     for cp in channel_programs:
         pc = cp.channel
         cid = f"pc{pc.id}"
-        icon = pc.logo_url_override or (pc.source_channel.logo_url if pc.source_channel else None)
+        icon = resolve_channel_logo(pc)
         icon_tag = f'<icon src="{escape(icon)}"/>' if icon else ""
         channel_xml.append(f'<channel id="{cid}"><display-name>{escape(pc.name)}</display-name>{icon_tag}</channel>')
         for prog in cp.programs:
