@@ -36,16 +36,16 @@ def _resolve_program_minutes(pc: PlaylistChannel) -> int:
     return pc.category.dummy_epg_program_minutes
 
 
-async def _load_event_rules(db: AsyncSession, playlist_id: int) -> list[re.Pattern]:
+async def _load_event_rules(db: AsyncSession, playlist_id: int) -> list[tuple[re.Pattern, str | None]]:
     result = await db.execute(
         select(DummyEpgRule)
         .where(DummyEpgRule.playlist_id == playlist_id, DummyEpgRule.enabled.is_(True))
         .order_by(DummyEpgRule.sort_order)
     )
-    patterns: list[re.Pattern] = []
+    patterns: list[tuple[re.Pattern, str | None]] = []
     for rule in result.scalars().all():
         try:
-            patterns.append(dummy_epg.validate_rule_pattern(rule.pattern))
+            patterns.append((dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone))
         except ValueError:
             # Already validated on save - only reachable if a pattern was edited directly in the
             # DB. Skip rather than fail the whole XMLTV output over one bad rule.
