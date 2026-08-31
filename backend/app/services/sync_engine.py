@@ -303,6 +303,38 @@ async def auto_map_epg_for_unmapped_channels(db: AsyncSession, sensitivity: floa
     return matched
 
 
+async def sync_all_sources(db: AsyncSession) -> dict:
+    """Syncs every enabled Source. One bad provider shouldn't stop the rest - each failure is
+    recorded on that source and in the summary, everything else still runs."""
+    summary: dict = {"sources": {}, "errors": []}
+    result = await db.execute(select(Source).where(Source.enabled.is_(True)))
+    for source in result.scalars().all():
+        try:
+            summary["sources"][source.name] = await sync_source(db, source)
+        except Exception as exc:  # noqa: BLE001 - one bad source shouldn't kill the run
+            source.last_sync_status = SyncStatus.FAILED.value
+            source.last_sync_error = str(exc)
+            summary["errors"].append(f"source:{source.name}: {exc}")
+    await db.flush()
+    return summary
+
+
+async def sync_all_epg_sources(db: AsyncSession) -> dict:
+    """Refreshes every EpgSource (URL-based and iptv-org). Same one-bad-source isolation as
+    sync_all_sources."""
+    summary: dict = {"epg_sources": {}, "errors": []}
+    result = await db.execute(select(EpgSource))
+    for epg_source in result.scalars().all():
+        try:
+            summary["epg_sources"][epg_source.name] = await sync_epg_source(db, epg_source)
+        except Exception as exc:  # noqa: BLE001
+            epg_source.last_refresh_status = SyncStatus.FAILED.value
+            epg_source.last_refresh_error = str(exc)
+            summary["errors"].append(f"epg:{epg_source.name}: {exc}")
+    await db.flush()
+    return summary
+
+
 async def run_full_sync(db: AsyncSession, trigger: SyncTrigger, epg_sensitivity: float = 0.9) -> SyncRun:
     run = SyncRun(started_at=datetime.now(timezone.utc), trigger=trigger, status=SyncStatus.RUNNING, summary={})
     db.add(run)
@@ -310,23 +342,13 @@ async def run_full_sync(db: AsyncSession, trigger: SyncTrigger, epg_sensitivity:
 
     summary: dict = {"sources": {}, "epg_sources": {}, "errors": []}
     try:
-        sources_result = await db.execute(select(Source).where(Source.enabled.is_(True)))
-        for source in sources_result.scalars().all():
-            try:
-                summary["sources"][source.name] = await sync_source(db, source)
-            except Exception as exc:  # noqa: BLE001 - one bad source shouldn't kill the run
-                source.last_sync_status = SyncStatus.FAILED.value
-                source.last_sync_error = str(exc)
-                summary["errors"].append(f"source:{source.name}: {exc}")
+        sources_summary = await sync_all_sources(db)
+        summary["sources"] = sources_summary["sources"]
+        summary["errors"].extend(sources_summary["errors"])
 
-        epg_sources_result = await db.execute(select(EpgSource))
-        for epg_source in epg_sources_result.scalars().all():
-            try:
-                summary["epg_sources"][epg_source.name] = await sync_epg_source(db, epg_source)
-            except Exception as exc:  # noqa: BLE001
-                epg_source.last_refresh_status = SyncStatus.FAILED.value
-                epg_source.last_refresh_error = str(exc)
-                summary["errors"].append(f"epg:{epg_source.name}: {exc}")
+        epg_summary = await sync_all_epg_sources(db)
+        summary["epg_sources"] = epg_summary["epg_sources"]
+        summary["errors"].extend(epg_summary["errors"])
 
         summary["auto_cleared_channels"] = await apply_auto_clear(db)
         summary["auto_mapped_channels"] = await auto_map_epg_for_unmapped_channels(db, sensitivity=epg_sensitivity)

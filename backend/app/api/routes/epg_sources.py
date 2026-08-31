@@ -8,7 +8,7 @@ from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
 from app.models.epg import EpgChannel, EpgSource
 from app.services import iptv_org_epg
-from app.services.sync_engine import sync_epg_source
+from app.services.sync_engine import sync_all_epg_sources, sync_epg_source
 
 router = APIRouter(prefix="/api/epg-sources", tags=["epg-sources"])
 
@@ -114,6 +114,17 @@ async def delete_epg_source(epg_source_id: int, db: DbSession, _admin: AdminUser
     await db.delete(epg)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/refresh-all")
+async def refresh_all_epg_sources(db: DbSession, _admin: AdminUser) -> dict:
+    """Refreshes every EPG source (URL-based and iptv-org). Playlists reflect this immediately
+    once it commits - guide data is read live from EpgChannel/EpgProgram, not cached per
+    playlist. This does not re-run EPG auto-mapping for newly-added channels or auto-clear;
+    use Scheduler's "Sync Now" for the full pass."""
+    summary = await sync_all_epg_sources(db)
+    await db.commit()
+    return summary
 
 
 @router.post("/{epg_source_id}/refresh")
