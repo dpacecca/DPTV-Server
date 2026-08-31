@@ -183,14 +183,25 @@ since it's a separate, occasionally-updated project with 250+ site
 scrapers you'd otherwise have to rebuild the whole app image just to
 update. Skip this section if you're happy adding EPG sources by URL.
 
-Requires Node.js >= 20.20 (already installed above for the native path,
-since building the frontend needs it too).
+Requires Node.js >= 20.20. Debian's own `apt install nodejs` (used above
+for building the frontend, which doesn't need anything this recent) can
+land just under that — check with `node --version` first, and if it's
+older, install a current one via NodeSource before cloning:
 
 ```bash
+node --version   # if this prints < v20.20, run the two lines below first
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+sudo apt install -y nodejs
+
 sudo -u dptv git clone https://github.com/iptv-org/epg.git /opt/DPTV-Server/iptv-org-epg
 cd /opt/DPTV-Server/iptv-org-epg
 sudo -u dptv npm install
 ```
+
+`npm install`'s own `npm audit` may flag high-severity findings in `pm2`
+(a transitive dependency of iptv-org/epg's own tooling, used for its
+process-manager mode) - not reachable through anything DPTV-Server
+invokes here (just `npm run grab`), so no action needed on those.
 
 Then set `DPTV_IPTV_ORG_EPG_DIR=/opt/DPTV-Server/iptv-org-epg` — for a
 native/systemd install, add it as another `Environment=` line in
