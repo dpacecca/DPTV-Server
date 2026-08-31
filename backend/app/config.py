@@ -39,13 +39,17 @@ class Settings(BaseSettings):
     iptv_org_grab_timeout_seconds: float = 900.0
     """Some sites (e.g. ones with 500+ channels) genuinely take minutes to scrape. Applies per
     batch (see iptv_org_grab_batch_size), not to the whole selection."""
-    iptv_org_grab_batch_size: int = 200
+    iptv_org_grab_batch_size: int = 50
     """The grabber holds an entire selection's guide data in memory and only writes it to disk
     once, at the very end - fine for a handful of channels, but a large country/category
     selection can hold enough in memory at once to OOM a small server. Selections larger than
     this are scraped in sequential batches of this size instead (one grabber subprocess at a
     time), each written and merged separately, so peak memory stays bounded regardless of how
-    many channels were picked overall."""
+    many channels were picked overall. Kept conservative (rather than e.g. 200) because a batch
+    of channels that actually scrape successfully - real guide data held in memory for real
+    programme listings, not the near-instant failures a sandboxed test environment without
+    normal internet access sees - costs meaningfully more memory per channel than an empty or
+    failed one; observed ~1.5GB RSS for a single 200-channel batch against real sites."""
 
 
 @lru_cache
