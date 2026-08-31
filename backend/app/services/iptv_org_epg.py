@@ -365,31 +365,16 @@ def write_channels_xml(entries: list[GrabChannelEntry], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-async def run_grab(
-    entries: list[GrabChannelEntry], output_path: Path, timeout_seconds: float | None = None
+async def _run_grab_batch(
+    entries: list[GrabChannelEntry], output_path: Path, epg_dir: Path, timeout: float
 ) -> None:
-    """Invokes the vendored iptv-org/epg grabber for the given channel entries, writing an
-    XMLTV file to output_path (an absolute path, since the subprocess runs with the checkout
-    as its cwd). Raises RuntimeError with the scraper's own stderr on failure - scraping real
-    broadcaster sites is exactly the kind of thing that fails in ways worth surfacing verbatim.
+    """Invokes the vendored iptv-org/epg grabber once, for a single batch of channel entries.
 
     Deliberately doesn't use the grabber's own --gzip output option - this app's XMLTV parser
     already transparently handles gzip (see epg_parser._maybe_decompress) for URL-based
     sources, so there's nothing to gain from depending on exactly how --gzip names its second
     output file, and reading the one plain --output path this call controls directly is
     simpler to get right."""
-    settings = get_settings()
-    if not settings.iptv_org_epg_dir:
-        raise RuntimeError("iptv-org/epg is not configured (DPTV_IPTV_ORG_EPG_DIR is unset)")
-    if not entries:
-        raise RuntimeError("No channels selected to grab")
-    epg_dir = Path(settings.iptv_org_epg_dir)
-    timeout = timeout_seconds or settings.iptv_org_grab_timeout_seconds
-
-    # The subprocess runs with the checkout as its cwd, so a relative output_path would
-    # resolve against that directory instead of wherever the caller meant - must be absolute.
-    output_path = output_path.resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     channels_xml_path = output_path.with_suffix(".channels.xml")
     write_channels_xml(entries, channels_xml_path)
 
@@ -415,3 +400,65 @@ async def run_grab(
 
     if not output_path.exists():
         raise RuntimeError("Grab completed but no output file was produced")
+
+
+def _merge_xmltv_batches(batch_paths: list[Path], output_path: Path) -> None:
+    """Concatenates each batch's <channel>/<programme> elements into one XMLTV file by
+    string-splicing on the outer <tv> tag (the same approach xc_server.get_xmltv already uses
+    to combine multiple playlists' guides) rather than parsing everything into memory at
+    once - doing that here would undo the whole point of batching the grab in the first
+    place."""
+    with output_path.open("w", encoding="utf-8") as out:
+        out.write('<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-info-name="iptv-org/epg">')
+        for batch_path in batch_paths:
+            text = batch_path.read_text(encoding="utf-8")
+            if "<tv" not in text:
+                continue
+            inner = text.split("<tv", 1)[1].split(">", 1)[1].rsplit("</tv>", 1)[0]
+            out.write(inner)
+        out.write("</tv>\n")
+
+
+async def run_grab(
+    entries: list[GrabChannelEntry], output_path: Path, timeout_seconds: float | None = None
+) -> None:
+    """Scrapes guide data for the given channel entries and writes a combined XMLTV file to
+    output_path (an absolute path, since each grabber subprocess runs with the checkout as its
+    cwd). Raises RuntimeError with the scraper's own stderr on failure - scraping real
+    broadcaster sites is exactly the kind of thing that fails in ways worth surfacing verbatim.
+
+    Large selections are scraped in sequential batches (one grabber subprocess at a time, see
+    iptv_org_grab_batch_size) instead of one monolithic run - the grabber holds an entire
+    selection's guide in memory until it writes the output at the very end, which is enough to
+    OOM a small server on a selection no larger than a single mid-sized country."""
+    settings = get_settings()
+    if not settings.iptv_org_epg_dir:
+        raise RuntimeError("iptv-org/epg is not configured (DPTV_IPTV_ORG_EPG_DIR is unset)")
+    if not entries:
+        raise RuntimeError("No channels selected to grab")
+    epg_dir = Path(settings.iptv_org_epg_dir)
+    timeout = timeout_seconds or settings.iptv_org_grab_timeout_seconds
+    batch_size = max(1, settings.iptv_org_grab_batch_size)
+
+    # The subprocess runs with the checkout as its cwd, so a relative output_path would
+    # resolve against that directory instead of wherever the caller meant - must be absolute.
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if len(entries) <= batch_size:
+        await _run_grab_batch(entries, output_path, epg_dir, timeout)
+        return
+
+    batch_paths: list[Path] = []
+    try:
+        total_batches = -(-len(entries) // batch_size)  # ceil division
+        for batch_num, i in enumerate(range(0, len(entries), batch_size), start=1):
+            batch = entries[i : i + batch_size]
+            batch_path = output_path.with_name(f"{output_path.stem}.batch{batch_num}{output_path.suffix}")
+            logger.info("Grabbing batch %d/%d (%d channels)", batch_num, total_batches, len(batch))
+            await _run_grab_batch(batch, batch_path, epg_dir, timeout)
+            batch_paths.append(batch_path)
+        _merge_xmltv_batches(batch_paths, output_path)
+    finally:
+        for p in batch_paths:
+            p.unlink(missing_ok=True)

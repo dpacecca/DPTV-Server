@@ -171,7 +171,11 @@ export default function EpgSourcesPage() {
                   </Table.Td>
                   <Table.Td>
                     <Group gap="xs">
-                      <ActionIcon variant="subtle" loading={refreshMutation.isPending} onClick={() => refreshMutation.mutate(s.id)}>
+                      <ActionIcon
+                        variant="subtle"
+                        loading={refreshMutation.isPending && refreshMutation.variables === s.id}
+                        onClick={() => refreshMutation.mutate(s.id)}
+                      >
                         <IconRefresh size={16} />
                       </ActionIcon>
                       <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(s.id)}>

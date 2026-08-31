@@ -148,7 +148,7 @@ export default function SourcesPage() {
                     <Group gap="xs">
                       <ActionIcon
                         variant="subtle"
-                        loading={syncMutation.isPending}
+                        loading={syncMutation.isPending && syncMutation.variables === s.id}
                         onClick={() => syncMutation.mutate(s.id)}
                       >
                         <IconRefresh size={16} />
