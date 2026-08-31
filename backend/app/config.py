@@ -37,7 +37,15 @@ class Settings(BaseSettings):
     to scrape iptv-org's site-specific EPG guides on demand. None disables the feature entirely -
     it's an optional system dependency (Node.js + the vendored checkout), not bundled."""
     iptv_org_grab_timeout_seconds: float = 900.0
-    """Some sites (e.g. ones with 500+ channels) genuinely take minutes to scrape."""
+    """Some sites (e.g. ones with 500+ channels) genuinely take minutes to scrape. Applies per
+    batch (see iptv_org_grab_batch_size), not to the whole selection."""
+    iptv_org_grab_batch_size: int = 200
+    """The grabber holds an entire selection's guide data in memory and only writes it to disk
+    once, at the very end - fine for a handful of channels, but a large country/category
+    selection can hold enough in memory at once to OOM a small server. Selections larger than
+    this are scraped in sequential batches of this size instead (one grabber subprocess at a
+    time), each written and merged separately, so peak memory stays bounded regardless of how
+    many channels were picked overall."""
 
 
 @lru_cache
