@@ -17,6 +17,14 @@ logger = logging.getLogger("dptv.iptv_org_epg")
 DATABASE_BASE_URL = "https://raw.githubusercontent.com/iptv-org/database/refs/heads/master/data"
 INTERNATIONAL = "International / Other"
 
+# Only one grab (across ALL EpgSources, not just within a single selection's batches) runs at
+# a time. Each grabber subprocess is memory-heavy on its own - two running concurrently (e.g.
+# a manual refresh clicked while "Update All" is still working through the list, or two rows
+# refreshed close together) compounds the exact memory pressure the batching above exists to
+# avoid, and has been observed to stall real grabs on a resource-constrained server rather than
+# cleanly failing. A second caller just waits its turn instead of racing the first.
+_grab_lock = asyncio.Lock()
+
 # --------------------------------------------------------------------------------------
 # Reference data (countries.csv / categories.csv / channels.csv / logos.csv), fetched from
 # the separate iptv-org/database repo. This is independent of the scraper itself (no Node.js
@@ -445,20 +453,23 @@ async def run_grab(
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if len(entries) <= batch_size:
-        await _run_grab_batch(entries, output_path, epg_dir, timeout)
-        return
+    if _grab_lock.locked():
+        logger.info("Waiting for another iptv-org grab in progress to finish first")
+    async with _grab_lock:
+        if len(entries) <= batch_size:
+            await _run_grab_batch(entries, output_path, epg_dir, timeout)
+            return
 
-    batch_paths: list[Path] = []
-    try:
-        total_batches = -(-len(entries) // batch_size)  # ceil division
-        for batch_num, i in enumerate(range(0, len(entries), batch_size), start=1):
-            batch = entries[i : i + batch_size]
-            batch_path = output_path.with_name(f"{output_path.stem}.batch{batch_num}{output_path.suffix}")
-            logger.info("Grabbing batch %d/%d (%d channels)", batch_num, total_batches, len(batch))
-            await _run_grab_batch(batch, batch_path, epg_dir, timeout)
-            batch_paths.append(batch_path)
-        _merge_xmltv_batches(batch_paths, output_path)
-    finally:
-        for p in batch_paths:
-            p.unlink(missing_ok=True)
+        batch_paths: list[Path] = []
+        try:
+            total_batches = -(-len(entries) // batch_size)  # ceil division
+            for batch_num, i in enumerate(range(0, len(entries), batch_size), start=1):
+                batch = entries[i : i + batch_size]
+                batch_path = output_path.with_name(f"{output_path.stem}.batch{batch_num}{output_path.suffix}")
+                logger.info("Grabbing batch %d/%d (%d channels)", batch_num, total_batches, len(batch))
+                await _run_grab_batch(batch, batch_path, epg_dir, timeout)
+                batch_paths.append(batch_path)
+            _merge_xmltv_batches(batch_paths, output_path)
+        finally:
+            for p in batch_paths:
+                p.unlink(missing_ok=True)
