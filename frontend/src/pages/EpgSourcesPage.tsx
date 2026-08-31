@@ -91,6 +91,22 @@ export default function EpgSourcesPage() {
       notifications.show({ message: err?.response?.data?.detail || "Refresh failed", color: "red" }),
   });
 
+  const refreshAllMutation = useMutation({
+    mutationFn: () => api.post("/api/epg-sources/refresh-all"),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["epg-sources"] });
+      const { epg_sources: refreshed, errors } = res.data as { epg_sources: Record<string, unknown>; errors: string[] };
+      const count = Object.keys(refreshed).length;
+      notifications.show({
+        message: errors.length
+          ? `Refreshed ${count} EPG source(s), ${errors.length} failed: ${errors.join("; ")}`
+          : `Refreshed ${count} EPG source(s)`,
+        color: errors.length ? "yellow" : "green",
+      });
+    },
+    onError: () => notifications.show({ message: "Refresh all failed", color: "red" }),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/api/epg-sources/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["epg-sources"] }),
@@ -103,9 +119,20 @@ export default function EpgSourcesPage() {
     <Stack>
       <Group justify="space-between">
         <Title order={3}>EPG Sources</Title>
-        <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
-          Add EPG Source
-        </Button>
+        <Group gap="xs">
+          <Button
+            variant="default"
+            leftSection={<IconRefresh size={16} />}
+            loading={refreshAllMutation.isPending}
+            disabled={!sources || sources.length === 0}
+            onClick={() => refreshAllMutation.mutate()}
+          >
+            Update All
+          </Button>
+          <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
+            Add EPG Source
+          </Button>
+        </Group>
       </Group>
 
       <Paper withBorder p="md">

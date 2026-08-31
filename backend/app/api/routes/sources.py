@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import AdminUser, DbSession
 from app.models.base import ChannelType, SourceType
 from app.models.source import Source, SourceCategory, SourceChannel
-from app.services.sync_engine import sync_source
+from app.services.sync_engine import sync_all_sources, sync_source
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -137,6 +137,18 @@ async def delete_source(source_id: int, db: DbSession, _admin: AdminUser) -> dic
     await db.delete(source)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/sync-all")
+async def sync_all(db: DbSession, _admin: AdminUser) -> dict:
+    """Syncs every enabled source. Playlists aren't touched directly by this - they're built
+    from live queries against Source/SourceChannel, so once this commits, any playlist output
+    (M3U/XMLTV/XC API) reflects it immediately. New provider channels still only land in a
+    playlist if that source's category is linked for auto-import (New Channel Manager); use
+    Scheduler's "Sync Now" instead for that plus EPG auto-mapping/auto-clear in one pass."""
+    summary = await sync_all_sources(db)
+    await db.commit()
+    return summary
 
 
 @router.post("/{source_id}/sync")

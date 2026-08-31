@@ -75,6 +75,22 @@ export default function SourcesPage() {
     },
   });
 
+  const syncAllMutation = useMutation({
+    mutationFn: () => api.post("/api/sources/sync-all"),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["sources"] });
+      const { sources: synced, errors } = res.data as { sources: Record<string, unknown>; errors: string[] };
+      const count = Object.keys(synced).length;
+      notifications.show({
+        message: errors.length
+          ? `Synced ${count} source(s), ${errors.length} failed: ${errors.join("; ")}`
+          : `Synced ${count} source(s)`,
+        color: errors.length ? "yellow" : "green",
+      });
+    },
+    onError: () => notifications.show({ message: "Sync all failed", color: "red" }),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/api/sources/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["sources"] }),
@@ -84,9 +100,20 @@ export default function SourcesPage() {
     <Stack>
       <Group justify="space-between">
         <Title order={3}>Sources</Title>
-        <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
-          Add Source
-        </Button>
+        <Group gap="xs">
+          <Button
+            variant="default"
+            leftSection={<IconRefresh size={16} />}
+            loading={syncAllMutation.isPending}
+            disabled={!sources || sources.length === 0}
+            onClick={() => syncAllMutation.mutate()}
+          >
+            Update All
+          </Button>
+          <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
+            Add Source
+          </Button>
+        </Group>
       </Group>
 
       <Paper withBorder p="md">
