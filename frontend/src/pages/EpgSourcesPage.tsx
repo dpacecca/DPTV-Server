@@ -16,15 +16,16 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
+import { useDebouncedValue } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { IconAlertCircle, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { EpgSource, IptvOrgCatalog } from "../api/types";
+import type { EpgSource, IptvOrgCatalog, IptvOrgChannelSearchResult } from "../api/types";
 import { EmptyState } from "../App";
 
 type SourceKind = "url" | "iptv_org";
-type IptvOrgMode = "country" | "category";
+type IptvOrgMode = "country" | "category" | "channels";
 
 export default function EpgSourcesPage() {
   const qc = useQueryClient();
@@ -34,7 +35,10 @@ export default function EpgSourcesPage() {
   const [url, setUrl] = useState("");
   const [iptvOrgMode, setIptvOrgMode] = useState<IptvOrgMode>("country");
   const [selectedValues, setSelectedValues] = useState<string[]>([]);
+  const [selectedChannelLabels, setSelectedChannelLabels] = useState<Record<string, string>>({});
+  const [channelSearchQuery, setChannelSearchQuery] = useState("");
   const [refreshInterval, setRefreshInterval] = useState(720);
+  const [debouncedChannelQuery] = useDebouncedValue(channelSearchQuery, 300);
 
   const { data: sources, isLoading } = useQuery<EpgSource[]>({
     queryKey: ["epg-sources"],
@@ -55,12 +59,49 @@ export default function EpgSourcesPage() {
     return catalog.categories.map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }));
   }, [catalog, iptvOrgMode]);
 
+  const { data: channelSearch, isFetching: channelSearchLoading } = useQuery<{
+    available: boolean;
+    results: IptvOrgChannelSearchResult[];
+  }>({
+    queryKey: ["epg-sources", "iptv-org-search-channels", debouncedChannelQuery],
+    queryFn: () =>
+      api.get("/api/epg-sources/iptv-org/search-channels", { params: { q: debouncedChannelQuery } }).then((r) => r.data),
+    enabled: modalOpen && sourceKind === "iptv_org" && iptvOrgMode === "channels" && debouncedChannelQuery.trim().length >= 2,
+  });
+
+  const channelOptions = useMemo(() => {
+    const fromSearch = (channelSearch?.results ?? []).map((r) => ({
+      value: r.id,
+      label: `${r.name}${r.country ? ` (${r.country})` : ""} — ${r.site_count} site${r.site_count === 1 ? "" : "s"}`,
+    }));
+    const fromSelected = selectedValues
+      .filter((v) => !fromSearch.some((o) => o.value === v))
+      .map((v) => ({ value: v, label: selectedChannelLabels[v] ?? v }));
+    return [...fromSelected, ...fromSearch];
+  }, [channelSearch, selectedValues, selectedChannelLabels]);
+
+  const handleChannelsChange = (values: string[]) => {
+    setSelectedChannelLabels((prev) => {
+      const next = { ...prev };
+      for (const v of values) {
+        if (!next[v]) {
+          const opt = channelOptions.find((o) => o.value === v);
+          if (opt) next[v] = opt.label;
+        }
+      }
+      return next;
+    });
+    setSelectedValues(values);
+  };
+
   const resetForm = () => {
     setName("");
     setSourceKind("url");
     setUrl("");
     setIptvOrgMode("country");
     setSelectedValues([]);
+    setSelectedChannelLabels({});
+    setChannelSearchQuery("");
     setRefreshInterval(720);
   };
 
@@ -246,27 +287,53 @@ export default function EpgSourcesPage() {
                     onChange={(v) => {
                       setIptvOrgMode(v as IptvOrgMode);
                       setSelectedValues([]);
+                      setSelectedChannelLabels({});
+                      setChannelSearchQuery("");
                     }}
                     data={[
                       { label: "By country", value: "country" },
                       { label: "By category", value: "category" },
+                      { label: "Specific channels", value: "channels" },
                     ]}
                   />
-                  <MultiSelect
-                    label={iptvOrgMode === "country" ? "Countries" : "Categories"}
-                    placeholder="Search and select..."
-                    searchable
-                    limit={50}
-                    data={catalogOptions}
-                    value={selectedValues}
-                    onChange={setSelectedValues}
-                    disabled={catalogLoading}
-                    description={
-                      iptvOrgMode === "category"
-                        ? "Only channels with real category metadata are eligible - counts reflect actual scrapable channels."
-                        : "Channel counts include a TLD-based estimate where iptv-org has no per-channel country data."
-                    }
-                  />
+                  {iptvOrgMode !== "channels" ? (
+                    <MultiSelect
+                      label={iptvOrgMode === "country" ? "Countries" : "Categories"}
+                      placeholder="Search and select..."
+                      searchable
+                      limit={50}
+                      data={catalogOptions}
+                      value={selectedValues}
+                      onChange={setSelectedValues}
+                      disabled={catalogLoading}
+                      description={
+                        iptvOrgMode === "category"
+                          ? "Only channels with real category metadata are eligible - counts reflect actual scrapable channels."
+                          : "Channel counts include a TLD-based estimate where iptv-org has no per-channel country data."
+                      }
+                    />
+                  ) : (
+                    <MultiSelect
+                      label="Channels"
+                      placeholder="Type a channel name (e.g. CNN, BBC One)..."
+                      searchable
+                      searchValue={channelSearchQuery}
+                      onSearchChange={setChannelSearchQuery}
+                      limit={25}
+                      data={channelOptions}
+                      value={selectedValues}
+                      onChange={handleChannelsChange}
+                      hidePickedOptions
+                      nothingFoundMessage={
+                        channelSearchLoading
+                          ? "Searching..."
+                          : debouncedChannelQuery.trim().length < 2
+                            ? "Type at least 2 characters to search"
+                            : "No matching channels"
+                      }
+                      description="Only guide data for exactly these channels gets scraped - map them to your playlist channels afterward like any other EPG source, once refreshed."
+                    />
+                  )}
                 </>
               )}
             </>
