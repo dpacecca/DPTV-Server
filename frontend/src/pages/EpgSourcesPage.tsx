@@ -25,7 +25,7 @@ import type { EpgSource, IptvOrgCatalog, IptvOrgChannelSearchResult } from "../a
 import { EmptyState } from "../App";
 
 type SourceKind = "url" | "iptv_org";
-type IptvOrgMode = "country" | "category" | "channels";
+type IptvOrgMode = "country" | "category" | "channels" | "mapped";
 
 export default function EpgSourcesPage() {
   const qc = useQueryClient();
@@ -154,7 +154,12 @@ export default function EpgSourcesPage() {
   });
 
   const canSave =
-    !!name && (sourceKind === "url" ? !!url : selectedValues.length > 0 && (catalog?.available ?? false));
+    !!name &&
+    (sourceKind === "url"
+      ? !!url
+      : iptvOrgMode === "mapped"
+        ? catalog?.available ?? false
+        : selectedValues.length > 0 && (catalog?.available ?? false));
 
   return (
     <Stack>
@@ -294,9 +299,10 @@ export default function EpgSourcesPage() {
                       { label: "By country", value: "country" },
                       { label: "By category", value: "category" },
                       { label: "Specific channels", value: "channels" },
+                      { label: "From my mappings", value: "mapped" },
                     ]}
                   />
-                  {iptvOrgMode !== "channels" ? (
+                  {iptvOrgMode === "country" || iptvOrgMode === "category" ? (
                     <MultiSelect
                       label={iptvOrgMode === "country" ? "Countries" : "Categories"}
                       placeholder="Search and select..."
@@ -312,7 +318,7 @@ export default function EpgSourcesPage() {
                           : "Channel counts include a TLD-based estimate where iptv-org has no per-channel country data."
                       }
                     />
-                  ) : (
+                  ) : iptvOrgMode === "channels" ? (
                     <MultiSelect
                       label="Channels"
                       placeholder="Type a channel name (e.g. CNN, BBC One)..."
@@ -333,6 +339,14 @@ export default function EpgSourcesPage() {
                       }
                       description="Only guide data for exactly these channels gets scraped - map them to your playlist channels afterward like any other EPG source, once refreshed."
                     />
+                  ) : (
+                    <Text size="sm" c="dimmed">
+                      No selection needed here - this source re-resolves on every refresh against
+                      whichever channels are currently mapped via "Map to iptv-org..." on the
+                      Playlists page (across all playlists), and automatically fills in each
+                      mapped channel's EPG once scraped. Map channels there first, then refresh
+                      this source (or just wait for its schedule).
+                    </Text>
                   )}
                 </>
               )}

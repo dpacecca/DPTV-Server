@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
 from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType
-from app.models.epg import EpgChannel
+from app.models.epg import EpgChannel, IptvOrgChannel
 from app.models.playlist import (
     DummyEpgRule,
     Playlist,
@@ -67,6 +67,9 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
         "epg_channel_id": pc.epg_channel_id,
         "epg_display_name": pc.epg_channel.display_name if pc.epg_channel else None,
         "epg_match_type": pc.epg_match_type,
+        "iptv_org_channel_id": pc.iptv_org_channel_id,
+        "iptv_org_channel_name": pc.iptv_org_channel.name if pc.iptv_org_channel else None,
+        "iptv_org_channel_channel_id": pc.iptv_org_channel.channel_id if pc.iptv_org_channel else None,
         "dummy_epg_mode": pc.dummy_epg_mode,
         "dummy_epg_program_minutes": pc.dummy_epg_program_minutes,
     }
@@ -645,7 +648,7 @@ async def list_category_channels(
 
     total = await db.scalar(select(func.count()).select_from(base_query.subquery()))
     result = await db.execute(
-        base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
+        base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel))
         .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
         .offset(offset)
         .limit(limit)
@@ -700,7 +703,7 @@ async def preview_category_epg(
     result = await db.execute(
         select(PlaylistChannel)
         .where(PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True))
-        .options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
+        .options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel))
         .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
         .limit(PREVIEW_MAX_CHANNELS)
     )
@@ -815,7 +818,7 @@ class ChannelUpdate(BaseModel):
 
 @router.patch("/{playlist_id}/channels/{channel_id}")
 async def update_channel(playlist_id: int, channel_id: int, payload: ChannelUpdate, db: DbSession, _admin: AdminUser) -> dict:
-    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel)])
+    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel)])
     if pc is None:
         raise HTTPException(404, "Channel not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -827,7 +830,7 @@ async def update_channel(playlist_id: int, channel_id: int, payload: ChannelUpda
 
 @router.post("/{playlist_id}/channels/{channel_id}/revert-name")
 async def revert_channel_name(playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser) -> dict:
-    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel)])
+    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel)])
     if pc is None:
         raise HTTPException(404, "Channel not found")
     if pc.source_channel:
@@ -1048,10 +1051,12 @@ async def search_epg(
         raise HTTPException(404, "Channel not found")
     query_name = q or pc.name
     candidates = await _epg_candidates(db, epg_source_ids)
-    matches = epg_mapper.search_candidates(query_name, candidates, limit=limit)
+    name_by_id = {c.id: c.display_name for c in candidates}
+    by_id = {c.id: c for c in candidates}
+    matches = epg_mapper.search_candidates(query_name, name_by_id, limit=limit)
     return [
-        {"epg_channel_id": ch.id, "display_name": ch.display_name, "epg_id": ch.epg_channel_id, "score": score}
-        for ch, score in matches
+        {"epg_channel_id": cid, "display_name": by_id[cid].display_name, "epg_id": by_id[cid].epg_channel_id, "score": score}
+        for cid, score in matches
     ]
 
 
@@ -1068,13 +1073,16 @@ async def auto_map_epg(
     if pc is None:
         raise HTTPException(404, "Channel not found")
     candidates = await _epg_candidates(db, epg_source_ids)
-    best = epg_mapper.auto_match(pc.name, candidates, sensitivity=sensitivity)
+    name_by_id = {c.id: c.display_name for c in candidates}
+    best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
     if best is None:
         return {"matched": False}
-    pc.epg_channel_id = best.id
+    cid, _score = best
+    by_id = {c.id: c for c in candidates}
+    pc.epg_channel_id = cid
     pc.epg_match_type = EpgMatchType.AUTO
     await db.commit()
-    return {"matched": True, "epg_channel_id": best.id, "display_name": best.display_name}
+    return {"matched": True, "epg_channel_id": cid, "display_name": by_id[cid].display_name}
 
 
 class BulkEpgAutoMapIn(BaseModel):
@@ -1088,19 +1096,22 @@ class BulkEpgAutoMapIn(BaseModel):
 async def bulk_auto_map_epg(playlist_id: int, payload: BulkEpgAutoMapIn, db: DbSession, _admin: AdminUser) -> dict:
     """Auto-map EPG for many channels at once, e.g. everything selected in the channel list."""
     candidates = await _epg_candidates(db, payload.epg_source_ids)
+    name_by_id = {c.id: c.display_name for c in candidates}
+    by_id = {c.id: c for c in candidates}
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     channels = result.scalars().all()
 
     matched: list[dict] = []
     unmatched: list[dict] = []
     for pc in channels:
-        best = epg_mapper.auto_match(pc.name, candidates, sensitivity=payload.sensitivity)
+        best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=payload.sensitivity)
         if best is None:
             unmatched.append({"channel_id": pc.id, "channel_name": pc.name})
             continue
-        pc.epg_channel_id = best.id
+        cid, _score = best
+        pc.epg_channel_id = cid
         pc.epg_match_type = EpgMatchType.AUTO
-        matched.append({"channel_id": pc.id, "channel_name": pc.name, "epg_channel_id": best.id, "display_name": best.display_name})
+        matched.append({"channel_id": pc.id, "channel_name": pc.name, "epg_channel_id": cid, "display_name": by_id[cid].display_name})
 
     await db.commit()
     return {"matched": matched, "unmatched": unmatched}
@@ -1117,6 +1128,116 @@ async def assign_epg(playlist_id: int, channel_id: int, payload: EpgAssign, db: 
         raise HTTPException(404, "Channel not found")
     pc.epg_channel_id = payload.epg_channel_id
     pc.epg_match_type = EpgMatchType.MANUAL if payload.epg_channel_id else EpgMatchType.NONE
+    await db.commit()
+    return {"ok": True}
+
+
+# ---------- iptv-org channel mapping ("map first, scrape only what's mapped") ----------
+#
+# Separate from EPG mapping above: this maps against the persistent IptvOrgChannel catalog
+# (refreshed daily, independent of any actual scrape - see sync_engine.refresh_iptv_org_channel_
+# catalog), recording *intent* (PlaylistChannel.iptv_org_channel_id) before any guide data
+# exists. A "mapped"-mode iptv-org EpgSource scrapes exactly the channels referenced here, then
+# auto-fills epg_channel_id/epg_match_type once real guide data lands - see
+# sync_engine._grab_iptv_org_xmltv and sync_epg_source.
+
+
+def _serialize_iptv_org_match(channel: IptvOrgChannel, score: float | None = None) -> dict:
+    out = {
+        "iptv_org_channel_id": channel.id,
+        "channel_id": channel.channel_id,
+        "name": channel.name,
+        "country": channel.country,
+        "categories": channel.categories.split(",") if channel.categories else [],
+        "site_count": channel.site_count,
+    }
+    if score is not None:
+        out["score"] = score
+    return out
+
+
+@router.get("/{playlist_id}/channels/{channel_id}/iptv-org/search")
+async def search_iptv_org_channel(
+    playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser, q: str | None = None, limit: int = 10
+) -> list[dict]:
+    """Fuzzy search against the persistent iptv-org channel catalog - results always include
+    the raw channel_id (e.g. "ESPN.us") alongside the display name, since a name alone is
+    frequently ambiguous across countries (ESPN.us vs ESPN.au vs ESPN.br, ...)."""
+    pc = await db.get(PlaylistChannel, channel_id)
+    if pc is None:
+        raise HTTPException(404, "Channel not found")
+    query_name = q or pc.name
+    candidates = (await db.execute(select(IptvOrgChannel))).scalars().all()
+    name_by_id = {c.id: c.name for c in candidates}
+    by_id = {c.id: c for c in candidates}
+    matches = epg_mapper.search_candidates(query_name, name_by_id, limit=limit)
+    return [_serialize_iptv_org_match(by_id[cid], score) for cid, score in matches]
+
+
+@router.post("/{playlist_id}/channels/{channel_id}/iptv-org/auto")
+async def auto_map_iptv_org_channel(
+    playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser, sensitivity: float = 0.9
+) -> dict:
+    pc = await db.get(PlaylistChannel, channel_id)
+    if pc is None:
+        raise HTTPException(404, "Channel not found")
+    candidates = (await db.execute(select(IptvOrgChannel))).scalars().all()
+    name_by_id = {c.id: c.name for c in candidates}
+    by_id = {c.id: c for c in candidates}
+    best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
+    if best is None:
+        return {"matched": False}
+    cid, score = best
+    pc.iptv_org_channel_id = cid
+    await db.commit()
+    return {"matched": True, **_serialize_iptv_org_match(by_id[cid], score)}
+
+
+class BulkIptvOrgAutoMapIn(BaseModel):
+    channel_ids: list[int]
+    sensitivity: float = 0.9
+
+
+@router.post("/{playlist_id}/channels/iptv-org/bulk-auto-map")
+async def bulk_auto_map_iptv_org_channels(
+    playlist_id: int, payload: BulkIptvOrgAutoMapIn, db: DbSession, _admin: AdminUser
+) -> dict:
+    """Auto-map many channels at once against the iptv-org catalog, e.g. everything selected
+    in the channel list. Only records the mapping - nothing is scraped until a "mapped"-mode
+    iptv-org EpgSource is refreshed."""
+    candidates = (await db.execute(select(IptvOrgChannel))).scalars().all()
+    name_by_id = {c.id: c.name for c in candidates}
+    by_id = {c.id: c for c in candidates}
+    result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
+    channels = result.scalars().all()
+
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    for pc in channels:
+        best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=payload.sensitivity)
+        if best is None:
+            unmatched.append({"channel_id": pc.id, "channel_name": pc.name})
+            continue
+        cid, score = best
+        pc.iptv_org_channel_id = cid
+        matched.append({"channel_id": pc.id, "channel_name": pc.name, **_serialize_iptv_org_match(by_id[cid], score)})
+
+    await db.commit()
+    return {"matched": matched, "unmatched": unmatched}
+
+
+class IptvOrgAssign(BaseModel):
+    iptv_org_channel_id: int | None
+
+
+@router.patch("/{playlist_id}/channels/{channel_id}/iptv-org")
+async def assign_iptv_org_channel(
+    playlist_id: int, channel_id: int, payload: IptvOrgAssign, db: DbSession, _admin: AdminUser
+) -> dict:
+    pc = await db.get(PlaylistChannel, channel_id)
+    if pc is None:
+        raise HTTPException(404, "Channel not found")
+    pc.iptv_org_channel_id = payload.iptv_org_channel_id
     await db.commit()
     return {"ok": True}
 

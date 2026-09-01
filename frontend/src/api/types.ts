@@ -112,8 +112,21 @@ export interface PlaylistChannel {
   epg_channel_id: number | null;
   epg_display_name: string | null;
   epg_match_type: EpgMatchType;
+  iptv_org_channel_id: number | null;
+  iptv_org_channel_name: string | null;
+  iptv_org_channel_channel_id: string | null;
   dummy_epg_mode: DummyEpgMode;
   dummy_epg_program_minutes: number | null;
+}
+
+export interface IptvOrgChannelMatch {
+  iptv_org_channel_id: number;
+  channel_id: string;
+  name: string;
+  country: string | null;
+  categories: string[];
+  site_count: number;
+  score?: number;
 }
 
 /** Category shape used everywhere in the UI: counts only, never the (potentially huge) channel list. */

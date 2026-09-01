@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.base import ChannelType, EpgMatchType, SyncStatus, SyncTrigger
-from app.models.epg import EpgChannel, EpgSource
+from app.models.epg import EpgChannel, EpgSource, IptvOrgChannel
 from app.models.playlist import PlaylistCategorySourceLink, PlaylistChannel
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun
@@ -167,10 +167,21 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
     return summary
 
 
-async def _grab_iptv_org_xmltv(epg_source: EpgSource) -> bytes:
-    """Re-resolves the source's saved country/category selection against the current channel
-    catalog (rather than a frozen snapshot from creation time) and runs the vendored
-    iptv-org/epg scraper to produce a fresh XMLTV document."""
+async def _mapped_iptv_org_channel_ids(db: AsyncSession) -> list[str]:
+    """The distinct set of iptv-org base channel ids currently referenced by any playlist
+    channel's iptv_org_channel_id, across every playlist - what a "mapped"-mode source scrapes."""
+    result = await db.execute(
+        select(IptvOrgChannel.channel_id)
+        .join(PlaylistChannel, PlaylistChannel.iptv_org_channel_id == IptvOrgChannel.id)
+        .distinct()
+    )
+    return [row[0] for row in result.all()]
+
+
+async def _grab_iptv_org_xmltv(db: AsyncSession, epg_source: EpgSource) -> bytes:
+    """Re-resolves the source's saved selection against the current channel catalog (rather
+    than a frozen snapshot from creation time) and runs the vendored iptv-org/epg scraper to
+    produce a fresh XMLTV document."""
     selection = json.loads(epg_source.iptv_org_selection or "{}")
     mode = selection.get("mode")
     values = selection.get("values") or []
@@ -180,6 +191,9 @@ async def _grab_iptv_org_xmltv(epg_source: EpgSource) -> bytes:
         entries = await iptv_org_epg.grab_entries_for_categories(values)
     elif mode == "channels":
         entries = await iptv_org_epg.grab_entries_for_channel_ids(values)
+    elif mode == "mapped":
+        mapped_ids = await _mapped_iptv_org_channel_ids(db)
+        entries = await iptv_org_epg.grab_entries_for_channel_ids(mapped_ids)
     else:
         raise RuntimeError(f"EPG source {epg_source.name!r} has no valid iptv-org selection")
 
@@ -191,7 +205,7 @@ async def _grab_iptv_org_xmltv(epg_source: EpgSource) -> bytes:
 
 async def sync_epg_source(db: AsyncSession, epg_source: EpgSource) -> dict:
     if epg_source.source_kind == "iptv_org":
-        raw = await _grab_iptv_org_xmltv(epg_source)
+        raw = await _grab_iptv_org_xmltv(db, epg_source)
     else:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
             resp = await client.get(epg_source.url)
@@ -254,6 +268,20 @@ async def sync_epg_source(db: AsyncSession, epg_source: EpgSource) -> dict:
     if to_insert:
         await db.execute(EpgProgram.__table__.insert(), to_insert)
 
+    # For an iptv-org source, "channel_rows" keys are the iptv-org base channel ids the admin
+    # already mapped (or, for country/category/channels modes, may have mapped independently) -
+    # complete the pipeline by pointing every matching PlaylistChannel at the guide data that
+    # just landed, without requiring a separate manual "map to EpgChannel" step afterward.
+    if epg_source.source_kind == "iptv_org" and channel_rows:
+        reconcile_result = await db.execute(
+            select(PlaylistChannel, IptvOrgChannel.channel_id)
+            .join(IptvOrgChannel, PlaylistChannel.iptv_org_channel_id == IptvOrgChannel.id)
+            .where(IptvOrgChannel.channel_id.in_(channel_rows.keys()))
+        )
+        for pc, base_channel_id in reconcile_result.all():
+            pc.epg_channel_id = channel_rows[base_channel_id].id
+            pc.epg_match_type = EpgMatchType.AUTO
+
     epg_source.last_refreshed_at = datetime.now(timezone.utc)
     epg_source.last_refresh_status = SyncStatus.SUCCESS.value
     epg_source.last_refresh_error = None
@@ -285,20 +313,63 @@ async def apply_auto_clear(db: AsyncSession) -> int:
     return removed_count
 
 
+async def refresh_iptv_org_channel_catalog(db: AsyncSession) -> int:
+    """Rebuilds the persistent IptvOrgChannel table from the vendored checkout's current
+    scrapable channel list. Runs on its own daily schedule (see core/scheduler.py), entirely
+    independent of any EpgSource's refresh - this table is only ever read from by the
+    mapping UI, never touched by an EpgSource's own full-replace sync. No-op (returns 0) if
+    the scraper isn't configured."""
+    settings = get_settings()
+    if not settings.iptv_org_epg_dir:
+        return 0
+
+    channels = await iptv_org_epg.list_all_channels()
+
+    existing_result = await db.execute(select(IptvOrgChannel))
+    existing_by_channel_id = {c.channel_id: c for c in existing_result.scalars().all()}
+
+    seen_channel_ids = set()
+    for ch in channels:
+        seen_channel_ids.add(ch.id)
+        categories = ",".join(ch.categories) if ch.categories else None
+        row = existing_by_channel_id.get(ch.id)
+        if row is None:
+            db.add(
+                IptvOrgChannel(
+                    channel_id=ch.id, name=ch.name, country=ch.country,
+                    categories=categories, site_count=ch.site_count, logo_url=ch.logo_url,
+                )
+            )
+        else:
+            row.name = ch.name
+            row.country = ch.country
+            row.categories = categories
+            row.site_count = ch.site_count
+            row.logo_url = ch.logo_url
+
+    for channel_id, row in existing_by_channel_id.items():
+        if channel_id not in seen_channel_ids:
+            await db.delete(row)
+
+    await db.flush()
+    return len(channels)
+
+
 async def auto_map_epg_for_unmapped_channels(db: AsyncSession, sensitivity: float = 0.9) -> int:
     epg_channels_result = await db.execute(select(EpgChannel))
     all_epg_channels = epg_channels_result.scalars().all()
     if not all_epg_channels:
         return 0
+    name_by_id = {c.id: c.display_name for c in all_epg_channels}
 
     unmapped_result = await db.execute(
         select(PlaylistChannel).where(PlaylistChannel.epg_match_type == EpgMatchType.NONE)
     )
     matched = 0
     for pc in unmapped_result.scalars().all():
-        best = epg_mapper.auto_match(pc.name, all_epg_channels, sensitivity=sensitivity)
+        best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
         if best is not None:
-            pc.epg_channel_id = best.id
+            pc.epg_channel_id = best[0]
             pc.epg_match_type = EpgMatchType.AUTO
             matched += 1
     await db.flush()

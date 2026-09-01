@@ -115,6 +115,15 @@ class PlaylistChannel(Base, TimestampMixin):
     )
     epg_match_type: Mapped[EpgMatchType] = mapped_column(enum_column(EpgMatchType), default=EpgMatchType.NONE)
 
+    iptv_org_channel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("iptv_org_channels.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """Which iptv-org catalog channel this playlist channel should get its guide from once
+    scraped - separate from epg_channel_id (what's actually currently displayed), since this
+    can be set before any scrape has happened. A "mapped"-mode iptv-org EpgSource scrapes
+    exactly the set of catalog channels referenced here across all playlists, then
+    auto-updates epg_channel_id/epg_match_type to point at the freshly-scraped result."""
+
     dummy_epg_mode: Mapped[DummyEpgMode] = mapped_column(enum_column(DummyEpgMode), default=DummyEpgMode.INHERIT)
     dummy_epg_program_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -130,3 +139,4 @@ class PlaylistChannel(Base, TimestampMixin):
     category: Mapped["PlaylistCategory"] = relationship(back_populates="channels")
     source_channel: Mapped["SourceChannel | None"] = relationship()
     epg_channel: Mapped["EpgChannel | None"] = relationship()
+    iptv_org_channel: Mapped["IptvOrgChannel | None"] = relationship()

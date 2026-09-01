@@ -15,8 +15,11 @@ router = APIRouter(prefix="/api/epg-sources", tags=["epg-sources"])
 
 class IptvOrgSelectionIn(BaseModel):
     mode: str
-    """"country", "category", or "channels"."""
-    values: list[str]
+    """"country", "category", "channels", or "mapped"."""
+    values: list[str] = []
+    """Required (non-empty) for "country"/"category"/"channels". Unused for "mapped" - that
+    mode re-resolves against whichever channels are currently mapped (PlaylistChannel.
+    iptv_org_channel_id) at refresh time, across every playlist, instead of a fixed list."""
 
 
 class EpgSourceIn(BaseModel):
@@ -32,10 +35,12 @@ class EpgSourceIn(BaseModel):
             if not self.url:
                 raise ValueError("url is required for source_kind='url'")
         elif self.source_kind == "iptv_org":
-            if self.iptv_org_selection is None or not self.iptv_org_selection.values:
+            if self.iptv_org_selection is None:
                 raise ValueError("iptv_org_selection is required for source_kind='iptv_org'")
-            if self.iptv_org_selection.mode not in ("country", "category", "channels"):
-                raise ValueError("iptv_org_selection.mode must be 'country', 'category', or 'channels'")
+            if self.iptv_org_selection.mode not in ("country", "category", "channels", "mapped"):
+                raise ValueError("iptv_org_selection.mode must be 'country', 'category', 'channels', or 'mapped'")
+            if self.iptv_org_selection.mode != "mapped" and not self.iptv_org_selection.values:
+                raise ValueError(f"iptv_org_selection.values is required for mode={self.iptv_org_selection.mode!r}")
         else:
             raise ValueError(f"Unknown source_kind: {self.source_kind!r}")
         return self
