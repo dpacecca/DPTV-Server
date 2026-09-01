@@ -373,8 +373,27 @@ def write_channels_xml(entries: list[GrabChannelEntry], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+async def _log_stream(stream: asyncio.StreamReader, prefix: str) -> list[bytes]:
+    """Logs each line as it arrives instead of buffering silently until the process exits -
+    the grabber already prints its own per-channel progress (e.g. "[3/50] site.com (en) -
+    channel - Sep 1, 2026 (12 programs)"), which was previously invisible for the entire
+    duration of a batch. Without this, there's no way to tell a slow-but-working scrape (real,
+    sequential, one-request-at-a-time network I/O against real broadcaster sites) from a
+    genuinely hung one until the batch timeout finally fires."""
+    lines: list[bytes] = []
+    while True:
+        line = await stream.readline()
+        if not line:
+            break
+        lines.append(line)
+        text = line.decode(errors="replace").rstrip()
+        if text:
+            logger.info("%s%s", prefix, text)
+    return lines
+
+
 async def _run_grab_batch(
-    entries: list[GrabChannelEntry], output_path: Path, epg_dir: Path, timeout: float
+    entries: list[GrabChannelEntry], output_path: Path, epg_dir: Path, timeout: float, log_prefix: str = ""
 ) -> None:
     """Invokes the vendored iptv-org/epg grabber once, for a single batch of channel entries.
 
@@ -395,7 +414,14 @@ async def _run_grab_batch(
         *cmd, cwd=str(epg_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        _, stderr_lines = await asyncio.wait_for(
+            asyncio.gather(
+                _log_stream(proc.stdout, log_prefix),
+                _log_stream(proc.stderr, log_prefix),
+            ),
+            timeout=timeout,
+        )
+        await proc.wait()
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
@@ -404,7 +430,8 @@ async def _run_grab_batch(
         channels_xml_path.unlink(missing_ok=True)
 
     if proc.returncode != 0:
-        raise RuntimeError(stderr.decode(errors="replace")[-2000:] or "grab failed with no output")
+        stderr_text = b"".join(stderr_lines).decode(errors="replace")
+        raise RuntimeError(stderr_text[-2000:] or "grab failed with no output")
 
     if not output_path.exists():
         raise RuntimeError("Grab completed but no output file was produced")
@@ -457,7 +484,7 @@ async def run_grab(
         logger.info("Waiting for another iptv-org grab in progress to finish first")
     async with _grab_lock:
         if len(entries) <= batch_size:
-            await _run_grab_batch(entries, output_path, epg_dir, timeout)
+            await _run_grab_batch(entries, output_path, epg_dir, timeout, log_prefix="  grab: ")
             return
 
         batch_paths: list[Path] = []
@@ -467,7 +494,8 @@ async def run_grab(
                 batch = entries[i : i + batch_size]
                 batch_path = output_path.with_name(f"{output_path.stem}.batch{batch_num}{output_path.suffix}")
                 logger.info("Grabbing batch %d/%d (%d channels)", batch_num, total_batches, len(batch))
-                await _run_grab_batch(batch, batch_path, epg_dir, timeout)
+                prefix = f"  batch {batch_num}/{total_batches}: "
+                await _run_grab_batch(batch, batch_path, epg_dir, timeout, log_prefix=prefix)
                 batch_paths.append(batch_path)
             _merge_xmltv_batches(batch_paths, output_path)
         finally:
