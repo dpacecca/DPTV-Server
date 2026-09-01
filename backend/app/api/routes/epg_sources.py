@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/epg-sources", tags=["epg-sources"])
 
 class IptvOrgSelectionIn(BaseModel):
     mode: str
-    """"country" or "category"."""
+    """"country", "category", or "channels"."""
     values: list[str]
 
 
@@ -34,8 +34,8 @@ class EpgSourceIn(BaseModel):
         elif self.source_kind == "iptv_org":
             if self.iptv_org_selection is None or not self.iptv_org_selection.values:
                 raise ValueError("iptv_org_selection is required for source_kind='iptv_org'")
-            if self.iptv_org_selection.mode not in ("country", "category"):
-                raise ValueError("iptv_org_selection.mode must be 'country' or 'category'")
+            if self.iptv_org_selection.mode not in ("country", "category", "channels"):
+                raise ValueError("iptv_org_selection.mode must be 'country', 'category', or 'channels'")
         else:
             raise ValueError(f"Unknown source_kind: {self.source_kind!r}")
         return self
@@ -85,6 +85,31 @@ async def get_iptv_org_catalog(_admin: AdminUser) -> dict:
             for c in countries
         ],
         "categories": [{"id": c.id, "name": c.name, "channel_count": c.channel_count} for c in categories],
+    }
+
+
+@router.get("/iptv-org/search-channels")
+async def search_iptv_org_channels(q: str, _admin: AdminUser) -> dict:
+    """Search-as-you-type channel picker, for the "specific channels" selection mode - lets an
+    admin pick exactly the channels they use instead of pulling a whole country/category.
+    Empty results (not an error) if the scraper isn't configured or the query is blank."""
+    settings = get_settings()
+    if not settings.iptv_org_epg_dir:
+        return {"available": False, "results": []}
+
+    results = await iptv_org_epg.search_channels(q)
+    return {
+        "available": True,
+        "results": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "country": r.country,
+                "categories": list(r.categories),
+                "site_count": r.site_count,
+            }
+            for r in results
+        ],
     }
 
 

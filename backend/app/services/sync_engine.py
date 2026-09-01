@@ -178,6 +178,8 @@ async def _grab_iptv_org_xmltv(epg_source: EpgSource) -> bytes:
         entries = await iptv_org_epg.grab_entries_for_countries(values)
     elif mode == "category":
         entries = await iptv_org_epg.grab_entries_for_categories(values)
+    elif mode == "channels":
+        entries = await iptv_org_epg.grab_entries_for_channel_ids(values)
     else:
         raise RuntimeError(f"EPG source {epg_source.name!r} has no valid iptv-org selection")
 

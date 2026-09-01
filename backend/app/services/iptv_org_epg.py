@@ -37,6 +37,7 @@ _grab_lock = asyncio.Lock()
 class ChannelRef:
     id: str
     name: str
+    alt_names: tuple[str, ...]
     country_code: str | None
     categories: tuple[str, ...]
 
@@ -108,8 +109,10 @@ async def _load_reference_data() -> ReferenceData:
         if not cid:
             continue
         categories = tuple(c for c in (row.get("categories") or "").split(";") if c)
+        alt_names = tuple(n for n in (row.get("alt_names") or "").split(";") if n)
         channels_by_id[cid] = ChannelRef(
-            id=cid, name=row.get("name") or cid, country_code=row.get("country") or None, categories=categories
+            id=cid, name=row.get("name") or cid, alt_names=alt_names,
+            country_code=row.get("country") or None, categories=categories,
         )
 
     logos_by_id_rows: dict[str, list[dict[str, str]]] = {}
@@ -355,6 +358,70 @@ async def grab_entries_for_categories(category_ids: list[str]) -> list[GrabChann
     wanted = set(category_ids)
     entries = await build_grab_entries()
     return [e for e in entries if wanted.intersection(e.categories)]
+
+
+async def grab_entries_for_channel_ids(channel_ids: list[str]) -> list[GrabChannelEntry]:
+    """Precise, admin-picked selection: only the exact channels requested (matched via the
+    same xmltv_id base-id lookup as everything else), across however many sites happen to
+    carry each one - deliberately not the whole country/category those channels live in.
+    Meant for "I only want guide data for the channels I actually use", which for a typical
+    admin is a few dozen channels rather than the thousands a country/category pull drags in."""
+    wanted = set(channel_ids)
+    entries = await build_grab_entries()
+    return [e for e in entries if e.matched and strip_feed_suffix(e.xmltv_id) in wanted]
+
+
+@dataclass(frozen=True)
+class ChannelSearchResult:
+    id: str
+    name: str
+    country: str | None
+    categories: tuple[str, ...]
+    site_count: int
+    """How many different sites carry this channel - more sites generally means better odds
+    at least one of them actually returns real guide data for it."""
+
+
+async def search_channels(query: str, limit: int = 25) -> list[ChannelSearchResult]:
+    """Searches iptv-org's channel catalog by name/alt-name, restricted to channels the
+    vendored checkout can actually scrape (has a real site backing it) - there's no point
+    letting an admin pick a channel iptv-org's database merely knows about but nothing scrapes.
+    Powers a search-as-you-type channel picker, as an alternative to the broad country/category
+    selection modes."""
+    query = query.strip().lower()
+    if not query:
+        return []
+
+    ref = await get_reference_data()
+    entries = await build_grab_entries()
+
+    site_counts: dict[str, int] = {}
+    for e in entries:
+        if not e.matched:
+            continue
+        base_id = strip_feed_suffix(e.xmltv_id)
+        site_counts[base_id] = site_counts.get(base_id, 0) + 1
+
+    results: list[ChannelSearchResult] = []
+    for base_id, count in site_counts.items():
+        channel_ref = ref.channels_by_id.get(base_id)
+        if channel_ref is None:
+            continue
+        names = (channel_ref.name, *channel_ref.alt_names)
+        if not any(query in n.lower() for n in names):
+            continue
+        country = ref.countries_by_code.get(channel_ref.country_code) if channel_ref.country_code else None
+        results.append(
+            ChannelSearchResult(
+                id=base_id, name=channel_ref.name, country=country,
+                categories=channel_ref.categories, site_count=count,
+            )
+        )
+
+    # Shortest/closest name match first (a query like "cnn" should surface "CNN" itself before
+    # "CNN International" or "CNN en Español"), then alphabetical.
+    results.sort(key=lambda r: (len(r.name), r.name))
+    return results[:limit]
 
 
 def write_channels_xml(entries: list[GrabChannelEntry], path: Path) -> None:
