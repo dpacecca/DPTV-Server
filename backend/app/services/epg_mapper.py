@@ -1,24 +1,24 @@
 from rapidfuzz import fuzz, process
 
-from app.models.epg import EpgChannel
 from app.services.name_normalize import normalize_name
 
+# Deliberately model-agnostic (id -> display name) rather than typed to EpgChannel - the same
+# fuzzy-matching logic is used to match against both real EpgChannel rows and the persistent
+# IptvOrgChannel catalog. Callers look their own objects back up by the returned id.
 
-def search_candidates(
-    channel_name: str, candidates: list[EpgChannel], limit: int = 10
-) -> list[tuple[EpgChannel, float]]:
+
+def search_candidates(channel_name: str, candidates: dict[int, str], limit: int = 10) -> list[tuple[int, float]]:
     query = normalize_name(channel_name)
     if not candidates:
         return []
-    choices = {c.id: normalize_name(c.display_name) for c in candidates}
+    choices = {cid: normalize_name(name) for cid, name in candidates.items()}
     results = process.extract(query, choices, scorer=fuzz.WRatio, limit=limit)
-    by_id = {c.id: c for c in candidates}
-    return [(by_id[cid], score / 100.0) for _text, score, cid in results]
+    return [(cid, score / 100.0) for _text, score, cid in results]
 
 
-def auto_match(channel_name: str, candidates: list[EpgChannel], sensitivity: float = 0.9) -> EpgChannel | None:
+def auto_match(channel_name: str, candidates: dict[int, str], sensitivity: float = 0.9) -> tuple[int, float] | None:
     matches = search_candidates(channel_name, candidates, limit=1)
     if not matches:
         return None
-    best, score = matches[0]
-    return best if score >= sensitivity else None
+    cid, score = matches[0]
+    return (cid, score) if score >= sensitivity else None

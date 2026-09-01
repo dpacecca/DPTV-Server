@@ -43,15 +43,21 @@ instead of local files.
   removing anything. Requires the `ffmpeg` package on the server (see
   Running it below).
 - **EPG from iptv-org/epg**: browse [iptv-org/epg](https://github.com/iptv-org/epg)'s
-  251 site scrapers by country, category, or specific channel search
-  (using the real per-channel metadata from
+  251 site scrapers by country, category, specific channel search, or
+  your own channel mappings (using the real per-channel metadata from
   [iptv-org/database](https://github.com/iptv-org/database) where
   available) and add one as a normal, auto-refreshing EPG source — the
   server runs the scrape itself on a schedule. Country/category pulls
-  are broad but slow; searching for and picking exactly the channels you
-  actually use is far faster and lighter, and is the better choice once
-  you know which ones matter to you. Optional; requires Node.js and a
-  local checkout (see "Optional: iptv-org/epg scraper" below).
+  are broad but slow. The "From my mappings" mode is the better choice
+  for an existing library: a daily-refreshed local catalog of every
+  scrapable channel lets you bulk auto-map or manually search-and-pick
+  which iptv-org channel each of your playlist channels corresponds to
+  (via "Map to iptv-org..." on the Playlists page) *before* anything is
+  scraped — then a single "From my mappings" source scrapes exactly
+  those channels, however many playlists they're spread across, and
+  automatically fills in each channel's EPG mapping once guide data
+  lands. Optional; requires Node.js and a local checkout (see "Optional:
+  iptv-org/epg scraper" below).
 - **Automatic channel logos**: channels missing a logo from their provider
   get one automatically looked up from iptv-org's community-maintained
   logo database (matched via the mapped EPG channel id), refreshed daily

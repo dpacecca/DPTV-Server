@@ -380,18 +380,14 @@ class ChannelSearchResult:
     site_count: int
     """How many different sites carry this channel - more sites generally means better odds
     at least one of them actually returns real guide data for it."""
+    logo_url: str | None
 
 
-async def search_channels(query: str, limit: int = 25) -> list[ChannelSearchResult]:
-    """Searches iptv-org's channel catalog by name/alt-name, restricted to channels the
-    vendored checkout can actually scrape (has a real site backing it) - there's no point
-    letting an admin pick a channel iptv-org's database merely knows about but nothing scrapes.
-    Powers a search-as-you-type channel picker, as an alternative to the broad country/category
-    selection modes."""
-    query = query.strip().lower()
-    if not query:
-        return []
-
+async def _all_channel_results() -> list[ChannelSearchResult]:
+    """Every channel the vendored checkout can actually scrape (has a real site backing it) -
+    there's no point surfacing a channel iptv-org's database merely knows about but nothing
+    scrapes. Shared by search_channels() (filtered) and list_all_channels() (the full set, used
+    to rebuild the persistent IptvOrgChannel catalog table)."""
     ref = await get_reference_data()
     entries = await build_grab_entries()
 
@@ -407,16 +403,33 @@ async def search_channels(query: str, limit: int = 25) -> list[ChannelSearchResu
         channel_ref = ref.channels_by_id.get(base_id)
         if channel_ref is None:
             continue
-        names = (channel_ref.name, *channel_ref.alt_names)
-        if not any(query in n.lower() for n in names):
-            continue
         country = ref.countries_by_code.get(channel_ref.country_code) if channel_ref.country_code else None
         results.append(
             ChannelSearchResult(
                 id=base_id, name=channel_ref.name, country=country,
                 categories=channel_ref.categories, site_count=count,
+                logo_url=ref.logos_by_channel_id.get(base_id),
             )
         )
+    return results
+
+
+async def list_all_channels() -> list[ChannelSearchResult]:
+    """The full scrapable channel catalog, unfiltered - powers the daily refresh of the
+    persistent IptvOrgChannel table admins search/bulk-map against."""
+    return await _all_channel_results()
+
+
+async def search_channels(query: str, limit: int = 25) -> list[ChannelSearchResult]:
+    """Searches iptv-org's channel catalog by name/alt-name. Powers a search-as-you-type
+    channel picker, as an alternative to the broad country/category selection modes."""
+    query = query.strip().lower()
+    if not query:
+        return []
+
+    ref = await get_reference_data()
+    all_results = await _all_channel_results()
+    results = [r for r in all_results if any(query in n.lower() for n in (r.name, *ref.channels_by_id[r.id].alt_names))]
 
     # Shortest/closest name match first (a query like "cnn" should surface "CNN" itself before
     # "CNN International" or "CNN en Español"), then alphabetical.
@@ -426,15 +439,27 @@ async def search_channels(query: str, limit: int = 25) -> list[ChannelSearchResu
 
 def write_channels_xml(entries: list[GrabChannelEntry], path: Path) -> None:
     """Writes the grabber's --channels=<path> input format: a flat <channels> list of
-    <channel site=.. site_id=.. lang=..>Name</channel> entries, matching what sites/*/*.channels.xml
-    already looks like. Precise channel-level selection instead of --sites=, since selecting
-    a whole site would drag in channels from every country/category it happens to carry."""
+    <channel site=.. site_id=.. lang=.. xmltv_id=..>Name</channel> entries, matching what
+    sites/*/*.channels.xml already looks like. Precise channel-level selection instead of
+    --sites=, since selecting a whole site would drag in channels from every country/category
+    it happens to carry.
+
+    Crucially, xmltv_id is set to the stripped base channel id (e.g. "CNN.us", not the raw
+    per-feed "CNN.us@East") for matched entries - the grabber uses this as the output XMLTV's
+    <channel id="..."> verbatim, so leaving it out (as an earlier version of this function did)
+    means the output falls back to some grabber-internal id (a raw site_id, sometimes not even
+    a stable one) that has nothing to do with iptv-org's own catalog. That breaks anything
+    downstream trying to match scraped output back to a specific catalog channel by id -
+    including the "mapped" selection mode's auto-reconciliation, which depends on it exactly.
+    Unmatched (TLD-heuristic-only) entries have no trustworthy canonical id, so they're left
+    without xmltv_id, same as before."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<channels>"]
     for e in entries:
+        xmltv_id_attr = f' xmltv_id="{escape(strip_feed_suffix(e.xmltv_id))}"' if e.matched else ""
         lines.append(
-            f'  <channel site="{escape(e.site)}" site_id="{escape(e.site_id)}" lang="{escape(e.lang)}">'
-            f"{escape(e.name)}</channel>"
+            f'  <channel site="{escape(e.site)}" site_id="{escape(e.site_id)}" lang="{escape(e.lang)}"'
+            f"{xmltv_id_attr}>{escape(e.name)}</channel>"
         )
     lines.append("</channels>")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
