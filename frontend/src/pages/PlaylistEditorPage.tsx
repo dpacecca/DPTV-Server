@@ -49,6 +49,7 @@ import type {
   ChannelType,
   DummyEpgMode,
   EpgSource,
+  IptvOrgCatalogFilters,
   IptvOrgChannelMatch,
   PaginatedChannels,
   Playlist,
@@ -810,9 +811,19 @@ function ChannelDetailModal({
   });
 
   const [iptvOrgSearch, setIptvOrgSearch] = useState("");
+  const [iptvOrgCountry, setIptvOrgCountry] = useState<string | null>(null);
+  const [iptvOrgCategory, setIptvOrgCategory] = useState<string | null>(null);
+
+  const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
+    queryKey: ["iptv-org-catalog-filters"],
+    queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
+  });
 
   const autoIptvOrgMutation = useMutation({
-    mutationFn: () => api.post(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org/auto`),
+    mutationFn: () =>
+      api.post(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org/auto`, null, {
+        params: { country: iptvOrgCountry || undefined, category: iptvOrgCategory || undefined },
+      }),
     onSuccess: (res) => {
       onChanged();
       notifications.show({
@@ -823,11 +834,11 @@ function ChannelDetailModal({
   });
 
   const { data: iptvOrgSearchResults } = useQuery<IptvOrgChannelMatch[]>({
-    queryKey: ["iptv-org-search", playlistId, channelId, iptvOrgSearch],
+    queryKey: ["iptv-org-search", playlistId, channelId, iptvOrgSearch, iptvOrgCountry, iptvOrgCategory],
     queryFn: () =>
       api
         .get(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org/search`, {
-          params: { q: iptvOrgSearch || undefined },
+          params: { q: iptvOrgSearch || undefined, country: iptvOrgCountry || undefined, category: iptvOrgCategory || undefined },
         })
         .then((r) => r.data),
   });
@@ -952,6 +963,24 @@ function ChannelDetailModal({
             {channel.iptv_org_channel_name} ({channel.iptv_org_channel_channel_id})
           </Badge>
         )}
+        <Group grow>
+          <Select
+            placeholder="Any country"
+            searchable
+            clearable
+            data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
+            value={iptvOrgCountry}
+            onChange={setIptvOrgCountry}
+          />
+          <Select
+            placeholder="Any category"
+            searchable
+            clearable
+            data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
+            value={iptvOrgCategory}
+            onChange={setIptvOrgCategory}
+          />
+        </Group>
         <TextInput
           placeholder="Search iptv-org channels (e.g. ESPN)..."
           value={iptvOrgSearch}
@@ -1174,10 +1203,18 @@ function BulkIptvOrgModal({
   onChanged: () => void;
 }) {
   const [sensitivity, setSensitivity] = useState(0.9);
+  const [country, setCountry] = useState<string | null>(null);
+  const [category, setCategory] = useState<string | null>(null);
   const [result, setResult] = useState<{
     matched: { channel_name: string; name: string; channel_id: string; country: string | null }[];
     unmatched: { channel_name: string }[];
   } | null>(null);
+
+  const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
+    queryKey: ["iptv-org-catalog-filters"],
+    queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
+    enabled: opened,
+  });
 
   const bulkMapMutation = useMutation({
     mutationFn: () =>
@@ -1185,6 +1222,8 @@ function BulkIptvOrgModal({
         .post(`/api/playlists/${playlistId}/channels/iptv-org/bulk-auto-map`, {
           channel_ids: channelIds,
           sensitivity,
+          country,
+          category,
         })
         .then((r) => r.data),
     onSuccess: (data) => {
@@ -1207,6 +1246,27 @@ function BulkIptvOrgModal({
           Sources page) is refreshed, at which point guide data for exactly these channels is
           fetched and epg_channel gets filled in automatically.
         </Text>
+
+        <Group grow>
+          <Select
+            label="Country"
+            placeholder="Any country"
+            searchable
+            clearable
+            data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
+            value={country}
+            onChange={setCountry}
+          />
+          <Select
+            label="Category"
+            placeholder="Any category"
+            searchable
+            clearable
+            data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
+            value={category}
+            onChange={setCategory}
+          />
+        </Group>
 
         <NumberInput
           label="Sensitivity"

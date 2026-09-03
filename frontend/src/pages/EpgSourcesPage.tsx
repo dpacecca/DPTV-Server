@@ -303,21 +303,31 @@ export default function EpgSourcesPage() {
                     ]}
                   />
                   {iptvOrgMode === "country" || iptvOrgMode === "category" ? (
-                    <MultiSelect
-                      label={iptvOrgMode === "country" ? "Countries" : "Categories"}
-                      placeholder="Search and select..."
-                      searchable
-                      limit={50}
-                      data={catalogOptions}
-                      value={selectedValues}
-                      onChange={setSelectedValues}
-                      disabled={catalogLoading}
-                      description={
-                        iptvOrgMode === "category"
-                          ? "Only channels with real category metadata are eligible - counts reflect actual scrapable channels."
-                          : "Channel counts include a TLD-based estimate where iptv-org has no per-channel country data."
-                      }
-                    />
+                    <>
+                      <Alert icon={<IconAlertCircle size={16} />} color="blue" variant="light">
+                        This scrapes every channel in whatever you pick here, immediately and on
+                        every refresh - that can be thousands of channels and take a long time.
+                        If you just want to browse/search this scope while mapping specific
+                        channels (Playlists page), use "From my mappings" instead and filter by
+                        country/category there - nothing gets scraped until you actually map a
+                        channel.
+                      </Alert>
+                      <MultiSelect
+                        label={iptvOrgMode === "country" ? "Countries" : "Categories"}
+                        placeholder="Search and select..."
+                        searchable
+                        limit={50}
+                        data={catalogOptions}
+                        value={selectedValues}
+                        onChange={setSelectedValues}
+                        disabled={catalogLoading}
+                        description={
+                          iptvOrgMode === "category"
+                            ? "Only channels with real category metadata are eligible - counts reflect actual scrapable channels."
+                            : "Channel counts include a TLD-based estimate where iptv-org has no per-channel country data."
+                        }
+                      />
+                    </>
                   ) : iptvOrgMode === "channels" ? (
                     <MultiSelect
                       label="Channels"
