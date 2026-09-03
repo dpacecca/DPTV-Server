@@ -842,23 +842,14 @@ function ChannelDetailModal({
         .then((r) => r.data),
   });
 
-  function stageAutoMap() {
-    const top = iptvOrgSearchResults?.[0];
-    if (!top || (top.score ?? 0) < 0.5) {
-      notifications.show({ message: "No confident match found", color: "yellow" });
-      return;
-    }
-    setPendingIptvOrgMatch(top);
-  }
-
   const assignIptvOrgMutation = useMutation({
-    mutationFn: (iptvOrgChannelId: number | null) =>
-      api.patch(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org`, { iptv_org_channel_id: iptvOrgChannelId }),
-    onSuccess: (_res, _iptvOrgChannelId) => {
+    mutationFn: (target: IptvOrgChannelMatch | null) =>
+      api.patch(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org`, {
+        iptv_org_channel_id: target ? target.iptv_org_channel_id : null,
+      }),
+    onSuccess: (_res, target) => {
       setCommittedIptvOrg(
-        pendingIptvOrgMatch
-          ? { id: pendingIptvOrgMatch.iptv_org_channel_id, name: pendingIptvOrgMatch.name, channelId: pendingIptvOrgMatch.channel_id }
-          : { id: null, name: null, channelId: null },
+        target ? { id: target.iptv_org_channel_id, name: target.name, channelId: target.channel_id } : { id: null, name: null, channelId: null },
       );
       setPendingIptvOrgMatch(undefined);
       onChanged();
@@ -870,6 +861,17 @@ function ChannelDetailModal({
         color: "red",
       }),
   });
+
+  // Auto-map is a one-click action: it commits the top confident match immediately (no staging)
+  // and closes the whole Channel Settings modal, since there's nothing left to review.
+  function autoMapAndClose() {
+    const top = iptvOrgSearchResults?.[0];
+    if (!top || (top.score ?? 0) < 0.5) {
+      notifications.show({ message: "No confident match found", color: "yellow" });
+      return;
+    }
+    assignIptvOrgMutation.mutate(top, { onSuccess: onClose });
+  }
 
   return (
     <Modal opened onClose={onClose} title="Channel Settings" size="lg">
@@ -972,7 +974,13 @@ function ChannelDetailModal({
           saved until you hit Apply.
         </Text>
         <Group>
-          <Button size="xs" leftSection={<IconWand size={14} />} variant="light" onClick={stageAutoMap}>
+          <Button
+            size="xs"
+            leftSection={<IconWand size={14} />}
+            variant="light"
+            loading={assignIptvOrgMutation.isPending}
+            onClick={autoMapAndClose}
+          >
             Auto-map
           </Button>
           {committedIptvOrg.id && pendingIptvOrgMatch === undefined && (
@@ -990,9 +998,7 @@ function ChannelDetailModal({
               size="xs"
               color="green"
               loading={assignIptvOrgMutation.isPending}
-              onClick={() =>
-                assignIptvOrgMutation.mutate(pendingIptvOrgMatch ? pendingIptvOrgMatch.iptv_org_channel_id : null)
-              }
+              onClick={() => assignIptvOrgMutation.mutate(pendingIptvOrgMatch ?? null)}
             >
               Apply
             </Button>
