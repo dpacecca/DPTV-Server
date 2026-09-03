@@ -129,6 +129,11 @@ export interface IptvOrgChannelMatch {
   score?: number;
 }
 
+export interface IptvOrgCatalogFilters {
+  countries: { name: string; channel_count: number }[];
+  categories: { id: string; name: string; channel_count: number }[];
+}
+
 /** Category shape used everywhere in the UI: counts only, never the (potentially huge) channel list. */
 export interface PlaylistCategory {
   id: number;

@@ -19,7 +19,7 @@ from app.models.playlist import (
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
-from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
+from app.services import duplicate_scanner, dummy_epg, epg_mapper, iptv_org_epg, scan_jobs
 from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
@@ -1156,9 +1156,56 @@ def _serialize_iptv_org_match(channel: IptvOrgChannel, score: float | None = Non
     return out
 
 
+async def _iptv_org_candidates(db: DbSession, country: str | None, category: str | None) -> list[IptvOrgChannel]:
+    """Optionally narrowed to a single country and/or category - lets an admin scope a search
+    (e.g. "just US channels", "just Sports") the same way EPG mapping already scopes to
+    specific EPG sources, without ever triggering a scrape of anything not actually mapped."""
+    query = select(IptvOrgChannel)
+    if country:
+        query = query.where(IptvOrgChannel.country == country)
+    if category:
+        # categories is a flat comma-joined string (e.g. "news,general") - comma-wrap both
+        # sides so a substring of one category id can't spuriously match a different one.
+        query = query.where(func.concat(",", IptvOrgChannel.categories, ",").contains(f",{category},"))
+    return list((await db.execute(query)).scalars().all())
+
+
+@router.get("/iptv-org/catalog-filters")
+async def get_iptv_org_catalog_filters(db: DbSession, _admin: AdminUser) -> dict:
+    """Countries/categories actually present in the persisted iptv-org channel catalog (not
+    the live/ephemeral one) - powers the country/category filter on the mapping search below,
+    so it only ever offers scopes that are actually searchable right now."""
+    rows = (await db.execute(select(IptvOrgChannel.country, IptvOrgChannel.categories))).all()
+    country_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    for country, categories in rows:
+        if country:
+            country_counts[country] = country_counts.get(country, 0) + 1
+        if categories:
+            for cid in categories.split(","):
+                category_counts[cid] = category_counts.get(cid, 0) + 1
+
+    ref = await iptv_org_epg.get_reference_data()
+    countries = sorted(
+        [{"name": c, "channel_count": n} for c, n in country_counts.items()], key=lambda x: x["name"]
+    )
+    categories = sorted(
+        [{"id": cid, "name": ref.categories_by_id.get(cid, cid), "channel_count": n} for cid, n in category_counts.items()],
+        key=lambda x: x["name"],
+    )
+    return {"countries": countries, "categories": categories}
+
+
 @router.get("/{playlist_id}/channels/{channel_id}/iptv-org/search")
 async def search_iptv_org_channel(
-    playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser, q: str | None = None, limit: int = 10
+    playlist_id: int,
+    channel_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    limit: int = 10,
+    country: str | None = None,
+    category: str | None = None,
 ) -> list[dict]:
     """Fuzzy search against the persistent iptv-org channel catalog - results always include
     the raw channel_id (e.g. "ESPN.us") alongside the display name, since a name alone is
@@ -1167,7 +1214,7 @@ async def search_iptv_org_channel(
     if pc is None:
         raise HTTPException(404, "Channel not found")
     query_name = q or pc.name
-    candidates = (await db.execute(select(IptvOrgChannel))).scalars().all()
+    candidates = await _iptv_org_candidates(db, country, category)
     name_by_id = {c.id: c.name for c in candidates}
     by_id = {c.id: c for c in candidates}
     matches = epg_mapper.search_candidates(query_name, name_by_id, limit=limit)
@@ -1176,12 +1223,18 @@ async def search_iptv_org_channel(
 
 @router.post("/{playlist_id}/channels/{channel_id}/iptv-org/auto")
 async def auto_map_iptv_org_channel(
-    playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser, sensitivity: float = 0.9
+    playlist_id: int,
+    channel_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    sensitivity: float = 0.9,
+    country: str | None = None,
+    category: str | None = None,
 ) -> dict:
     pc = await db.get(PlaylistChannel, channel_id)
     if pc is None:
         raise HTTPException(404, "Channel not found")
-    candidates = (await db.execute(select(IptvOrgChannel))).scalars().all()
+    candidates = await _iptv_org_candidates(db, country, category)
     name_by_id = {c.id: c.name for c in candidates}
     by_id = {c.id: c for c in candidates}
     best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
@@ -1196,6 +1249,8 @@ async def auto_map_iptv_org_channel(
 class BulkIptvOrgAutoMapIn(BaseModel):
     channel_ids: list[int]
     sensitivity: float = 0.9
+    country: str | None = None
+    category: str | None = None
 
 
 @router.post("/{playlist_id}/channels/iptv-org/bulk-auto-map")
@@ -1205,7 +1260,7 @@ async def bulk_auto_map_iptv_org_channels(
     """Auto-map many channels at once against the iptv-org catalog, e.g. everything selected
     in the channel list. Only records the mapping - nothing is scraped until a "mapped"-mode
     iptv-org EpgSource is refreshed."""
-    candidates = (await db.execute(select(IptvOrgChannel))).scalars().all()
+    candidates = await _iptv_org_candidates(db, payload.country, payload.category)
     name_by_id = {c.id: c.name for c in candidates}
     by_id = {c.id: c for c in candidates}
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
