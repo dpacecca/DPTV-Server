@@ -842,6 +842,17 @@ function ChannelDetailModal({
         .then((r) => r.data),
   });
 
+  const mappedEpgSource = epgSources?.find((s) => s.source_kind === "iptv_org" && s.iptv_org_selection?.mode === "mapped");
+  const refreshMappedSourceMutation = useMutation({
+    mutationFn: () => api.post(`/api/epg-sources/${mappedEpgSource!.id}/refresh`),
+    onSuccess: (res) => {
+      onChanged();
+      notifications.show({ message: `Loaded ${res.data.channels} channels, ${res.data.programs} programs`, color: "green" });
+    },
+    onError: (err: any) =>
+      notifications.show({ message: err?.response?.data?.detail || "Refresh failed", color: "red" }),
+  });
+
   const assignIptvOrgMutation = useMutation({
     mutationFn: (target: IptvOrgChannelMatch | null) =>
       api.patch(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org`, {
@@ -967,12 +978,25 @@ function ChannelDetailModal({
         <Text fw={600} size="sm" mt="sm">
           iptv-org Channel Mapping
         </Text>
-        <Text size="xs" c="dimmed">
-          Maps to a channel in iptv-org's catalog before any guide data exists - once a "From my
-          channel mappings" EPG source (EPG Sources page) refreshes, this channel's real guide
-          data lands here automatically. Auto-map/search only stage a choice below - nothing is
-          saved until you hit Apply.
-        </Text>
+        <Group align="flex-start" justify="space-between" wrap="nowrap">
+          <Text size="xs" c="dimmed">
+            Maps to a channel in iptv-org's catalog before any guide data exists - once a "From
+            my channel mappings" EPG source (EPG Sources page) refreshes, this channel's real
+            guide data lands here automatically. Auto-map applies immediately; search results are
+            staged for review until you hit Apply.
+          </Text>
+          {mappedEpgSource && (
+            <Button
+              size="xs"
+              variant="subtle"
+              loading={refreshMappedSourceMutation.isPending}
+              onClick={() => refreshMappedSourceMutation.mutate()}
+              style={{ flexShrink: 0 }}
+            >
+              Fetch guide data now
+            </Button>
+          )}
+        </Group>
         <Group>
           <Button
             size="xs"
@@ -1273,6 +1297,17 @@ function BulkIptvOrgModal({
     enabled: opened,
   });
 
+  // Auto-map only records which iptv-org channel each of yours corresponds to - it doesn't fetch
+  // guide data itself. That happens when a "mapped" iptv-org EPG source refreshes, so once
+  // matching is done we offer to kick that off right here instead of sending the user to hunt
+  // for it on the EPG Sources page.
+  const { data: epgSources } = useQuery<EpgSource[]>({
+    queryKey: ["epg-sources-lite"],
+    queryFn: () => api.get("/api/epg-sources").then((r) => r.data),
+    enabled: opened,
+  });
+  const mappedEpgSource = epgSources?.find((s) => s.source_kind === "iptv_org" && s.iptv_org_selection?.mode === "mapped");
+
   const bulkMapMutation = useMutation({
     mutationFn: () =>
       api
@@ -1292,6 +1327,16 @@ function BulkIptvOrgModal({
         message: err?.response?.data?.detail || "Auto-map failed - check the browser console for details",
         color: "red",
       }),
+  });
+
+  const refreshMappedSourceMutation = useMutation({
+    mutationFn: () => api.post(`/api/epg-sources/${mappedEpgSource!.id}/refresh`),
+    onSuccess: (res) => {
+      onChanged();
+      notifications.show({ message: `Loaded ${res.data.channels} channels, ${res.data.programs} programs`, color: "green" });
+    },
+    onError: (err: any) =>
+      notifications.show({ message: err?.response?.data?.detail || "Refresh failed", color: "red" }),
   });
 
   function handleClose() {
@@ -1361,6 +1406,22 @@ function BulkIptvOrgModal({
                 Not matched: {result.unmatched.map((u) => u.channel_name).join(", ")}
               </Text>
             )}
+            {result.matched.length > 0 &&
+              (mappedEpgSource ? (
+                <Button
+                  size="xs"
+                  variant="light"
+                  loading={refreshMappedSourceMutation.isPending}
+                  onClick={() => refreshMappedSourceMutation.mutate()}
+                >
+                  Fetch guide data now ({mappedEpgSource.name})
+                </Button>
+              ) : (
+                <Text size="xs" c="yellow">
+                  No "From my channel mappings" EPG source exists yet - add one on the EPG
+                  Sources page to fetch guide data for these mappings.
+                </Text>
+              ))}
           </Stack>
         )}
 
