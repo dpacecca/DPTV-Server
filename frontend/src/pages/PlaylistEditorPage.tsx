@@ -1116,6 +1116,11 @@ function BulkEpgModal({
       setResult(data);
       onChanged();
     },
+    onError: (err: any) =>
+      notifications.show({
+        message: err?.response?.data?.detail || "Auto-map failed - check the browser console for details",
+        color: "red",
+      }),
   });
 
   function handleClose() {
@@ -1230,6 +1235,11 @@ function BulkIptvOrgModal({
       setResult(data);
       onChanged();
     },
+    onError: (err: any) =>
+      notifications.show({
+        message: err?.response?.data?.detail || "Auto-map failed - check the browser console for details",
+        color: "red",
+      }),
   });
 
   function handleClose() {
