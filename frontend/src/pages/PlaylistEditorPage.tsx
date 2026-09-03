@@ -814,23 +814,22 @@ function ChannelDetailModal({
   const [iptvOrgCountry, setIptvOrgCountry] = useState<string | null>(null);
   const [iptvOrgCategory, setIptvOrgCategory] = useState<string | null>(null);
 
+  // What's actually committed on the server for this channel right now - seeded from the
+  // (possibly stale, snapshotted-at-open-time) channel prop, then kept in sync locally as
+  // Apply actually commits changes, so the badge below reflects reality for the rest of this
+  // modal session without needing the whole channel list to be refetched and re-passed in.
+  const [committedIptvOrg, setCommittedIptvOrg] = useState<{ id: number | null; name: string | null; channelId: string | null }>({
+    id: channel.iptv_org_channel_id,
+    name: channel.iptv_org_channel_name,
+    channelId: channel.iptv_org_channel_channel_id,
+  });
+  // A staged-but-not-yet-applied choice: undefined = no pending change (show committedIptvOrg),
+  // null = pending clear, a match = pending new mapping. Nothing reaches the server until Apply.
+  const [pendingIptvOrgMatch, setPendingIptvOrgMatch] = useState<IptvOrgChannelMatch | null | undefined>(undefined);
+
   const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
     queryKey: ["iptv-org-catalog-filters"],
     queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
-  });
-
-  const autoIptvOrgMutation = useMutation({
-    mutationFn: () =>
-      api.post(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org/auto`, null, {
-        params: { country: iptvOrgCountry || undefined, category: iptvOrgCategory || undefined },
-      }),
-    onSuccess: (res) => {
-      onChanged();
-      notifications.show({
-        message: res.data.matched ? `Matched: ${res.data.name} (${res.data.channel_id})` : "No confident match found",
-        color: res.data.matched ? "green" : "yellow",
-      });
-    },
   });
 
   const { data: iptvOrgSearchResults } = useQuery<IptvOrgChannelMatch[]>({
@@ -843,10 +842,33 @@ function ChannelDetailModal({
         .then((r) => r.data),
   });
 
+  function stageAutoMap() {
+    const top = iptvOrgSearchResults?.[0];
+    if (!top || (top.score ?? 0) < 0.5) {
+      notifications.show({ message: "No confident match found", color: "yellow" });
+      return;
+    }
+    setPendingIptvOrgMatch(top);
+  }
+
   const assignIptvOrgMutation = useMutation({
     mutationFn: (iptvOrgChannelId: number | null) =>
       api.patch(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org`, { iptv_org_channel_id: iptvOrgChannelId }),
-    onSuccess: onChanged,
+    onSuccess: (_res, _iptvOrgChannelId) => {
+      setCommittedIptvOrg(
+        pendingIptvOrgMatch
+          ? { id: pendingIptvOrgMatch.iptv_org_channel_id, name: pendingIptvOrgMatch.name, channelId: pendingIptvOrgMatch.channel_id }
+          : { id: null, name: null, channelId: null },
+      );
+      setPendingIptvOrgMatch(undefined);
+      onChanged();
+      notifications.show({ message: "iptv-org mapping applied", color: "green" });
+    },
+    onError: (err: any) =>
+      notifications.show({
+        message: err?.response?.data?.detail || "Failed to apply mapping - check the browser console for details",
+        color: "red",
+      }),
   });
 
   return (
@@ -946,22 +968,44 @@ function ChannelDetailModal({
         <Text size="xs" c="dimmed">
           Maps to a channel in iptv-org's catalog before any guide data exists - once a "From my
           channel mappings" EPG source (EPG Sources page) refreshes, this channel's real guide
-          data lands here automatically.
+          data lands here automatically. Auto-map/search only stage a choice below - nothing is
+          saved until you hit Apply.
         </Text>
         <Group>
-          <Button size="xs" leftSection={<IconWand size={14} />} variant="light" onClick={() => autoIptvOrgMutation.mutate()}>
+          <Button size="xs" leftSection={<IconWand size={14} />} variant="light" onClick={stageAutoMap}>
             Auto-map
           </Button>
-          {channel.iptv_org_channel_id && (
-            <Button size="xs" variant="subtle" color="red" onClick={() => assignIptvOrgMutation.mutate(null)}>
+          {committedIptvOrg.id && pendingIptvOrgMatch === undefined && (
+            <Button size="xs" variant="subtle" color="red" onClick={() => setPendingIptvOrgMatch(null)}>
               Clear mapping
             </Button>
           )}
         </Group>
-        {channel.iptv_org_channel_id && (
-          <Badge variant="light" color="grape" style={{ alignSelf: "flex-start" }}>
-            {channel.iptv_org_channel_name} ({channel.iptv_org_channel_channel_id})
-          </Badge>
+        {pendingIptvOrgMatch !== undefined ? (
+          <Group gap="xs">
+            <Badge variant="light" color="yellow" style={{ alignSelf: "flex-start" }}>
+              Pending: {pendingIptvOrgMatch ? `${pendingIptvOrgMatch.name} (${pendingIptvOrgMatch.channel_id})` : "clear mapping"}
+            </Badge>
+            <Button
+              size="xs"
+              color="green"
+              loading={assignIptvOrgMutation.isPending}
+              onClick={() =>
+                assignIptvOrgMutation.mutate(pendingIptvOrgMatch ? pendingIptvOrgMatch.iptv_org_channel_id : null)
+              }
+            >
+              Apply
+            </Button>
+            <Button size="xs" variant="subtle" onClick={() => setPendingIptvOrgMatch(undefined)}>
+              Cancel
+            </Button>
+          </Group>
+        ) : (
+          committedIptvOrg.id && (
+            <Badge variant="light" color="grape" style={{ alignSelf: "flex-start" }}>
+              {committedIptvOrg.name} ({committedIptvOrg.channelId})
+            </Badge>
+          )
         )}
         <Group grow>
           <Select
@@ -987,7 +1031,9 @@ function ChannelDetailModal({
           onChange={(e) => setIptvOrgSearch(e.currentTarget.value)}
         />
         <Stack gap={4} mah={220} style={{ overflowY: "auto" }}>
-          {iptvOrgSearchResults?.map((r) => (
+          {iptvOrgSearchResults?.map((r) => {
+            const effectiveId = pendingIptvOrgMatch !== undefined ? pendingIptvOrgMatch?.iptv_org_channel_id : committedIptvOrg.id;
+            return (
             <Group
               key={r.iptv_org_channel_id}
               justify="space-between"
@@ -995,10 +1041,9 @@ function ChannelDetailModal({
               style={{
                 borderRadius: 6,
                 cursor: "pointer",
-                background:
-                  channel.iptv_org_channel_id === r.iptv_org_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
+                background: effectiveId === r.iptv_org_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
               }}
-              onClick={() => assignIptvOrgMutation.mutate(r.iptv_org_channel_id)}
+              onClick={() => setPendingIptvOrgMatch(r)}
             >
               <div>
                 <Group gap={6}>
@@ -1017,7 +1062,8 @@ function ChannelDetailModal({
                 </Badge>
               )}
             </Group>
-          ))}
+            );
+          })}
           {iptvOrgSearchResults?.length === 0 && (
             <Text size="xs" c="dimmed">
               No matches. Try a different search, or the iptv-org channel catalog may not be
