@@ -55,7 +55,7 @@ export interface PaginatedSourceChannels {
 }
 
 export interface IptvOrgSelection {
-  mode: "country" | "category" | "channels";
+  mode: "country" | "category" | "channels" | "mapped";
   values: string[];
 }
 
