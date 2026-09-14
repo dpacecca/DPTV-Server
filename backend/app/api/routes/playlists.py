@@ -1,3 +1,5 @@
+import csv
+import io
 import re
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
@@ -1295,6 +1297,122 @@ async def assign_iptv_org_channel(
     pc.iptv_org_channel_id = payload.iptv_org_channel_id
     await db.commit()
     return {"ok": True}
+
+
+def _csv_response(rows: list[list[str]], filename: str) -> Response:
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{playlist_id}/channels/iptv-org/export.csv")
+async def export_iptv_org_mapping_csv(playlist_id: int, db: DbSession, _admin: AdminUser) -> Response:
+    """Every channel in the playlist, one row each, with its current iptv-org mapping (if any)
+    - meant for a first bulk pass done in a spreadsheet rather than one-by-one in the GUI: fill
+    in/replace the iptv_org_channel_id column (values come from the catalog.csv export below,
+    or the mapping UI's search) and feed the result back to the import endpoint. Blank rows on
+    import are left untouched, so this file only needs edits where a mapping is actually
+    changing."""
+    pl = await db.get(Playlist, playlist_id)
+    if pl is None:
+        raise HTTPException(404, "Playlist not found")
+
+    result = await db.execute(
+        select(PlaylistChannel, PlaylistCategory.name, IptvOrgChannel.channel_id, IptvOrgChannel.name)
+        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+        .outerjoin(IptvOrgChannel, PlaylistChannel.iptv_org_channel_id == IptvOrgChannel.id)
+        .where(PlaylistCategory.playlist_id == playlist_id)
+        .order_by(PlaylistCategory.sort_order, PlaylistChannel.sort_order)
+    )
+    rows = [["channel_id", "category", "channel_name", "iptv_org_channel_id", "iptv_org_name"]]
+    for pc, category_name, iptv_org_channel_id, iptv_org_name in result.all():
+        rows.append([str(pc.id), category_name, pc.name, iptv_org_channel_id or "", iptv_org_name or ""])
+    return _csv_response(rows, f"{pl.name}-iptv-org-mapping.csv")
+
+
+@router.get("/iptv-org/catalog.csv")
+async def export_iptv_org_catalog_csv(
+    db: DbSession, _admin: AdminUser, country: str | None = None, category: str | None = None
+) -> Response:
+    """The persisted iptv-org channel catalog as a lookup sheet - find the channel_id values to
+    paste into the mapping export above. Optionally narrowed the same way the search/bulk-map UI
+    can be, since the full catalog runs to several thousand rows."""
+    candidates = await _iptv_org_candidates(db, country, category)
+    rows = [["channel_id", "name", "country", "categories", "site_count"]]
+    for c in sorted(candidates, key=lambda c: c.name):
+        rows.append([c.channel_id, c.name, c.country or "", c.categories or "", str(c.site_count)])
+    return _csv_response(rows, "iptv-org-catalog.csv")
+
+
+@router.post("/{playlist_id}/channels/iptv-org/import-csv")
+async def import_iptv_org_mapping_csv(
+    playlist_id: int, db: DbSession, _admin: AdminUser, file: UploadFile = File(...)
+) -> dict:
+    """Applies a mapping CSV edited from the export.csv above (or built by hand, as long as it
+    has channel_id/iptv_org_channel_id columns). A blank iptv_org_channel_id cell is a no-op -
+    leaves that channel's existing mapping alone - so re-uploading a mostly-unedited export is
+    safe. Only channel_id and iptv_org_channel_id are read; the other export columns are purely
+    for reference and ignored here."""
+    pl = await db.get(Playlist, playlist_id)
+    if pl is None:
+        raise HTTPException(404, "Playlist not found")
+
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None or "channel_id" not in reader.fieldnames or "iptv_org_channel_id" not in reader.fieldnames:
+        raise HTTPException(400, "CSV must have channel_id and iptv_org_channel_id columns")
+
+    pc_result = await db.execute(
+        select(PlaylistChannel)
+        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+        .where(PlaylistCategory.playlist_id == playlist_id)
+    )
+    channels_by_id = {pc.id: pc for pc in pc_result.scalars().all()}
+
+    applied: list[dict] = []
+    invalid: list[dict] = []
+    skipped = 0
+    wanted_channel_ids: set[str] = set()
+    parsed_rows: list[tuple[str, str]] = []
+    for row in reader:
+        channel_id_cell = (row.get("channel_id") or "").strip()
+        iptv_org_channel_id_cell = (row.get("iptv_org_channel_id") or "").strip()
+        if not iptv_org_channel_id_cell:
+            skipped += 1
+            continue
+        parsed_rows.append((channel_id_cell, iptv_org_channel_id_cell))
+        wanted_channel_ids.add(iptv_org_channel_id_cell)
+
+    catalog_result = await db.execute(select(IptvOrgChannel).where(IptvOrgChannel.channel_id.in_(wanted_channel_ids)))
+    catalog_by_channel_id = {c.channel_id: c for c in catalog_result.scalars().all()}
+
+    for channel_id_cell, iptv_org_channel_id_cell in parsed_rows:
+        pc = channels_by_id.get(int(channel_id_cell)) if channel_id_cell.isdigit() else None
+        if pc is None:
+            invalid.append({"channel_id": channel_id_cell, "reason": "channel not found in this playlist"})
+            continue
+        catalog_channel = catalog_by_channel_id.get(iptv_org_channel_id_cell)
+        if catalog_channel is None:
+            invalid.append({
+                "channel_id": channel_id_cell,
+                "channel_name": pc.name,
+                "iptv_org_channel_id": iptv_org_channel_id_cell,
+                "reason": "iptv-org channel_id not found in catalog",
+            })
+            continue
+        pc.iptv_org_channel_id = catalog_channel.id
+        applied.append({"channel_id": pc.id, "channel_name": pc.name, "iptv_org_channel_id": iptv_org_channel_id_cell})
+
+    await db.commit()
+    return {"applied": applied, "invalid": invalid, "skipped": skipped}
 
 
 # ---------- Dummy EPG rules (advanced "event" mode parsing) ----------

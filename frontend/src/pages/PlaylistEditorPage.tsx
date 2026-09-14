@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   Checkbox,
+  FileInput,
   Group,
   Loader,
   Menu,
@@ -37,6 +38,7 @@ import {
   IconPlus,
   IconSearch,
   IconTrash,
+  IconUpload,
   IconVideo,
   IconWand,
 } from "@tabler/icons-react";
@@ -91,6 +93,7 @@ export default function PlaylistEditorPage() {
   const [bulkIptvOrgOpen, setBulkIptvOrgOpen] = useState(false);
   const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
   const [dummyEpgRulesOpen, setDummyEpgRulesOpen] = useState(false);
+  const [iptvOrgCsvOpen, setIptvOrgCsvOpen] = useState(false);
   const [bulkDummyEpgOpen, setBulkDummyEpgOpen] = useState(false);
   const [epgPreviewOpen, setEpgPreviewOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -184,6 +187,9 @@ export default function PlaylistEditorPage() {
           </Button>
           <Button leftSection={<IconDownload size={16} />} variant="light" onClick={() => setImportOpen(true)}>
             Import from Source
+          </Button>
+          <Button leftSection={<IconWand size={16} />} variant="light" onClick={() => setIptvOrgCsvOpen(true)}>
+            iptv-org Mapping CSV...
           </Button>
         </Group>
       </Group>
@@ -517,6 +523,16 @@ export default function PlaylistEditorPage() {
           playlistId={playlistId}
           categoryId={activeCategory.id}
           categoryName={activeCategory.name}
+        />
+      )}
+
+      {playlistId && (
+        <IptvOrgCsvModal
+          opened={iptvOrgCsvOpen}
+          onClose={() => setIptvOrgCsvOpen(false)}
+          playlistId={playlistId}
+          playlistName={playlist.name}
+          onChanged={invalidate}
         />
       )}
     </Stack>
@@ -1428,6 +1444,185 @@ function BulkIptvOrgModal({
         <Button onClick={() => bulkMapMutation.mutate()} loading={bulkMapMutation.isPending}>
           Auto-map {channelIds.length} channel(s)
         </Button>
+      </Stack>
+    </Modal>
+  );
+}
+
+interface IptvOrgImportResult {
+  applied: { channel_id: number; channel_name: string; iptv_org_channel_id: string }[];
+  invalid: { channel_id: string; channel_name?: string; iptv_org_channel_id?: string; reason: string }[];
+  skipped: number;
+}
+
+function downloadBlob(blob: Blob, fallbackFilename: string, contentDisposition?: string) {
+  const match = contentDisposition?.match(/filename="?([^"]+)"?/);
+  const filename = match?.[1] || fallbackFilename;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// A CSV round trip for the "map hundreds of channels once, then tidy up a handful in the GUI"
+// workflow - the mapping UI (single-channel search, bulk auto-map above) is precise but doesn't
+// scale to eyeballing every row when a playlist has thousands of channels across many
+// categories. Downloads pair the playlist's channels (with their current mapping) and the
+// iptv-org catalog (as a lookup sheet) as plain CSVs an admin can work in a spreadsheet; the
+// upload only ever sets iptv_org_channel_id for rows that were actually filled in, so
+// re-uploading a mostly-untouched export is always safe.
+function IptvOrgCsvModal({
+  opened,
+  onClose,
+  playlistId,
+  playlistName,
+  onChanged,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+  playlistName: string;
+  onChanged: () => void;
+}) {
+  const [country, setCountry] = useState<string | null>(null);
+  const [category, setCategory] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [importResult, setImportResult] = useState<IptvOrgImportResult | null>(null);
+
+  const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
+    queryKey: ["iptv-org-catalog-filters"],
+    queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
+    enabled: opened,
+  });
+
+  const exportMappingMutation = useMutation({
+    mutationFn: () => api.get(`/api/playlists/${playlistId}/channels/iptv-org/export.csv`, { responseType: "blob" }),
+    onSuccess: (res) => downloadBlob(res.data, `${playlistName}-iptv-org-mapping.csv`, res.headers["content-disposition"]),
+    onError: () => notifications.show({ message: "Export failed", color: "red" }),
+  });
+
+  const exportCatalogMutation = useMutation({
+    mutationFn: () =>
+      api.get("/api/playlists/iptv-org/catalog.csv", {
+        params: { country: country || undefined, category: category || undefined },
+        responseType: "blob",
+      }),
+    onSuccess: (res) => downloadBlob(res.data, "iptv-org-catalog.csv", res.headers["content-disposition"]),
+    onError: () => notifications.show({ message: "Export failed", color: "red" }),
+  });
+
+  const importMutation = useMutation({
+    mutationFn: () => {
+      const form = new FormData();
+      form.append("file", file as File);
+      return api.post<IptvOrgImportResult>(`/api/playlists/${playlistId}/channels/iptv-org/import-csv`, form).then((r) => r.data);
+    },
+    onSuccess: (data) => {
+      setImportResult(data);
+      onChanged();
+      notifications.show({
+        message: `Applied ${data.applied.length} mapping(s), ${data.skipped} row(s) unchanged, ${data.invalid.length} invalid`,
+        color: data.invalid.length ? "yellow" : "green",
+      });
+    },
+    onError: (err: any) => notifications.show({ message: err?.response?.data?.detail || "Import failed", color: "red" }),
+  });
+
+  function handleClose() {
+    setFile(null);
+    setImportResult(null);
+    onClose();
+  }
+
+  return (
+    <Modal opened={opened} onClose={handleClose} title="iptv-org Mapping via CSV" size="lg">
+      <Stack>
+        <Text size="sm" c="dimmed">
+          For matching a lot of channels at once: download this playlist's channels below, fill
+          in the iptv_org_channel_id column (use the catalog lookup sheet or the mapping UI's
+          search results for the right values), then upload the edited file back here. A blank
+          iptv_org_channel_id cell is left untouched, so it's safe to re-upload a file you've
+          only partly edited.
+        </Text>
+
+        <Button
+          leftSection={<IconDownload size={14} />}
+          variant="light"
+          loading={exportMappingMutation.isPending}
+          onClick={() => exportMappingMutation.mutate()}
+        >
+          Download this playlist's channels (CSV)
+        </Button>
+
+        <Text fw={600} size="sm" mt="sm">
+          Catalog lookup sheet
+        </Text>
+        <Group grow>
+          <Select
+            placeholder="Any country"
+            searchable
+            clearable
+            data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
+            value={country}
+            onChange={setCountry}
+          />
+          <Select
+            placeholder="Any category"
+            searchable
+            clearable
+            data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
+            value={category}
+            onChange={setCategory}
+          />
+        </Group>
+        <Button
+          leftSection={<IconDownload size={14} />}
+          variant="light"
+          loading={exportCatalogMutation.isPending}
+          onClick={() => exportCatalogMutation.mutate()}
+        >
+          Download iptv-org catalog (CSV)
+        </Button>
+
+        <Text fw={600} size="sm" mt="sm">
+          Apply an edited CSV
+        </Text>
+        <FileInput placeholder="Choose CSV file..." accept=".csv,text/csv" value={file} onChange={setFile} clearable />
+        <Button
+          leftSection={<IconUpload size={14} />}
+          disabled={!file}
+          loading={importMutation.isPending}
+          onClick={() => importMutation.mutate()}
+        >
+          Upload &amp; apply
+        </Button>
+
+        {importResult && (
+          <Stack gap={4}>
+            <Text size="sm" c="green">
+              Applied {importResult.applied.length} mapping(s), {importResult.skipped} row(s) left unchanged
+            </Text>
+            {importResult.invalid.length > 0 && (
+              <>
+                <Text size="sm" c="red">
+                  {importResult.invalid.length} row(s) couldn't be applied:
+                </Text>
+                <Stack gap={2} mah={160} style={{ overflowY: "auto" }}>
+                  {importResult.invalid.map((row, i) => (
+                    <Text key={i} size="xs" c="dimmed">
+                      {row.channel_name ?? `channel_id ${row.channel_id}`}
+                      {row.iptv_org_channel_id ? ` → ${row.iptv_org_channel_id}` : ""}: {row.reason}
+                    </Text>
+                  ))}
+                </Stack>
+              </>
+            )}
+          </Stack>
+        )}
       </Stack>
     </Modal>
   );
