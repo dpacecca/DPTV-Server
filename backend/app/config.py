@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     memory for the admin log viewer. Bounded and in-memory rather than a file - this is meant
     for "what's hitting the XC API right now", not a durable audit log, and resets on restart."""
 
+    guide_refresh_log_buffer_size: int = 2000
+    """How many recent guide-refresh log lines (see app/services/guide_refresh_log.py) are kept
+    in memory for the admin log viewer - scheduled/manual EPG sync activity and, for iptv-org
+    sources, the scraper's own per-batch/per-channel progress output. Same bounded, in-memory,
+    resets-on-restart tradeoff as xc_log_buffer_size."""
+
     ffprobe_path: str = "ffprobe"
     """Path to the ffprobe binary, used to detect stream resolution/framerate/bitrate when
     scanning a category for duplicate channels. Requires the `ffmpeg` system package."""
