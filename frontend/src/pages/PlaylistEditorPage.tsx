@@ -169,6 +169,20 @@ export default function PlaylistEditorPage() {
     onSuccess: (ids) => setSelectedChannelIds(new Set(ids)),
   });
 
+  // Same idea as selectAllMatchingMutation, scoped to channels with no EPG mapping at all (not
+  // even a pending iptv-org one) - a quick way to select exactly what still needs "Map EPG..."
+  // run against it, without hand-picking rows or selecting everything and weeding out the
+  // already-mapped ones.
+  const selectAllUnmappedMutation = useMutation({
+    mutationFn: () =>
+      api
+        .get(`/api/playlists/${playlistId}/categories/${activeCategory?.id}/channels/ids`, {
+          params: { q: debouncedSearch || undefined, unmapped: true },
+        })
+        .then((r) => r.data.ids as number[]),
+    onSuccess: (ids) => setSelectedChannelIds(new Set(ids)),
+  });
+
   if (isLoading) return <Text>Loading...</Text>;
   if (!playlist) return <Text>Playlist not found</Text>;
 
@@ -369,6 +383,14 @@ export default function PlaylistEditorPage() {
                   onChange={(e) => setSearch(e.currentTarget.value)}
                   w={280}
                 />
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  loading={selectAllUnmappedMutation.isPending}
+                  onClick={() => selectAllUnmappedMutation.mutate()}
+                >
+                  Select all unmapped
+                </Button>
                 {selectedChannelIds.size > 0 && (
                   <Text size="xs" c="dimmed">
                     {selectedChannelIds.size} selected

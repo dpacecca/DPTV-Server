@@ -614,12 +614,16 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
 MAX_PAGE_SIZE = 500
 
 
-def _category_channels_query(category_id: int, q: str | None, enabled: bool | None):
+def _category_channels_query(category_id: int, q: str | None, enabled: bool | None, unmapped: bool | None = None):
     query = select(PlaylistChannel).where(PlaylistChannel.playlist_category_id == category_id)
     if q:
         query = query.where(PlaylistChannel.name.ilike(f"%{q}%"))
     if enabled is not None:
         query = query.where(PlaylistChannel.enabled == enabled)
+    if unmapped:
+        # Matches the "unmapped" badge in the channel list: no real EPG mapping AND no pending
+        # iptv-org mapping either (a channel already pending iptv-org doesn't need remapping).
+        query = query.where(PlaylistChannel.epg_channel_id.is_(None), PlaylistChannel.iptv_org_channel_id.is_(None))
     return query
 
 
@@ -667,13 +671,17 @@ async def list_category_channel_ids(
     _admin: AdminUser,
     q: str | None = None,
     enabled: bool | None = None,
+    unmapped: bool | None = None,
 ) -> dict:
     """All channel ids matching the current filter - cheap even at 100k+ rows since it's just
-    integers. Backs "select all matching" in the UI without ever materializing full rows."""
+    integers. Backs "select all matching" (and "select all unmapped") in the UI without ever
+    materializing full rows."""
     cat = await db.get(PlaylistCategory, category_id)
     if cat is None or cat.playlist_id != playlist_id:
         raise HTTPException(404, "Category not found")
-    result = await db.execute(_category_channels_query(category_id, q, enabled).with_only_columns(PlaylistChannel.id))
+    result = await db.execute(
+        _category_channels_query(category_id, q, enabled, unmapped).with_only_columns(PlaylistChannel.id)
+    )
     return {"ids": [row[0] for row in result.all()]}
 
 
