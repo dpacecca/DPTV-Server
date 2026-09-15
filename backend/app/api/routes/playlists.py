@@ -1089,6 +1089,13 @@ async def auto_map_epg(
     return {"matched": True, "epg_channel_id": cid, "display_name": by_id[cid].display_name}
 
 
+def _serialize_epg_match(channel: EpgChannel, score: float | None = None) -> dict:
+    out = {"epg_channel_id": channel.id, "display_name": channel.display_name, "epg_id": channel.epg_channel_id}
+    if score is not None:
+        out["score"] = score
+    return out
+
+
 class BulkEpgAutoMapIn(BaseModel):
     channel_ids: list[int]
     sensitivity: float = 0.9
@@ -1096,29 +1103,67 @@ class BulkEpgAutoMapIn(BaseModel):
     """Restrict the search to these EPG sources. Omit/empty to search all of them."""
 
 
-@router.post("/{playlist_id}/channels/epg/bulk-auto-map")
-async def bulk_auto_map_epg(playlist_id: int, payload: BulkEpgAutoMapIn, db: DbSession, _admin: AdminUser) -> dict:
-    """Auto-map EPG for many channels at once, e.g. everything selected in the channel list."""
+@router.post("/{playlist_id}/channels/epg/bulk-preview")
+async def preview_bulk_auto_map_epg(playlist_id: int, payload: BulkEpgAutoMapIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Proposes EPG matches for many channels at once, e.g. everything selected in the channel
+    list - a preview only, nothing is written here. Mirrors the iptv-org bulk-auto-map preview
+    below: each channel comes back with its top few candidates (best first) so an admin can
+    review and swap out any wrong match before committing via bulk-assign."""
     candidates = await _epg_candidates(db, payload.epg_source_ids)
     name_by_id = {c.id: c.display_name for c in candidates}
     by_id = {c.id: c for c in candidates}
-    result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
+    result = await db.execute(
+        select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)).order_by(PlaylistChannel.sort_order)
+    )
     channels = result.scalars().all()
 
     matched: list[dict] = []
     unmatched: list[dict] = []
     for pc in channels:
-        best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=payload.sensitivity)
-        if best is None:
-            unmatched.append({"channel_id": pc.id, "channel_name": pc.name})
+        ranked = epg_mapper.search_candidates(pc.name, name_by_id, limit=5)
+        candidate_list = [_serialize_epg_match(by_id[cid], score) for cid, score in ranked]
+        row = {"channel_id": pc.id, "channel_name": pc.name, "candidates": candidate_list}
+        if ranked and ranked[0][1] >= payload.sensitivity:
+            matched.append(row)
+        else:
+            unmatched.append(row)
+
+    return {"matched": matched, "unmatched": unmatched}
+
+
+class BulkEpgAssignEntry(BaseModel):
+    channel_id: int
+    epg_channel_id: int | None
+
+
+class BulkEpgAssignIn(BaseModel):
+    assignments: list[BulkEpgAssignEntry]
+
+
+@router.post("/{playlist_id}/channels/epg/bulk-assign")
+async def bulk_assign_epg(playlist_id: int, payload: BulkEpgAssignIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Commits a reviewed (and possibly hand-edited) set of matches from bulk-preview above -
+    always overwrites whatever was previously set, same as the single-channel PATCH."""
+    result = await db.execute(
+        select(PlaylistChannel)
+        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+        .where(PlaylistCategory.playlist_id == playlist_id)
+    )
+    channels_by_id = {pc.id: pc for pc in result.scalars().all()}
+
+    applied = 0
+    invalid: list[dict] = []
+    for entry in payload.assignments:
+        pc = channels_by_id.get(entry.channel_id)
+        if pc is None:
+            invalid.append({"channel_id": entry.channel_id, "reason": "channel not found in this playlist"})
             continue
-        cid, _score = best
-        pc.epg_channel_id = cid
-        pc.epg_match_type = EpgMatchType.AUTO
-        matched.append({"channel_id": pc.id, "channel_name": pc.name, "epg_channel_id": cid, "display_name": by_id[cid].display_name})
+        pc.epg_channel_id = entry.epg_channel_id
+        pc.epg_match_type = EpgMatchType.MANUAL if entry.epg_channel_id else EpgMatchType.NONE
+        applied += 1
 
     await db.commit()
-    return {"matched": matched, "unmatched": unmatched}
+    return {"applied": applied, "invalid": invalid}
 
 
 class EpgAssign(BaseModel):
