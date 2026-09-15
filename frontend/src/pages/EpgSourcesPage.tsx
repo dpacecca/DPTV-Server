@@ -20,7 +20,7 @@ import { useDebouncedValue } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { IconAlertCircle, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { api, refreshAllEpgSources, refreshEpgSource } from "../api/client";
 import type { EpgSource, IptvOrgCatalog, IptvOrgChannelSearchResult } from "../api/types";
 import { EmptyState } from "../App";
 
@@ -123,20 +123,19 @@ export default function EpgSourcesPage() {
   });
 
   const refreshMutation = useMutation({
-    mutationFn: (id: number) => api.post(`/api/epg-sources/${id}/refresh`),
-    onSuccess: (res) => {
+    mutationFn: (id: number) => refreshEpgSource(id),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["epg-sources"] });
-      notifications.show({ message: `Loaded ${res.data.channels} channels, ${res.data.programs} programs`, color: "green" });
+      notifications.show({ message: `Loaded ${result.channels} channels, ${result.programs} programs`, color: "green" });
     },
     onError: (err: any) =>
-      notifications.show({ message: err?.response?.data?.detail || "Refresh failed", color: "red" }),
+      notifications.show({ message: err?.response?.data?.detail || err?.message || "Refresh failed", color: "red" }),
   });
 
   const refreshAllMutation = useMutation({
-    mutationFn: () => api.post("/api/epg-sources/refresh-all"),
-    onSuccess: (res) => {
+    mutationFn: () => refreshAllEpgSources(),
+    onSuccess: ({ epg_sources: refreshed, errors }) => {
       qc.invalidateQueries({ queryKey: ["epg-sources"] });
-      const { epg_sources: refreshed, errors } = res.data as { epg_sources: Record<string, unknown>; errors: string[] };
       const count = Object.keys(refreshed).length;
       notifications.show({
         message: errors.length
@@ -145,7 +144,8 @@ export default function EpgSourcesPage() {
         color: errors.length ? "yellow" : "green",
       });
     },
-    onError: () => notifications.show({ message: "Refresh all failed", color: "red" }),
+    onError: (err: any) =>
+      notifications.show({ message: err?.response?.data?.detail || err?.message || "Refresh all failed", color: "red" }),
   });
 
   const deleteMutation = useMutation({
