@@ -15,7 +15,6 @@ import {
   Popover,
   ScrollArea,
   Select,
-  SegmentedControl,
   Stack,
   Switch,
   Table,
@@ -1487,73 +1486,74 @@ function MapEpgModal({
   return (
     <Modal opened={opened} onClose={handleClose} title={`Map EPG for ${channelIds.length} channel(s)`} size="lg">
       <Stack>
-        <SegmentedControl
-          value={sourceType}
-          onChange={handleSourceTypeChange}
-          data={[
-            { value: "epg", label: "EPG source" },
-            { value: "iptv_org", label: "iptv-org catalog" },
-          ]}
-        />
-
-        {sourceType === "epg" ? (
-          <Stack gap={4}>
-            <Text size="sm" fw={600}>
-              Search these EPG sources
-            </Text>
-            {(epgSources ?? []).map((s) => (
-              <Checkbox
-                key={s.id}
-                label={s.name}
-                checked={selectedEpgSourceIds.has(s.id)}
-                onChange={(e) => {
-                  const checked = e.currentTarget.checked;
-                  setSelectedEpgSourceIds((prev) => {
-                    const next = new Set(prev);
-                    if (checked) next.add(s.id);
-                    else next.delete(s.id);
-                    return next;
-                  });
-                }}
-              />
-            ))}
-            {epgSources?.length === 0 && (
-              <Text size="sm" c="dimmed">
-                No EPG sources yet — add one under EPG Sources first.
-              </Text>
-            )}
-          </Stack>
-        ) : (
-          <>
+        <Stack gap={4}>
+          <Text size="sm" fw={600}>
+            Search these EPG sources
+          </Text>
+          {(epgSources ?? []).map((s) => (
+            <Checkbox
+              key={s.id}
+              label={s.name}
+              checked={sourceType === "epg" && selectedEpgSourceIds.has(s.id)}
+              disabled={sourceType === "iptv_org"}
+              onChange={(e) => {
+                const checked = e.currentTarget.checked;
+                setSelectedEpgSourceIds((prev) => {
+                  const next = new Set(prev);
+                  if (checked) next.add(s.id);
+                  else next.delete(s.id);
+                  return next;
+                });
+              }}
+            />
+          ))}
+          {epgSources?.length === 0 && (
             <Text size="sm" c="dimmed">
-              Matches each channel's name against iptv-org's channel catalog and proposes the
-              closest candidates for review - nothing is saved until you hit Apply. Once applied,
-              nothing is scraped until a "From my channel mappings" EPG source (EPG Sources page)
-              is refreshed, at which point guide data for exactly these channels is fetched
-              automatically.
+              No EPG sources yet — add one under EPG Sources first.
             </Text>
-            <Group grow>
-              <Select
-                label="Country"
-                placeholder="Any country"
-                searchable
-                clearable
-                data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
-                value={country}
-                onChange={setCountry}
-              />
-              <Select
-                label="Category"
-                placeholder="Any category"
-                searchable
-                clearable
-                data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
-                value={category}
-                onChange={setCategory}
-              />
-            </Group>
-          </>
-        )}
+          )}
+
+          {/* Not a real EpgSource - matches against the raw iptv-org catalog instead of an
+              already-scraped source, so it needs its own country/category filters and is
+              mutually exclusive with the real sources above (different target field, see
+              MapEpgModal's doc comment). */}
+          <Checkbox
+            label="iptv-org catalog"
+            checked={sourceType === "iptv_org"}
+            onChange={(e) => handleSourceTypeChange(e.currentTarget.checked ? "iptv_org" : "epg")}
+          />
+          {sourceType === "iptv_org" && (
+            <Stack gap={4} ml="lg">
+              <Text size="xs" c="dimmed">
+                Matches each channel's name against iptv-org's channel catalog and proposes the
+                closest candidates for review - nothing is saved until you hit Apply. Once
+                applied, nothing is scraped until a "From my channel mappings" EPG source (EPG
+                Sources page) is refreshed, at which point guide data for exactly these channels
+                is fetched automatically.
+              </Text>
+              <Group grow>
+                <Select
+                  label="Country"
+                  placeholder="Any country"
+                  searchable
+                  clearable
+                  data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
+                  value={country}
+                  onChange={setCountry}
+                />
+                <Select
+                  label="Category"
+                  placeholder="Any category"
+                  searchable
+                  clearable
+                  data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
+                  value={category}
+                  onChange={setCategory}
+                />
+              </Group>
+            </Stack>
+          )}
+        </Stack>
 
         <NumberInput
           label="Sensitivity"
