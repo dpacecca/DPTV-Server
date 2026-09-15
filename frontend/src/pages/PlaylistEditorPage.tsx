@@ -349,6 +349,15 @@ export default function PlaylistEditorPage() {
                       <Menu.Item onClick={() => runBulk({ action: "disable" })}>Disable</Menu.Item>
                       <Menu.Item onClick={() => setBulkDummyEpgOpen(true)}>Set Dummy EPG mode...</Menu.Item>
                       <Menu.Item
+                        onClick={() => {
+                          if (confirm(`Clear the iptv-org mapping for ${selectedChannelIds.size} channel(s)?`)) {
+                            runBulk({ action: "clear_iptv_org_mapping" });
+                          }
+                        }}
+                      >
+                        Clear iptv-org mapping
+                      </Menu.Item>
+                      <Menu.Item
                         color="red"
                         onClick={() => {
                           if (confirm(`Delete ${selectedChannelIds.size} channel(s)?`)) runBulk({ action: "delete" });
