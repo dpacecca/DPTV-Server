@@ -12,6 +12,7 @@ import {
   Modal,
   NumberInput,
   Paper,
+  Popover,
   ScrollArea,
   Select,
   Stack,
@@ -1297,6 +1298,120 @@ function candidateLabel(c: IptvOrgChannelMatch): string {
   return `${c.name} (${c.channel_id}${c.country ? `, ${c.country}` : ""})${pct}`;
 }
 
+// One review row in the bulk mapping modal. The auto-matched top-5 candidates cover a simple
+// rename (the channel's own name still resembles the iptv-org one), but not a full rebrand
+// ("Fox Sports 501 HD" -> "Fox Cricket") where nothing in the original name resembles the
+// correct match - so this also lets an admin type a free-text query, which re-searches the
+// same country/category-filtered catalog server-side instead of just client-filtering the
+// original 5 options.
+function BulkIptvOrgRow({
+  row,
+  playlistId,
+  country,
+  category,
+  pendingValue,
+  onChange,
+}: {
+  row: IptvOrgPreviewRow;
+  playlistId: string;
+  country: string | null;
+  category: string | null;
+  pendingValue: number | null | undefined;
+  onChange: (v: number | null) => void;
+}) {
+  const [opened, setOpened] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [debouncedSearch] = useDebounce(searchText, 300);
+  const [selectedCandidate, setSelectedCandidate] = useState<IptvOrgChannelMatch | null>(
+    row.candidates.find((c) => c.iptv_org_channel_id === pendingValue) ?? null,
+  );
+
+  const { data: searchResults, isFetching } = useQuery<IptvOrgChannelMatch[]>({
+    queryKey: ["iptv-org-search", playlistId, row.channel_id, debouncedSearch, country, category],
+    queryFn: () =>
+      api
+        .get(`/api/playlists/${playlistId}/channels/${row.channel_id}/iptv-org/search`, {
+          params: { q: debouncedSearch, country: country || undefined, category: category || undefined },
+        })
+        .then((r) => r.data),
+    enabled: opened && debouncedSearch.trim().length > 0,
+  });
+
+  const shownCandidates = debouncedSearch.trim().length > 0 ? searchResults ?? [] : row.candidates;
+
+  function pick(c: IptvOrgChannelMatch | null) {
+    setSelectedCandidate(c);
+    onChange(c ? c.iptv_org_channel_id : null);
+    setSearchText("");
+    setOpened(false);
+  }
+
+  const displayValue = opened
+    ? searchText
+    : selectedCandidate
+      ? candidateLabel(selectedCandidate)
+      : pendingValue === null
+        ? "— no mapping —"
+        : "";
+
+  return (
+    <Group wrap="nowrap" gap="xs" align="center">
+      <Text size="xs" style={{ flex: "0 0 40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {row.channel_name}
+      </Text>
+      <Popover opened={opened} onChange={setOpened} position="bottom-start" width="target" withinPortal>
+        <Popover.Target>
+          <TextInput
+            size="xs"
+            style={{ flex: 1 }}
+            placeholder="Choose a match, or type to search..."
+            value={displayValue}
+            onFocus={() => {
+              setOpened(true);
+              setSearchText("");
+            }}
+            onChange={(e) => setSearchText(e.currentTarget.value)}
+            rightSection={isFetching ? <Loader size={12} /> : undefined}
+          />
+        </Popover.Target>
+        <Popover.Dropdown p={4}>
+          <Stack gap={2} mah={220} style={{ overflowY: "auto" }}>
+            <Text
+              size="xs"
+              c="dimmed"
+              p={4}
+              style={{ cursor: "pointer", borderRadius: 4 }}
+              onClick={() => pick(null)}
+            >
+              — no mapping —
+            </Text>
+            {shownCandidates.map((c) => (
+              <Text
+                key={c.iptv_org_channel_id}
+                size="xs"
+                p={4}
+                style={{
+                  cursor: "pointer",
+                  borderRadius: 4,
+                  background: selectedCandidate?.iptv_org_channel_id === c.iptv_org_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
+                }}
+                onClick={() => pick(c)}
+              >
+                {candidateLabel(c)}
+              </Text>
+            ))}
+            {shownCandidates.length === 0 && (
+              <Text size="xs" c="dimmed" p={4}>
+                {debouncedSearch.trim().length > 0 ? "No matches" : "No candidates found"}
+              </Text>
+            )}
+          </Stack>
+        </Popover.Dropdown>
+      </Popover>
+    </Group>
+  );
+}
+
 function BulkIptvOrgModal({
   opened,
   onClose,
@@ -1409,30 +1524,6 @@ function BulkIptvOrgModal({
     onClose();
   }
 
-  function renderRow(row: IptvOrgPreviewRow) {
-    const options = [
-      { value: "", label: "— no mapping —" },
-      ...row.candidates.map((c) => ({ value: String(c.iptv_org_channel_id), label: candidateLabel(c) })),
-    ];
-    const current = pending[row.channel_id];
-    return (
-      <Group key={row.channel_id} wrap="nowrap" gap="xs" align="center">
-        <Text size="xs" style={{ flex: "0 0 40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {row.channel_name}
-        </Text>
-        <Select
-          size="xs"
-          style={{ flex: 1 }}
-          placeholder="Choose a match..."
-          searchable
-          data={options}
-          value={current === undefined ? null : current === null ? "" : String(current)}
-          onChange={(v) => setPending((prev) => ({ ...prev, [row.channel_id]: v ? Number(v) : null }))}
-        />
-      </Group>
-    );
-  }
-
   const totalPending = Object.keys(pending).length;
 
   return (
@@ -1490,7 +1581,17 @@ function BulkIptvOrgModal({
               review below and adjust any that look wrong, then Apply.
             </Text>
             <Stack gap={6} mah={320} style={{ overflowY: "auto" }}>
-              {[...preview.matched, ...preview.unmatched].map(renderRow)}
+              {[...preview.matched, ...preview.unmatched].map((row) => (
+                <BulkIptvOrgRow
+                  key={row.channel_id}
+                  row={row}
+                  playlistId={playlistId}
+                  country={country}
+                  category={category}
+                  pendingValue={pending[row.channel_id]}
+                  onChange={(v) => setPending((prev) => ({ ...prev, [row.channel_id]: v }))}
+                />
+              ))}
             </Stack>
 
             <Group>
