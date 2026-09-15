@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.deps import AdminUser
 from app.config import get_settings
-from app.services import xc_log
+from app.services import guide_refresh_log, xc_log
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 
@@ -16,6 +16,12 @@ _SYSTEMCTL = "/usr/bin/systemctl"
 async def get_xc_logs(_admin: AdminUser, lines: int = 100) -> dict:
     limit = max(1, min(lines, get_settings().xc_log_buffer_size))
     return {"lines": xc_log.get_lines(limit)}
+
+
+@router.get("/guide-refresh")
+async def get_guide_refresh_logs(_admin: AdminUser, lines: int = 100) -> dict:
+    limit = max(1, min(lines, get_settings().guide_refresh_log_buffer_size))
+    return {"lines": guide_refresh_log.get_lines(limit)}
 
 
 async def _fire_restart(unit: str) -> None:
