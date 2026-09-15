@@ -47,7 +47,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce } from "use-debounce";
-import { api } from "../api/client";
+import { api, refreshEpgSource } from "../api/client";
 import type {
   ChannelType,
   DummyEpgMode,
@@ -870,13 +870,13 @@ function ChannelDetailModal({
 
   const mappedEpgSource = epgSources?.find((s) => s.source_kind === "iptv_org" && s.iptv_org_selection?.mode === "mapped");
   const refreshMappedSourceMutation = useMutation({
-    mutationFn: () => api.post(`/api/epg-sources/${mappedEpgSource!.id}/refresh`),
-    onSuccess: (res) => {
+    mutationFn: () => refreshEpgSource(mappedEpgSource!.id),
+    onSuccess: (result) => {
       onChanged();
-      notifications.show({ message: `Loaded ${res.data.channels} channels, ${res.data.programs} programs`, color: "green" });
+      notifications.show({ message: `Loaded ${result.channels} channels, ${result.programs} programs`, color: "green" });
     },
     onError: (err: any) =>
-      notifications.show({ message: err?.response?.data?.detail || "Refresh failed", color: "red" }),
+      notifications.show({ message: err?.response?.data?.detail || err?.message || "Refresh failed", color: "red" }),
   });
 
   const assignIptvOrgMutation = useMutation({
@@ -1517,13 +1517,13 @@ function BulkIptvOrgModal({
   });
 
   const refreshMappedSourceMutation = useMutation({
-    mutationFn: () => api.post(`/api/epg-sources/${mappedEpgSource!.id}/refresh`),
-    onSuccess: (res) => {
+    mutationFn: () => refreshEpgSource(mappedEpgSource!.id),
+    onSuccess: (result) => {
       onChanged();
-      notifications.show({ message: `Loaded ${res.data.channels} channels, ${res.data.programs} programs`, color: "green" });
+      notifications.show({ message: `Loaded ${result.channels} channels, ${result.programs} programs`, color: "green" });
     },
     onError: (err: any) =>
-      notifications.show({ message: err?.response?.data?.detail || "Refresh failed", color: "red" }),
+      notifications.show({ message: err?.response?.data?.detail || err?.message || "Refresh failed", color: "red" }),
   });
 
   function handleClose() {

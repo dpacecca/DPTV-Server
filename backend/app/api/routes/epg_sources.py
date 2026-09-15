@@ -7,8 +7,7 @@ from sqlalchemy import func, select
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
 from app.models.epg import EpgChannel, EpgSource
-from app.services import iptv_org_epg
-from app.services.sync_engine import sync_all_epg_sources, sync_epg_source
+from app.services import epg_refresh_jobs, iptv_org_epg
 
 router = APIRouter(prefix="/api/epg-sources", tags=["epg-sources"])
 
@@ -147,25 +146,32 @@ async def delete_epg_source(epg_source_id: int, db: DbSession, _admin: AdminUser
 
 
 @router.post("/refresh-all")
-async def refresh_all_epg_sources(db: DbSession, _admin: AdminUser) -> dict:
-    """Refreshes every EPG source (URL-based and iptv-org). Playlists reflect this immediately
-    once it commits - guide data is read live from EpgChannel/EpgProgram, not cached per
-    playlist. This does not re-run EPG auto-mapping for newly-added channels or auto-clear;
-    use Scheduler's "Sync Now" for the full pass."""
-    summary = await sync_all_epg_sources(db)
-    await db.commit()
-    return summary
+async def refresh_all_epg_sources(_admin: AdminUser) -> dict:
+    """Kicks off a background refresh of every EPG source (URL-based and iptv-org) and returns
+    immediately - scraping a slow broadcaster site can take many minutes, far longer than this
+    request should stay open, so the actual work happens in the background. Poll
+    GET /refresh-jobs/{job_id} for progress; once done, playlists reflect the new guide data
+    right away (read live from EpgChannel/EpgProgram, not cached per playlist). This does not
+    re-run EPG auto-mapping for newly-added channels or auto-clear; use Scheduler's "Sync Now"
+    for the full pass."""
+    job = epg_refresh_jobs.start_all_refresh()
+    return {"job_id": job.id}
 
 
 @router.post("/{epg_source_id}/refresh")
 async def refresh_epg_source(epg_source_id: int, db: DbSession, _admin: AdminUser) -> dict:
+    """Kicks off a background refresh of this one source and returns immediately - see
+    refresh-all above for why. Poll GET /refresh-jobs/{job_id} for progress."""
     epg = await db.get(EpgSource, epg_source_id)
     if epg is None:
         raise HTTPException(404, "EPG source not found")
-    try:
-        summary = await sync_epg_source(db, epg)
-        await db.commit()
-    except Exception as exc:  # noqa: BLE001
-        await db.rollback()
-        raise HTTPException(502, f"Refresh failed: {exc}") from exc
-    return summary
+    job = epg_refresh_jobs.start_single_refresh(epg_source_id)
+    return {"job_id": job.id}
+
+
+@router.get("/refresh-jobs/{job_id}")
+async def get_epg_refresh_job(job_id: str, _admin: AdminUser) -> dict:
+    job = epg_refresh_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Refresh job not found")
+    return {"job_id": job.id, "status": job.status, "error": job.error, "result": job.result}
