@@ -3,6 +3,7 @@ import { useDisclosure } from "@mantine/hooks";
 import {
   IconAntenna,
   IconCalendarTime,
+  IconFileText,
   IconListDetails,
   IconLogout,
   IconPlaylist,
@@ -19,6 +20,7 @@ import PlaylistsPage from "./pages/PlaylistsPage";
 import PlaylistEditorPage from "./pages/PlaylistEditorPage";
 import XcUsersPage from "./pages/XcUsersPage";
 import SchedulerPage from "./pages/SchedulerPage";
+import XcLogsPage from "./pages/XcLogsPage";
 
 const NAV_ITEMS = [
   { to: "/sources", label: "Sources", icon: IconAntenna },
@@ -26,6 +28,7 @@ const NAV_ITEMS = [
   { to: "/playlists", label: "Playlists", icon: IconPlaylist },
   { to: "/xc-users", label: "XC Users", icon: IconUsers },
   { to: "/scheduler", label: "Scheduler", icon: IconCalendarTime },
+  { to: "/xc-logs", label: "XC Server Logs", icon: IconFileText },
 ];
 
 function Shell() {
@@ -67,6 +70,7 @@ function Shell() {
           <Route path="/playlists/:playlistId" element={<PlaylistEditorPage />} />
           <Route path="/xc-users" element={<XcUsersPage />} />
           <Route path="/scheduler" element={<SchedulerPage />} />
+          <Route path="/xc-logs" element={<XcLogsPage />} />
           <Route path="*" element={<Navigate to="/playlists" replace />} />
         </Routes>
       </AppShell.Main>
