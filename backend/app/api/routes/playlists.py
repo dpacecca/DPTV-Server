@@ -1256,31 +1256,70 @@ class BulkIptvOrgAutoMapIn(BaseModel):
 
 
 @router.post("/{playlist_id}/channels/iptv-org/bulk-auto-map")
-async def bulk_auto_map_iptv_org_channels(
+async def preview_bulk_auto_map_iptv_org_channels(
     playlist_id: int, payload: BulkIptvOrgAutoMapIn, db: DbSession, _admin: AdminUser
 ) -> dict:
-    """Auto-map many channels at once against the iptv-org catalog, e.g. everything selected
-    in the channel list. Only records the mapping - nothing is scraped until a "mapped"-mode
-    iptv-org EpgSource is refreshed."""
+    """Proposes matches for many channels at once against the iptv-org catalog, e.g. everything
+    selected in the channel list - a preview only, nothing is written here. Each channel comes
+    back with its top few candidates (best first) rather than just the winner, so an admin can
+    review and swap out any that auto-matched to the wrong regional feed before committing via
+    bulk-assign below."""
     candidates = await _iptv_org_candidates(db, payload.country, payload.category)
     name_by_id = {c.id: c.name for c in candidates}
     by_id = {c.id: c for c in candidates}
-    result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
+    result = await db.execute(
+        select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)).order_by(PlaylistChannel.sort_order)
+    )
     channels = result.scalars().all()
 
     matched: list[dict] = []
     unmatched: list[dict] = []
     for pc in channels:
-        best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=payload.sensitivity)
-        if best is None:
-            unmatched.append({"channel_id": pc.id, "channel_name": pc.name})
+        ranked = epg_mapper.search_candidates(pc.name, name_by_id, limit=5)
+        candidate_list = [_serialize_iptv_org_match(by_id[cid], score) for cid, score in ranked]
+        row = {"channel_id": pc.id, "channel_name": pc.name, "candidates": candidate_list}
+        if ranked and ranked[0][1] >= payload.sensitivity:
+            matched.append(row)
+        else:
+            unmatched.append(row)
+
+    return {"matched": matched, "unmatched": unmatched}
+
+
+class BulkIptvOrgAssignEntry(BaseModel):
+    channel_id: int
+    iptv_org_channel_id: int | None
+
+
+class BulkIptvOrgAssignIn(BaseModel):
+    assignments: list[BulkIptvOrgAssignEntry]
+
+
+@router.post("/{playlist_id}/channels/iptv-org/bulk-assign")
+async def bulk_assign_iptv_org_channels(
+    playlist_id: int, payload: BulkIptvOrgAssignIn, db: DbSession, _admin: AdminUser
+) -> dict:
+    """Commits a reviewed (and possibly hand-edited) set of matches from bulk-auto-map above -
+    always overwrites whatever was previously set, same as the single-channel PATCH."""
+    result = await db.execute(
+        select(PlaylistChannel)
+        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+        .where(PlaylistCategory.playlist_id == playlist_id)
+    )
+    channels_by_id = {pc.id: pc for pc in result.scalars().all()}
+
+    applied = 0
+    invalid: list[dict] = []
+    for entry in payload.assignments:
+        pc = channels_by_id.get(entry.channel_id)
+        if pc is None:
+            invalid.append({"channel_id": entry.channel_id, "reason": "channel not found in this playlist"})
             continue
-        cid, score = best
-        pc.iptv_org_channel_id = cid
-        matched.append({"channel_id": pc.id, "channel_name": pc.name, **_serialize_iptv_org_match(by_id[cid], score)})
+        pc.iptv_org_channel_id = entry.iptv_org_channel_id
+        applied += 1
 
     await db.commit()
-    return {"matched": matched, "unmatched": unmatched}
+    return {"applied": applied, "invalid": invalid}
 
 
 class IptvOrgAssign(BaseModel):

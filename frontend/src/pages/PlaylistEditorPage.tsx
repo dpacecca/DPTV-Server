@@ -1286,6 +1286,17 @@ function BulkEpgModal({
   );
 }
 
+interface IptvOrgPreviewRow {
+  channel_id: number;
+  channel_name: string;
+  candidates: IptvOrgChannelMatch[];
+}
+
+function candidateLabel(c: IptvOrgChannelMatch): string {
+  const pct = c.score !== undefined ? ` — ${(c.score * 100).toFixed(0)}%` : "";
+  return `${c.name} (${c.channel_id}${c.country ? `, ${c.country}` : ""})${pct}`;
+}
+
 function BulkIptvOrgModal({
   opened,
   onClose,
@@ -1302,10 +1313,12 @@ function BulkIptvOrgModal({
   const [sensitivity, setSensitivity] = useState(0.9);
   const [country, setCountry] = useState<string | null>(null);
   const [category, setCategory] = useState<string | null>(null);
-  const [result, setResult] = useState<{
-    matched: { channel_name: string; name: string; channel_id: string; country: string | null }[];
-    unmatched: { channel_name: string }[];
-  } | null>(null);
+  const [preview, setPreview] = useState<{ matched: IptvOrgPreviewRow[]; unmatched: IptvOrgPreviewRow[] } | null>(null);
+  // channel_id -> chosen iptv_org_channel_id (null = explicitly left unmapped). A row with no
+  // entry here hasn't been touched and is left alone on Apply - lets a partial review (only
+  // fixing the ones that look wrong) still Apply safely without clobbering the rest.
+  const [pending, setPending] = useState<Record<number, number | null>>({});
+  const [applied, setApplied] = useState<number | null>(null);
 
   const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
     queryKey: ["iptv-org-catalog-filters"],
@@ -1313,7 +1326,7 @@ function BulkIptvOrgModal({
     enabled: opened,
   });
 
-  // Auto-map only records which iptv-org channel each of yours corresponds to - it doesn't fetch
+  // Applying only records which iptv-org channel each of yours corresponds to - it doesn't fetch
   // guide data itself. That happens when a "mapped" iptv-org EPG source refreshes, so once
   // matching is done we offer to kick that off right here instead of sending the user to hunt
   // for it on the EPG Sources page.
@@ -1324,7 +1337,7 @@ function BulkIptvOrgModal({
   });
   const mappedEpgSource = epgSources?.find((s) => s.source_kind === "iptv_org" && s.iptv_org_selection?.mode === "mapped");
 
-  const bulkMapMutation = useMutation({
+  const previewMutation = useMutation({
     mutationFn: () =>
       api
         .post(`/api/playlists/${playlistId}/channels/iptv-org/bulk-auto-map`, {
@@ -1333,14 +1346,48 @@ function BulkIptvOrgModal({
           country,
           category,
         })
-        .then((r) => r.data),
+        .then((r) => r.data as { matched: IptvOrgPreviewRow[]; unmatched: IptvOrgPreviewRow[] }),
     onSuccess: (data) => {
-      setResult(data);
-      onChanged();
+      setPreview(data);
+      setApplied(null);
+      // Pre-select the top (closest) candidate for every confidently-matched row; unmatched
+      // rows start blank so they're skipped on Apply unless a match is picked by hand.
+      const initial: Record<number, number | null> = {};
+      for (const row of data.matched) {
+        if (row.candidates[0]) initial[row.channel_id] = row.candidates[0].iptv_org_channel_id;
+      }
+      setPending(initial);
     },
     onError: (err: any) =>
       notifications.show({
-        message: err?.response?.data?.detail || "Auto-map failed - check the browser console for details",
+        message: err?.response?.data?.detail || "Preview failed - check the browser console for details",
+        color: "red",
+      }),
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: () =>
+      api
+        .post(`/api/playlists/${playlistId}/channels/iptv-org/bulk-assign`, {
+          assignments: Object.entries(pending).map(([channelId, iptvOrgChannelId]) => ({
+            channel_id: Number(channelId),
+            iptv_org_channel_id: iptvOrgChannelId,
+          })),
+        })
+        .then((r) => r.data as { applied: number; invalid: { channel_id: number; reason: string }[] }),
+    onSuccess: (data) => {
+      setApplied(data.applied);
+      onChanged();
+      notifications.show({
+        message: data.invalid.length
+          ? `Applied ${data.applied} mapping(s), ${data.invalid.length} failed`
+          : `Applied ${data.applied} mapping(s)`,
+        color: data.invalid.length ? "yellow" : "green",
+      });
+    },
+    onError: (err: any) =>
+      notifications.show({
+        message: err?.response?.data?.detail || "Apply failed - check the browser console for details",
         color: "red",
       }),
   });
@@ -1356,18 +1403,46 @@ function BulkIptvOrgModal({
   });
 
   function handleClose() {
-    setResult(null);
+    setPreview(null);
+    setPending({});
+    setApplied(null);
     onClose();
   }
 
+  function renderRow(row: IptvOrgPreviewRow) {
+    const options = [
+      { value: "", label: "— no mapping —" },
+      ...row.candidates.map((c) => ({ value: String(c.iptv_org_channel_id), label: candidateLabel(c) })),
+    ];
+    const current = pending[row.channel_id];
+    return (
+      <Group key={row.channel_id} wrap="nowrap" gap="xs" align="center">
+        <Text size="xs" style={{ flex: "0 0 40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {row.channel_name}
+        </Text>
+        <Select
+          size="xs"
+          style={{ flex: 1 }}
+          placeholder="Choose a match..."
+          searchable
+          data={options}
+          value={current === undefined ? null : current === null ? "" : String(current)}
+          onChange={(v) => setPending((prev) => ({ ...prev, [row.channel_id]: v ? Number(v) : null }))}
+        />
+      </Group>
+    );
+  }
+
+  const totalPending = Object.keys(pending).length;
+
   return (
-    <Modal opened={opened} onClose={handleClose} title={`Map to iptv-org for ${channelIds.length} channel(s)`} size="md">
+    <Modal opened={opened} onClose={handleClose} title={`Map to iptv-org for ${channelIds.length} channel(s)`} size="lg">
       <Stack>
         <Text size="sm" c="dimmed">
-          Matches each channel's name against iptv-org's channel catalog. This only records the
-          mapping - nothing is scraped until a "From my channel mappings" EPG source (EPG
-          Sources page) is refreshed, at which point guide data for exactly these channels is
-          fetched and epg_channel gets filled in automatically.
+          Matches each channel's name against iptv-org's channel catalog and proposes the closest
+          candidates for review - nothing is saved until you hit Apply. Once applied, nothing is
+          scraped until a "From my channel mappings" EPG source (EPG Sources page) is refreshed,
+          at which point guide data for exactly these channels is fetched automatically.
         </Text>
 
         <Group grow>
@@ -1402,27 +1477,32 @@ function BulkIptvOrgModal({
           decimalScale={2}
         />
 
-        {result && (
+        {!preview && (
+          <Button onClick={() => previewMutation.mutate()} loading={previewMutation.isPending}>
+            Preview matches for {channelIds.length} channel(s)
+          </Button>
+        )}
+
+        {preview && (
           <Stack gap={4}>
             <Text size="sm" c="green">
-              Matched {result.matched.length} of {result.matched.length + result.unmatched.length}
+              {preview.matched.length} of {preview.matched.length + preview.unmatched.length} confidently matched -
+              review below and adjust any that look wrong, then Apply.
             </Text>
-            {result.matched.length > 0 && (
-              <Stack gap={2} mah={140} style={{ overflowY: "auto" }}>
-                {result.matched.map((m, i) => (
-                  <Text key={i} size="xs" c="dimmed">
-                    {m.channel_name} → {m.name} ({m.channel_id}
-                    {m.country ? `, ${m.country}` : ""})
-                  </Text>
-                ))}
-              </Stack>
-            )}
-            {result.unmatched.length > 0 && (
-              <Text size="xs" c="dimmed">
-                Not matched: {result.unmatched.map((u) => u.channel_name).join(", ")}
-              </Text>
-            )}
-            {result.matched.length > 0 &&
+            <Stack gap={6} mah={320} style={{ overflowY: "auto" }}>
+              {[...preview.matched, ...preview.unmatched].map(renderRow)}
+            </Stack>
+
+            <Group>
+              <Button onClick={() => applyMutation.mutate()} loading={applyMutation.isPending} disabled={totalPending === 0}>
+                Apply {totalPending} mapping(s)
+              </Button>
+              <Button variant="subtle" onClick={() => previewMutation.mutate()} loading={previewMutation.isPending}>
+                Re-run preview
+              </Button>
+            </Group>
+
+            {applied !== null &&
               (mappedEpgSource ? (
                 <Button
                   size="xs"
@@ -1440,10 +1520,6 @@ function BulkIptvOrgModal({
               ))}
           </Stack>
         )}
-
-        <Button onClick={() => bulkMapMutation.mutate()} loading={bulkMapMutation.isPending}>
-          Auto-map {channelIds.length} channel(s)
-        </Button>
       </Stack>
     </Modal>
   );
