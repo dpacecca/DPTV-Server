@@ -855,7 +855,7 @@ class BulkAction(BaseModel):
     channel_ids: list[int]
     action: str
     """One of: uppercase, sentence_case, add_prefix, add_suffix, find_replace, enable, disable,
-    delete, lock_name, unlock_name, set_dummy_epg_mode."""
+    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_iptv_org_mapping."""
     find: str | None = None
     replace: str | None = None
     text: str | None = None
@@ -899,6 +899,8 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
                 pc.dummy_epg_program_minutes = payload.dummy_epg_program_minutes
         elif payload.action == "delete":
             await db.delete(pc)
+        elif payload.action == "clear_iptv_org_mapping":
+            pc.iptv_org_channel_id = None
         else:
             raise HTTPException(400, f"Unknown action: {payload.action}")
         count += 1
