@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
@@ -485,6 +486,54 @@ async def _log_stream(stream: asyncio.StreamReader, prefix: str) -> list[bytes]:
     return lines
 
 
+def _detect_available_memory_mb() -> int | None:
+    """Best-effort detection of how much memory this process could actually use: a cgroup memory
+    limit if this is running in a container with one set (LXC/Docker/Kubernetes - v2 first, then
+    v1), else the host's total physical RAM. None if neither could be determined."""
+    cgroup_v2 = Path("/sys/fs/cgroup/memory.max")
+    try:
+        if cgroup_v2.exists():
+            raw = cgroup_v2.read_text().strip()
+            if raw != "max":
+                return int(raw) // (1024 * 1024)
+    except (OSError, ValueError):
+        pass
+
+    cgroup_v1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    try:
+        if cgroup_v1.exists():
+            limit = int(cgroup_v1.read_text().strip())
+            # cgroup v1 signals "no limit" with a very large sentinel value (close to the max
+            # signed 64-bit int) rather than a literal string - anything remotely close to that
+            # isn't a real container memory allocation.
+            if limit < (1 << 62):
+                return limit // (1024 * 1024)
+    except (OSError, ValueError):
+        pass
+
+    try:
+        return (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) // (1024 * 1024)
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+@lru_cache
+def _grab_node_max_old_space_mb() -> int:
+    """See Settings.iptv_org_grab_node_max_old_space_mb - an explicit setting always wins;
+    otherwise this is 70% of the detected memory allocation (container cgroup limit, or host
+    physical RAM), leaving headroom for this app's own backend process, Postgres, and the OS,
+    which all share whatever memory this container/host actually has. Falls back to a
+    conservative fixed default only if detection itself fails outright. Cached (memoized) since
+    the answer can't change during this process's lifetime and this is checked on every batch."""
+    configured = get_settings().iptv_org_grab_node_max_old_space_mb
+    if configured is not None:
+        return configured
+    detected = _detect_available_memory_mb()
+    if detected is None:
+        return 4096
+    return max(512, int(detected * 0.7))
+
+
 async def _run_grab_batch(
     entries: list[GrabChannelEntry], output_path: Path, epg_dir: Path, timeout: float, log_prefix: str = ""
 ) -> None:
@@ -508,7 +557,7 @@ async def _run_grab_batch(
     # site like foxtel.com.au that does an extra HTTP request per program) use more of whatever
     # RAM is actually available instead of crashing with "JavaScript heap out of memory".
     grab_env = dict(os.environ)
-    grab_env["NODE_OPTIONS"] = f"--max-old-space-size={get_settings().iptv_org_grab_node_max_old_space_mb}"
+    grab_env["NODE_OPTIONS"] = f"--max-old-space-size={_grab_node_max_old_space_mb()}"
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=str(epg_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=grab_env
     )
