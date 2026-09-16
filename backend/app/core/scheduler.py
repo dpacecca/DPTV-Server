@@ -47,7 +47,7 @@ async def _run_scheduled_sync(schedule_id: int) -> None:
             return
         logger.info("Running scheduled sync (schedule_id=%s)", schedule_id)
         try:
-            await run_full_sync(db, SyncTrigger.SCHEDULED)
+            await run_full_sync(db, SyncTrigger.SCHEDULED, sync_sources=schedule.sync_sources, sync_epg=schedule.sync_epg)
             await db.commit()
         except Exception:  # noqa: BLE001
             logger.exception("Scheduled sync failed")

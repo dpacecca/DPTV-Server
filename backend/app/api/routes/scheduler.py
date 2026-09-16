@@ -39,6 +39,8 @@ async def list_schedules(db: DbSession, _admin: AdminUser) -> list[dict]:
 
 @router.post("/schedules")
 async def create_schedule(payload: ScheduleIn, db: DbSession, _admin: AdminUser) -> dict:
+    if not payload.sync_sources and not payload.sync_epg:
+        raise HTTPException(400, "At least one of sync_sources/sync_epg must be enabled")
     s = SyncSchedule(**payload.model_dump())
     db.add(s)
     await db.commit()
