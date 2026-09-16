@@ -3,6 +3,7 @@ import csv
 import io
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -235,6 +236,14 @@ class GrabChannelEntry:
     categories: tuple[str, ...]
     """Category ids (channels.csv taxonomy) - only populated for matched entries; there's no
     heuristic fallback for category the way there is for country."""
+    catalog_id: str
+    """What this entry is grabbed/deduped/mapped as. Almost always the stripped base channel
+    id (strip_feed_suffix(xmltv_id)), same as every other same-schedule regional/quality
+    variant of the channel - see _dedupe_entries_by_channel. For the small set of feed
+    variants _classify_feed_variant() recognizes as a genuinely different schedule (East/West
+    timezone feeds, Plus<N> timeshift channels), this is instead the full xmltv_id, so those
+    variants get their own catalog identity - individually searchable/pickable/mappable -
+    instead of being collapsed into the base channel like everything else."""
 
 
 @dataclass(frozen=True)
@@ -278,6 +287,42 @@ def _scan_site_files_sync(sites_dir: Path) -> list[tuple[str, str, str, str, str
     return out
 
 
+_TIMESHIFT_SUFFIX_RE = re.compile(r"plus(\d+)", re.IGNORECASE)
+_EAST_WEST_SUFFIX_RE = re.compile(r"^(east|west)$", re.IGNORECASE)
+# Countries with real multi-timezone tape-delay network feeds (the actual "East"/"West" use
+# case). Deliberately not a substring match, and deliberately not every country: e.g. the UK
+# is a single timezone, so a UK channel's bare "East"/"West" suffix (BBCOne.uk@East/@West,
+# ITV1.uk@East/@West) names a geographic broadcast region with an identical schedule to every
+# other regional opt-out - exactly the case _dedupe_entries_by_channel exists to collapse, not
+# split out. Substring matching is also deliberately avoided: it would otherwise misfire on
+# compound UK region names that merely contain "east"/"west" (SouthWest, NorthEastCumbria,
+# EastMidlands, WestMidlands, ...).
+_EAST_WEST_TLDS = {"us", "ca"}
+
+
+def _classify_feed_variant(xmltv_id: str) -> str | None:
+    """Most @-suffixed feed variants (regional opt-outs, SD/HD, language dubs, ...) carry the
+    exact same schedule as the channel's default feed and are safe to collapse away (see
+    _dedupe_entries_by_channel) - but two well-established patterns genuinely air different
+    programmes at different times and are worth keeping as their own pickable catalog entries:
+
+    - East/West: US/Canadian network feeds on a fixed tape delay (e.g. ABC.us@West), hours
+      behind the live feed.
+    - Plus<N>: timeshift channels (e.g. Channel4.uk@UKPlus1), N hours behind the parent.
+
+    Returns a short display label for a recognized variant, else None (collapse as usual)."""
+    if "@" not in xmltv_id:
+        return None
+    base_id, suffix = xmltv_id.rsplit("@", 1)
+    timeshift_match = _TIMESHIFT_SUFFIX_RE.search(suffix)
+    if timeshift_match:
+        return f"+{timeshift_match.group(1)}h timeshift"
+    tld = base_id.rsplit(".", 1)[-1].lower() if "." in base_id else ""
+    if tld in _EAST_WEST_TLDS and _EAST_WEST_SUFFIX_RE.match(suffix):
+        return f"{suffix.title()} feed"
+    return None
+
+
 async def build_grab_entries() -> list[GrabChannelEntry]:
     """The full catalog of every channel the vendored scraper checkout knows how to grab,
     each resolved to a country and (if matched) a set of categories. Returns [] if the
@@ -300,14 +345,16 @@ async def build_grab_entries() -> list[GrabChannelEntry]:
             country = ref.countries_by_code[channel_ref.country_code]
             matched = True
             categories = channel_ref.categories
+            catalog_id = xmltv_id if _classify_feed_variant(xmltv_id) else base_id
         else:
             country = infer_country_from_domain(site)
             matched = False
             categories = ()
+            catalog_id = base_id
         entries.append(
             GrabChannelEntry(
                 site=site, site_id=site_id, lang=lang, xmltv_id=xmltv_id, name=name,
-                country=country, matched=matched, categories=categories,
+                country=country, matched=matched, categories=categories, catalog_id=catalog_id,
             )
         )
     return entries
@@ -362,19 +409,21 @@ def _dedupe_entries_by_channel(entries: list[GrabChannelEntry]) -> list[GrabChan
     EpgChannel row (they share a base id), so the result is a pile of duplicate/conflicting
     programmes for one nominal channel, not just a slow scrape.
 
-    Keeps exactly one entry per base id: a non-region-suffixed ("default") feed if any site
-    offers one, otherwise the first match found. Entries with no trustworthy base id (unmatched
-    against channels.csv) are left untouched - there's nothing safe to dedupe them by."""
+    Keeps exactly one entry per catalog id: a non-region-suffixed ("default") feed if any site
+    offers one, otherwise the first match found. Grouped by catalog_id rather than the bare
+    base id, so a recognized feed variant (see _classify_feed_variant - East/West, Plus<N>
+    timeshift) keeps its own entry instead of being collapsed into the base channel like every
+    other regional/quality variant. Entries with no trustworthy base id (unmatched against
+    channels.csv) are left untouched - there's nothing safe to dedupe them by."""
     matched = [e for e in entries if e.matched]
     unmatched = [e for e in entries if not e.matched]
 
     best_by_id: dict[str, GrabChannelEntry] = {}
     for e in matched:
-        base_id = strip_feed_suffix(e.xmltv_id)
         is_default_feed = "@" not in e.xmltv_id
-        current = best_by_id.get(base_id)
+        current = best_by_id.get(e.catalog_id)
         if current is None or (is_default_feed and "@" in current.xmltv_id):
-            best_by_id[base_id] = e
+            best_by_id[e.catalog_id] = e
 
     return list(best_by_id.values()) + unmatched
 
@@ -397,10 +446,14 @@ async def grab_entries_for_channel_ids(channel_ids: list[str]) -> list[GrabChann
     country/category those channels live in. Meant for "I only want guide data for the
     channels I actually use", which for a typical admin is a few dozen channels rather than
     the thousands a country/category pull drags in. One entry per channel (see
-    _dedupe_entries_by_channel) even when multiple sites carry it."""
+    _dedupe_entries_by_channel) even when multiple sites carry it.
+
+    channel_ids may mix base ids (e.g. "ABC.us") with recognized feed-variant ids (e.g.
+    "ABC.us@West") - matched against catalog_id, which is exactly one or the other per entry
+    (see GrabChannelEntry.catalog_id), so both resolve correctly without special-casing."""
     wanted = set(channel_ids)
     entries = await build_grab_entries()
-    matches = [e for e in entries if e.matched and strip_feed_suffix(e.xmltv_id) in wanted]
+    matches = [e for e in entries if e.matched and e.catalog_id in wanted]
     return _dedupe_entries_by_channel(matches)
 
 
@@ -417,29 +470,36 @@ class ChannelSearchResult:
 
 
 async def _all_channel_results() -> list[ChannelSearchResult]:
-    """Every channel the vendored checkout can actually scrape (has a real site backing it) -
-    there's no point surfacing a channel iptv-org's database merely knows about but nothing
-    scrapes. Shared by search_channels() (filtered) and list_all_channels() (the full set, used
-    to rebuild the persistent IptvOrgChannel catalog table)."""
+    """Every channel (and recognized feed variant - see GrabChannelEntry.catalog_id) the
+    vendored checkout can actually scrape (has a real site backing it) - there's no point
+    surfacing a channel iptv-org's database merely knows about but nothing scrapes. Shared by
+    search_channels() (filtered) and list_all_channels() (the full set, used to rebuild the
+    persistent IptvOrgChannel catalog table)."""
     ref = await get_reference_data()
     entries = await build_grab_entries()
 
     site_counts: dict[str, int] = {}
+    variant_labels: dict[str, str] = {}
     for e in entries:
         if not e.matched:
             continue
-        base_id = strip_feed_suffix(e.xmltv_id)
-        site_counts[base_id] = site_counts.get(base_id, 0) + 1
+        site_counts[e.catalog_id] = site_counts.get(e.catalog_id, 0) + 1
+        label = _classify_feed_variant(e.xmltv_id)
+        if label is not None:
+            variant_labels[e.catalog_id] = label
 
     results: list[ChannelSearchResult] = []
-    for base_id, count in site_counts.items():
+    for catalog_id, count in site_counts.items():
+        base_id = strip_feed_suffix(catalog_id)
         channel_ref = ref.channels_by_id.get(base_id)
         if channel_ref is None:
             continue
         country = ref.countries_by_code.get(channel_ref.country_code) if channel_ref.country_code else None
+        label = variant_labels.get(catalog_id)
+        name = f"{channel_ref.name} — {label}" if label else channel_ref.name
         results.append(
             ChannelSearchResult(
-                id=base_id, name=channel_ref.name, country=country,
+                id=catalog_id, name=name, country=country,
                 categories=channel_ref.categories, site_count=count,
                 logo_url=ref.logos_by_channel_id.get(base_id),
             )
@@ -462,7 +522,13 @@ async def search_channels(query: str, limit: int = 25) -> list[ChannelSearchResu
 
     ref = await get_reference_data()
     all_results = await _all_channel_results()
-    results = [r for r in all_results if any(query in n.lower() for n in (r.name, *ref.channels_by_id[r.id].alt_names))]
+    # r.id is a catalog_id - the base channel id for a plain result, or a full variant xmltv_id
+    # (e.g. "ABC.us@West") for a feed-variant result - so alt_names must be looked up by the
+    # underlying base channel id either way.
+    results = [
+        r for r in all_results
+        if any(query in n.lower() for n in (r.name, *ref.channels_by_id[strip_feed_suffix(r.id)].alt_names))
+    ]
 
     # Shortest/closest name match first (a query like "cnn" should surface "CNN" itself before
     # "CNN International" or "CNN en Español"), then alphabetical.
@@ -477,19 +543,20 @@ def write_channels_xml(entries: list[GrabChannelEntry], path: Path) -> None:
     --sites=, since selecting a whole site would drag in channels from every country/category
     it happens to carry.
 
-    Crucially, xmltv_id is set to the stripped base channel id (e.g. "CNN.us", not the raw
-    per-feed "CNN.us@East") for matched entries - the grabber uses this as the output XMLTV's
-    <channel id="..."> verbatim, so leaving it out (as an earlier version of this function did)
-    means the output falls back to some grabber-internal id (a raw site_id, sometimes not even
-    a stable one) that has nothing to do with iptv-org's own catalog. That breaks anything
-    downstream trying to match scraped output back to a specific catalog channel by id -
-    including the "mapped" selection mode's auto-reconciliation, which depends on it exactly.
-    Unmatched (TLD-heuristic-only) entries have no trustworthy canonical id, so they're left
-    without xmltv_id, same as before."""
+    Crucially, xmltv_id is set to e.catalog_id (usually the stripped base channel id, e.g.
+    "CNN.us" not the raw per-feed "CNN.us@East" - except for a recognized feed variant like
+    "ABC.us@West", where catalog_id is the full id, preserved on purpose) for matched entries -
+    the grabber uses this as the output XMLTV's <channel id="..."> verbatim, so leaving it out
+    (as an earlier version of this function did) means the output falls back to some
+    grabber-internal id (a raw site_id, sometimes not even a stable one) that has nothing to do
+    with iptv-org's own catalog. That breaks anything downstream trying to match scraped output
+    back to a specific catalog channel by id - including the "mapped" selection mode's
+    auto-reconciliation, which depends on it exactly. Unmatched (TLD-heuristic-only) entries
+    have no trustworthy canonical id, so they're left without xmltv_id, same as before."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<channels>"]
     for e in entries:
-        xmltv_id_attr = f' xmltv_id="{escape(strip_feed_suffix(e.xmltv_id))}"' if e.matched else ""
+        xmltv_id_attr = f' xmltv_id="{escape(e.catalog_id)}"' if e.matched else ""
         lines.append(
             f'  <channel site="{escape(e.site)}" site_id="{escape(e.site_id)}" lang="{escape(e.lang)}"'
             f"{xmltv_id_attr}>{escape(e.name)}</channel>"
