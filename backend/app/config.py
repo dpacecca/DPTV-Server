@@ -67,14 +67,20 @@ class Settings(BaseSettings):
     programme listings, not the near-instant failures a sandboxed test environment without
     normal internet access sees - costs meaningfully more memory per channel than an empty or
     failed one; observed ~1.5GB RSS for a single 200-channel batch against real sites."""
-    iptv_org_grab_node_max_old_space_mb: int = 4096
+    iptv_org_grab_node_max_old_space_mb: int | None = None
     """Node's default V8 heap ceiling (~2GB old-space on 64-bit) is often hit well before the
-    host actually runs out of RAM, crashing the grabber with "JavaScript heap out of memory"
-    on a large or heavy batch (e.g. a site like foxtel.com.au that does an extra HTTP request
-    per program, not just per channel - see foxtel.com.au.config.js's loadProgramDetails).
-    Passed as NODE_OPTIONS=--max-old-space-size=<this> to the grabber subprocess so it can use
-    more of whatever RAM is actually available. Raise this if the host has RAM to spare;
-    lower iptv_org_grab_batch_size instead if it doesn't."""
+    host actually runs out of RAM, crashing the grabber with "JavaScript heap out of memory" on
+    a large or heavy batch (e.g. a site like foxtel.com.au that does an extra HTTP request per
+    program, not just per channel - see foxtel.com.au.config.js's loadProgramDetails). Passed as
+    NODE_OPTIONS=--max-old-space-size=<this> to the grabber subprocess so it can use more of
+    whatever RAM is actually available, instead of self-terminating well below it.
+
+    None (the default) auto-detects the actual memory allocation - the container's cgroup limit
+    if there is one (LXC/Docker/Kubernetes), else the host's total physical RAM - and uses 70%
+    of it, leaving headroom for this app's own backend process, Postgres, and the OS (see
+    services.iptv_org_epg._grab_node_max_old_space_mb). Set an explicit value only to override
+    that detection - e.g. if this container shares its host with other memory-hungry services
+    whose usage the cgroup limit alone wouldn't account for."""
 
 
 @lru_cache
