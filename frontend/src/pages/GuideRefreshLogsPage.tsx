@@ -8,7 +8,7 @@ const LINE_OPTIONS = ["50", "100", "200", "500", "1000"];
 
 export default function GuideRefreshLogsPage() {
   const [lines, setLines] = useState("100");
-  const [live, setLive] = useState(false);
+  const [live, setLive] = useState(true);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   // Only auto-scroll to the newest lines while the admin is already at the bottom - otherwise a
   // live-updating page would keep yanking them away from whatever older line they scrolled up to read.
