@@ -582,6 +582,7 @@ async def _run_grab_batch(
         "npm", "run", "grab", "---",
         f"--channels={channels_xml_path}",
         f"--output={output_path}",
+        f"--maxConnections={get_settings().iptv_org_grab_max_connections}",
     ]
     # Node's default V8 heap ceiling (~2GB old-space on 64-bit) is often hit well before the
     # host actually runs out of RAM - raising it here lets a heavy batch (many channels, or a

@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     programme listings, not the near-instant failures a sandboxed test environment without
     normal internet access sees - costs meaningfully more memory per channel than an empty or
     failed one; observed ~1.5GB RSS for a single 200-channel batch against real sites."""
+    iptv_org_grab_max_connections: int = 1
+    """Passed to the grabber as --maxConnections. The grabber's own default (and this app's,
+    matching it) is 1 - every request to a given site made strictly one at a time, which is why
+    a grab paces at roughly one channel/day every 1-2 seconds even on a fast connection. Per the
+    grabber's own README: "under heavy load some sites may start return an error or completely
+    block your access" - raising this trades that risk for speed, and different sites tolerate
+    it differently, so there's no single safe number to default to. Applies per site (each
+    concurrently-running request still targets whichever channel/day it's currently on), not
+    across the whole batch."""
     iptv_org_grab_node_max_old_space_mb: int | None = None
     """Node's default V8 heap ceiling (~2GB old-space on 64-bit) is often hit well before the
     host actually runs out of RAM, crashing the grabber with "JavaScript heap out of memory" on
