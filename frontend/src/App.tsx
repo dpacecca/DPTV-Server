@@ -1,4 +1,4 @@
-import { AppShell, Burger, Group, NavLink, Text, Title, Button } from "@mantine/core";
+import { AppShell, Badge, Burger, Group, NavLink, Text, Title, Tooltip, Button } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
   IconAntenna,
@@ -10,8 +10,11 @@ import {
   IconPlaylist,
   IconUsers,
 } from "@tabler/icons-react";
+import { useQuery } from "@tanstack/react-query";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
+import { api } from "./api/client";
+import type { VersionStatus } from "./api/types";
 import { useAuth } from "./auth/AuthContext";
 import LoginPage from "./pages/LoginPage";
 import SourcesPage from "./pages/SourcesPage";
@@ -34,6 +37,47 @@ const NAV_ITEMS = [
   { to: "/guide-refresh-logs", label: "Guide Refresh Logs", icon: IconClipboardText },
 ];
 
+function VersionBadge() {
+  // GitHub's own response is what's cached server-side (see app/services/version.py) - this
+  // client-side staleTime just avoids re-fetching on every nav within the app, not the actual
+  // rate-limit protection.
+  const { data } = useQuery<VersionStatus>({
+    queryKey: ["version"],
+    queryFn: () => api.get("/api/version").then((r) => r.data),
+    staleTime: 5 * 60 * 1000,
+  });
+  if (!data) return null;
+
+  return (
+    <Group gap={6}>
+      <Text size="xs" c="dimmed">
+        v{data.version}
+      </Text>
+      {data.up_to_date === true && (
+        <Badge size="xs" color="green" variant="light">
+          Up to date
+        </Badge>
+      )}
+      {data.up_to_date === false && (
+        <Tooltip label={`v${data.latest_version} is available`}>
+          <Badge
+            size="xs"
+            color="orange"
+            variant="light"
+            component="a"
+            href="https://github.com/dpacecca/DPTV-Server/releases/latest"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ cursor: "pointer" }}
+          >
+            Update available
+          </Badge>
+        </Tooltip>
+      )}
+    </Group>
+  );
+}
+
 function Shell() {
   const [opened, { toggle }] = useDisclosure();
   const location = useLocation();
@@ -47,6 +91,7 @@ function Shell() {
           <Group>
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
             <Title order={4}>DPTV-Server</Title>
+            <VersionBadge />
           </Group>
           <Button variant="subtle" size="xs" leftSection={<IconLogout size={14} />} onClick={logout}>
             Log out
