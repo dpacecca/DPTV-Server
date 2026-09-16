@@ -787,6 +787,18 @@ function ChannelDetailModal({
   const [epgSourceIds, setEpgSourceIds] = useState<Set<number>>(new Set());
   const [epgSourcesInitialized, setEpgSourcesInitialized] = useState(false);
   const [suggestRulesOpen, setSuggestRulesOpen] = useState(false);
+  // Which source this channel's EPG mapping section is currently showing - mirrors the bulk
+  // "Map EPG..." modal's source picker (EPG source / iptv-org catalog / Dummy EPG), mutually
+  // exclusive, so there's one consistent place to pick a source and search/configure it instead
+  // of three permanently-stacked sections. Defaults to whichever this channel is actually using
+  // right now rather than always "epg", since (unlike the bulk modal) there's a real single
+  // channel state to read at open time.
+  const [channelMapSource, setChannelMapSource] = useState<"epg" | "iptv_org" | "dummy">(() => {
+    if (channel.epg_channel_id) return "epg";
+    if (channel.iptv_org_channel_id) return "iptv_org";
+    if (channel.dummy_epg_mode !== "inherit") return "dummy";
+    return "epg";
+  });
 
   const { data: epgSources } = useQuery<EpgSource[]>({
     queryKey: ["epg-sources-lite"],
@@ -952,222 +964,242 @@ function ChannelDetailModal({
         <Text fw={600} size="sm" mt="sm">
           EPG Mapping
         </Text>
-        <Group>
-          <Button size="xs" leftSection={<IconWand size={14} />} variant="light" onClick={() => autoEpgMutation.mutate()}>
-            Auto-map
-          </Button>
-          {channel.epg_channel_id && (
-            <Button size="xs" variant="subtle" color="red" onClick={() => assignEpgMutation.mutate(null)}>
-              Clear mapping
-            </Button>
-          )}
-        </Group>
-        {epgSources && epgSources.length > 1 && (
-          <Group gap={4}>
-            <Text size="xs" c="dimmed">
-              Search:
-            </Text>
-            {epgSources.map((s) => (
-              <Badge
-                key={s.id}
-                size="sm"
-                variant={epgSourceIds.has(s.id) ? "filled" : "outline"}
-                style={{ cursor: "pointer" }}
-                onClick={() =>
-                  setEpgSourceIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(s.id)) next.delete(s.id);
-                    else next.add(s.id);
-                    return next;
-                  })
-                }
-              >
-                {s.name}
-              </Badge>
-            ))}
-          </Group>
-        )}
-        <TextInput placeholder="Search EPG channels..." value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
-        <Stack gap={4} mah={180} style={{ overflowY: "auto" }}>
-          {searchResults?.map((r: { epg_channel_id: number; display_name: string; epg_id: string; score: number }) => (
-            <Group
-              key={r.epg_channel_id}
-              justify="space-between"
-              p={6}
-              style={{
-                borderRadius: 6,
-                cursor: "pointer",
-                background: channel.epg_channel_id === r.epg_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
+        <Stack gap={4}>
+          {(epgSources ?? []).map((s) => (
+            <Checkbox
+              key={s.id}
+              label={s.name}
+              checked={channelMapSource === "epg" && epgSourceIds.has(s.id)}
+              disabled={channelMapSource !== "epg"}
+              onChange={(e) => {
+                setChannelMapSource("epg");
+                const checked = e.currentTarget.checked;
+                setEpgSourceIds((prev) => {
+                  const next = new Set(prev);
+                  if (checked) next.add(s.id);
+                  else next.delete(s.id);
+                  return next;
+                });
               }}
-              onClick={() => assignEpgMutation.mutate(r.epg_channel_id)}
-            >
-              <Text size="sm">{r.display_name}</Text>
-              <Badge size="xs" variant="light">
-                {(r.score * 100).toFixed(0)}%
-              </Badge>
-            </Group>
+            />
           ))}
+          {epgSources?.length === 0 && (
+            <Text size="sm" c="dimmed">
+              No EPG sources yet — add one under EPG Sources first.
+            </Text>
+          )}
+          <Checkbox
+            label="iptv-org catalog"
+            checked={channelMapSource === "iptv_org"}
+            onChange={(e) => setChannelMapSource(e.currentTarget.checked ? "iptv_org" : "epg")}
+          />
+          <Checkbox
+            label="Dummy EPG"
+            checked={channelMapSource === "dummy"}
+            onChange={(e) => setChannelMapSource(e.currentTarget.checked ? "dummy" : "epg")}
+          />
         </Stack>
 
-        <Text fw={600} size="sm" mt="sm">
-          iptv-org Channel Mapping
-        </Text>
-        <Group align="flex-start" justify="space-between" wrap="nowrap">
-          <Text size="xs" c="dimmed">
-            Maps to a channel in iptv-org's catalog before any guide data exists - once a "From
-            my channel mappings" EPG source (EPG Sources page) refreshes, this channel's real
-            guide data lands here automatically. Auto-map applies immediately; search results are
-            staged for review until you hit Apply.
-          </Text>
-          {mappedEpgSource && (
-            <Button
-              size="xs"
-              variant="subtle"
-              loading={refreshMappedSourceMutation.isPending}
-              onClick={() => refreshMappedSourceMutation.mutate()}
-              style={{ flexShrink: 0 }}
-            >
-              Fetch guide data now
-            </Button>
-          )}
-        </Group>
-        <Group>
-          <Button
-            size="xs"
-            leftSection={<IconWand size={14} />}
-            variant="light"
-            loading={assignIptvOrgMutation.isPending}
-            onClick={autoMapAndClose}
-          >
-            Auto-map
-          </Button>
-          {committedIptvOrg.id && pendingIptvOrgMatch === undefined && (
-            <Button size="xs" variant="subtle" color="red" onClick={() => setPendingIptvOrgMatch(null)}>
-              Clear mapping
-            </Button>
-          )}
-        </Group>
-        {pendingIptvOrgMatch !== undefined ? (
-          <Group gap="xs">
-            <Badge variant="light" color="yellow" style={{ alignSelf: "flex-start" }}>
-              Pending: {pendingIptvOrgMatch ? `${pendingIptvOrgMatch.name} (${pendingIptvOrgMatch.channel_id})` : "clear mapping"}
-            </Badge>
-            <Button
-              size="xs"
-              color="green"
-              loading={assignIptvOrgMutation.isPending}
-              onClick={() => assignIptvOrgMutation.mutate(pendingIptvOrgMatch ?? null)}
-            >
-              Apply
-            </Button>
-            <Button size="xs" variant="subtle" onClick={() => setPendingIptvOrgMatch(undefined)}>
-              Cancel
-            </Button>
-          </Group>
-        ) : (
-          committedIptvOrg.id && (
-            <Badge variant="light" color="grape" style={{ alignSelf: "flex-start" }}>
-              {committedIptvOrg.name} ({committedIptvOrg.channelId})
-            </Badge>
-          )
-        )}
-        <Group grow>
-          <Select
-            placeholder="Any country"
-            searchable
-            clearable
-            data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
-            value={iptvOrgCountry}
-            onChange={setIptvOrgCountry}
-          />
-          <Select
-            placeholder="Any category"
-            searchable
-            clearable
-            data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
-            value={iptvOrgCategory}
-            onChange={setIptvOrgCategory}
-          />
-        </Group>
-        <TextInput
-          placeholder="Search iptv-org channels (e.g. ESPN)..."
-          value={iptvOrgSearch}
-          onChange={(e) => setIptvOrgSearch(e.currentTarget.value)}
-        />
-        <Stack gap={4} mah={220} style={{ overflowY: "auto" }}>
-          {iptvOrgSearchResults?.map((r) => {
-            const effectiveId = pendingIptvOrgMatch !== undefined ? pendingIptvOrgMatch?.iptv_org_channel_id : committedIptvOrg.id;
-            return (
-            <Group
-              key={r.iptv_org_channel_id}
-              justify="space-between"
-              p={6}
-              style={{
-                borderRadius: 6,
-                cursor: "pointer",
-                background: effectiveId === r.iptv_org_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
-              }}
-              onClick={() => setPendingIptvOrgMatch(r)}
-            >
-              <div>
-                <Group gap={6}>
-                  <Text size="sm">{r.name}</Text>
-                  <Text size="xs" c="dimmed" ff="monospace">
-                    {r.channel_id}
-                  </Text>
-                </Group>
-                <Text size="xs" c="dimmed">
-                  {r.country ?? "International"} · {r.site_count} site{r.site_count === 1 ? "" : "s"}
-                </Text>
-              </div>
-              {r.score !== undefined && (
-                <Badge size="xs" variant="light">
-                  {(r.score * 100).toFixed(0)}%
-                </Badge>
+        {channelMapSource === "epg" && (
+          <>
+            <Group>
+              <Button size="xs" leftSection={<IconWand size={14} />} variant="light" onClick={() => autoEpgMutation.mutate()}>
+                Auto-map
+              </Button>
+              {channel.epg_channel_id && (
+                <Button size="xs" variant="subtle" color="red" onClick={() => assignEpgMutation.mutate(null)}>
+                  Clear mapping
+                </Button>
               )}
             </Group>
-            );
-          })}
-          {iptvOrgSearchResults?.length === 0 && (
-            <Text size="xs" c="dimmed">
-              No matches. Try a different search, or the iptv-org channel catalog may not be
-              configured yet on this server.
-            </Text>
-          )}
-        </Stack>
+            <TextInput placeholder="Search EPG channels..." value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+            <Stack gap={4} mah={180} style={{ overflowY: "auto" }}>
+              {searchResults?.map((r: { epg_channel_id: number; display_name: string; epg_id: string; score: number }) => (
+                <Group
+                  key={r.epg_channel_id}
+                  justify="space-between"
+                  p={6}
+                  style={{
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    background: channel.epg_channel_id === r.epg_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
+                  }}
+                  onClick={() => assignEpgMutation.mutate(r.epg_channel_id)}
+                >
+                  <Text size="sm">{r.display_name}</Text>
+                  <Badge size="xs" variant="light">
+                    {(r.score * 100).toFixed(0)}%
+                  </Badge>
+                </Group>
+              ))}
+            </Stack>
+          </>
+        )}
 
-        <Text fw={600} size="sm" mt="sm">
-          Dummy EPG (used when no real guide data is mapped)
-        </Text>
-        <Group grow>
-          <Select
-            label="Mode"
-            data={[
-              { value: "inherit", label: "Inherit from category" },
-              { value: "off", label: "Off" },
-              { value: "name", label: "Channel name as program" },
-              { value: "event", label: "Parse event date/time from name" },
-            ]}
-            value={channel.dummy_epg_mode}
-            onChange={(v) => updateMutation.mutate({ dummy_epg_mode: (v as DummyEpgMode) ?? "inherit" })}
-          />
-          <NumberInput
-            label="Program length (minutes)"
-            value={channel.dummy_epg_program_minutes ?? ""}
-            onChange={(v) => updateMutation.mutate({ dummy_epg_program_minutes: v === "" ? null : Number(v) })}
-            min={5}
-          />
-        </Group>
-        {channel.dummy_epg_mode === "event" && (
+        {channelMapSource === "iptv_org" && (
+          <>
+            <Group align="flex-start" justify="space-between" wrap="nowrap">
+              <Text size="xs" c="dimmed">
+                Maps to a channel in iptv-org's catalog before any guide data exists - once a "From
+                my channel mappings" EPG source (EPG Sources page) refreshes, this channel's real
+                guide data lands here automatically. Auto-map applies immediately; search results are
+                staged for review until you hit Apply.
+              </Text>
+              {mappedEpgSource && (
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  loading={refreshMappedSourceMutation.isPending}
+                  onClick={() => refreshMappedSourceMutation.mutate()}
+                  style={{ flexShrink: 0 }}
+                >
+                  Fetch guide data now
+                </Button>
+              )}
+            </Group>
+            <Group>
+              <Button
+                size="xs"
+                leftSection={<IconWand size={14} />}
+                variant="light"
+                loading={assignIptvOrgMutation.isPending}
+                onClick={autoMapAndClose}
+              >
+                Auto-map
+              </Button>
+              {committedIptvOrg.id && pendingIptvOrgMatch === undefined && (
+                <Button size="xs" variant="subtle" color="red" onClick={() => setPendingIptvOrgMatch(null)}>
+                  Clear mapping
+                </Button>
+              )}
+            </Group>
+            {pendingIptvOrgMatch !== undefined ? (
+              <Group gap="xs">
+                <Badge variant="light" color="yellow" style={{ alignSelf: "flex-start" }}>
+                  Pending: {pendingIptvOrgMatch ? `${pendingIptvOrgMatch.name} (${pendingIptvOrgMatch.channel_id})` : "clear mapping"}
+                </Badge>
+                <Button
+                  size="xs"
+                  color="green"
+                  loading={assignIptvOrgMutation.isPending}
+                  onClick={() => assignIptvOrgMutation.mutate(pendingIptvOrgMatch ?? null)}
+                >
+                  Apply
+                </Button>
+                <Button size="xs" variant="subtle" onClick={() => setPendingIptvOrgMatch(undefined)}>
+                  Cancel
+                </Button>
+              </Group>
+            ) : (
+              committedIptvOrg.id && (
+                <Badge variant="light" color="grape" style={{ alignSelf: "flex-start" }}>
+                  {committedIptvOrg.name} ({committedIptvOrg.channelId})
+                </Badge>
+              )
+            )}
+            <Group grow>
+              <Select
+                placeholder="Any country"
+                searchable
+                clearable
+                data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
+                value={iptvOrgCountry}
+                onChange={setIptvOrgCountry}
+              />
+              <Select
+                placeholder="Any category"
+                searchable
+                clearable
+                data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
+                value={iptvOrgCategory}
+                onChange={setIptvOrgCategory}
+              />
+            </Group>
+            <TextInput
+              placeholder="Search iptv-org channels (e.g. ESPN)..."
+              value={iptvOrgSearch}
+              onChange={(e) => setIptvOrgSearch(e.currentTarget.value)}
+            />
+            <Stack gap={4} mah={220} style={{ overflowY: "auto" }}>
+              {iptvOrgSearchResults?.map((r) => {
+                const effectiveId = pendingIptvOrgMatch !== undefined ? pendingIptvOrgMatch?.iptv_org_channel_id : committedIptvOrg.id;
+                return (
+                <Group
+                  key={r.iptv_org_channel_id}
+                  justify="space-between"
+                  p={6}
+                  style={{
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    background: effectiveId === r.iptv_org_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
+                  }}
+                  onClick={() => setPendingIptvOrgMatch(r)}
+                >
+                  <div>
+                    <Group gap={6}>
+                      <Text size="sm">{r.name}</Text>
+                      <Text size="xs" c="dimmed" ff="monospace">
+                        {r.channel_id}
+                      </Text>
+                    </Group>
+                    <Text size="xs" c="dimmed">
+                      {r.country ?? "International"} · {r.site_count} site{r.site_count === 1 ? "" : "s"}
+                    </Text>
+                  </div>
+                  {r.score !== undefined && (
+                    <Badge size="xs" variant="light">
+                      {(r.score * 100).toFixed(0)}%
+                    </Badge>
+                  )}
+                </Group>
+                );
+              })}
+              {iptvOrgSearchResults?.length === 0 && (
+                <Text size="xs" c="dimmed">
+                  No matches. Try a different search, or the iptv-org channel catalog may not be
+                  configured yet on this server.
+                </Text>
+              )}
+            </Stack>
+          </>
+        )}
+
+        {channelMapSource === "dummy" && (
           <Stack gap={4}>
             <Text size="xs" c="dimmed">
-              Looks for a date/time in the channel name (e.g. "Team A vs Team B 08/25 9:00PM") and schedules a single
-              program at that time for the configured duration, with the channel name filling the rest of the day.
-              Custom rules (playlist-wide) are tried first for naming conventions the built-in parser can't handle.
+              Used when no real guide data is mapped above.
             </Text>
-            <Button size="xs" variant="light" onClick={() => setSuggestRulesOpen(true)} style={{ alignSelf: "flex-start" }}>
-              Suggest Rule from This Name...
-            </Button>
+            <Group grow>
+              <Select
+                label="Mode"
+                data={[
+                  { value: "inherit", label: "Inherit from category" },
+                  { value: "off", label: "Off" },
+                  { value: "name", label: "Channel name as program" },
+                  { value: "event", label: "Parse event date/time from name" },
+                ]}
+                value={channel.dummy_epg_mode}
+                onChange={(v) => updateMutation.mutate({ dummy_epg_mode: (v as DummyEpgMode) ?? "inherit" })}
+              />
+              <NumberInput
+                label="Program length (minutes)"
+                value={channel.dummy_epg_program_minutes ?? ""}
+                onChange={(v) => updateMutation.mutate({ dummy_epg_program_minutes: v === "" ? null : Number(v) })}
+                min={5}
+              />
+            </Group>
+            {channel.dummy_epg_mode === "event" && (
+              <Stack gap={4}>
+                <Text size="xs" c="dimmed">
+                  Looks for a date/time in the channel name (e.g. "Team A vs Team B 08/25 9:00PM") and schedules a single
+                  program at that time for the configured duration, with the channel name filling the rest of the day.
+                  Custom rules (playlist-wide) are tried first for naming conventions the built-in parser can't handle.
+                </Text>
+                <Button size="xs" variant="light" onClick={() => setSuggestRulesOpen(true)} style={{ alignSelf: "flex-start" }}>
+                  Suggest Rule from This Name...
+                </Button>
+              </Stack>
+            )}
           </Stack>
         )}
       </Stack>
