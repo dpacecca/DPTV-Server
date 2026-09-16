@@ -8,6 +8,25 @@ import { api } from "../api/client";
 import type { SyncRun, SyncSchedule } from "../api/types";
 import { EmptyState } from "../App";
 
+// SyncSchedule.time_of_day is always stored/scheduled in UTC (see core/scheduler.py) - these
+// convert to/from the browser's own local time so the admin never has to do that math by hand.
+// Anchored to today's date (not a fixed one) so the UTC offset used reflects whether DST is
+// actually in effect right now - a fixed-date anchor would silently use the wrong offset for
+// half the year in any timezone that observes DST.
+function utcTimeToLocalDisplay(utcHms: string): string {
+  const [h, m] = utcHms.split(":").map(Number);
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), h, m));
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function localTimeToUtc(localHm: string): string {
+  const [h, m] = localHm.split(":").map(Number);
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}:00`;
+}
+
 export default function SchedulerPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
@@ -26,7 +45,7 @@ export default function SchedulerPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => api.post("/api/schedules", { label, time_of_day: `${time}:00` }),
+    mutationFn: () => api.post("/api/schedules", { label, time_of_day: localTimeToUtc(time) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["schedules"] });
       setModalOpen(false);
@@ -71,7 +90,7 @@ export default function SchedulerPage() {
           <Table striped>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Time (UTC)</Table.Th>
+                <Table.Th>Time</Table.Th>
                 <Table.Th>Label</Table.Th>
                 <Table.Th>Enabled</Table.Th>
                 <Table.Th />
@@ -80,7 +99,7 @@ export default function SchedulerPage() {
             <Table.Tbody>
               {schedules.map((s) => (
                 <Table.Tr key={s.id}>
-                  <Table.Td>{s.time_of_day}</Table.Td>
+                  <Table.Td>{utcTimeToLocalDisplay(s.time_of_day)}</Table.Td>
                   <Table.Td>{s.label || "-"}</Table.Td>
                   <Table.Td>
                     <Switch checked={s.enabled} readOnly />
@@ -129,7 +148,7 @@ export default function SchedulerPage() {
 
       <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title="Add Sync Time">
         <Stack>
-          <TimeInput label="Time (UTC)" value={time} onChange={(e) => setTime(e.currentTarget.value)} />
+          <TimeInput label="Time" value={time} onChange={(e) => setTime(e.currentTarget.value)} />
           <TextInput label="Label (optional)" value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
           <Button onClick={() => createMutation.mutate()}>Save</Button>
         </Stack>
