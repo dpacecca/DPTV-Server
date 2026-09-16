@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActionIcon, Badge, Button, Group, Modal, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
+import { ActionIcon, Badge, Button, Checkbox, Group, Modal, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
 import { TimeInput } from "@mantine/dates";
 import { notifications } from "@mantine/notifications";
 import { IconPlayerPlay, IconPlus, IconTrash } from "@tabler/icons-react";
@@ -32,6 +32,8 @@ export default function SchedulerPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [time, setTime] = useState("06:00");
   const [label, setLabel] = useState("");
+  const [syncSources, setSyncSources] = useState(true);
+  const [syncEpg, setSyncEpg] = useState(true);
 
   const { data: schedules, isLoading } = useQuery<SyncSchedule[]>({
     queryKey: ["schedules"],
@@ -45,11 +47,19 @@ export default function SchedulerPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => api.post("/api/schedules", { label, time_of_day: localTimeToUtc(time) }),
+    mutationFn: () =>
+      api.post("/api/schedules", {
+        label,
+        time_of_day: localTimeToUtc(time),
+        sync_sources: syncSources,
+        sync_epg: syncEpg,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["schedules"] });
       setModalOpen(false);
       setLabel("");
+      setSyncSources(true);
+      setSyncEpg(true);
     },
   });
 
@@ -92,6 +102,7 @@ export default function SchedulerPage() {
               <Table.Tr>
                 <Table.Th>Time</Table.Th>
                 <Table.Th>Label</Table.Th>
+                <Table.Th>Syncs</Table.Th>
                 <Table.Th>Enabled</Table.Th>
                 <Table.Th />
               </Table.Tr>
@@ -101,6 +112,12 @@ export default function SchedulerPage() {
                 <Table.Tr key={s.id}>
                   <Table.Td>{utcTimeToLocalDisplay(s.time_of_day)}</Table.Td>
                   <Table.Td>{s.label || "-"}</Table.Td>
+                  <Table.Td>
+                    <Group gap={4}>
+                      {s.sync_sources && <Badge variant="light" color="blue">Video sources</Badge>}
+                      {s.sync_epg && <Badge variant="light" color="grape">EPG sources</Badge>}
+                    </Group>
+                  </Table.Td>
                   <Table.Td>
                     <Switch checked={s.enabled} readOnly />
                   </Table.Td>
@@ -150,7 +167,16 @@ export default function SchedulerPage() {
         <Stack>
           <TimeInput label="Time" value={time} onChange={(e) => setTime(e.currentTarget.value)} />
           <TextInput label="Label (optional)" value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
-          <Button onClick={() => createMutation.mutate()}>Save</Button>
+          <Stack gap="xs">
+            <Text size="sm" fw={500}>
+              What to sync
+            </Text>
+            <Checkbox label="Video sources" checked={syncSources} onChange={(e) => setSyncSources(e.currentTarget.checked)} />
+            <Checkbox label="EPG sources" checked={syncEpg} onChange={(e) => setSyncEpg(e.currentTarget.checked)} />
+          </Stack>
+          <Button onClick={() => createMutation.mutate()} disabled={!syncSources && !syncEpg}>
+            Save
+          </Button>
         </Stack>
       </Modal>
     </Stack>

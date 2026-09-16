@@ -408,20 +408,34 @@ async def sync_all_epg_sources(db: AsyncSession) -> dict:
     return summary
 
 
-async def run_full_sync(db: AsyncSession, trigger: SyncTrigger, epg_sensitivity: float = 0.9) -> SyncRun:
+async def run_full_sync(
+    db: AsyncSession,
+    trigger: SyncTrigger,
+    epg_sensitivity: float = 0.9,
+    sync_sources: bool = True,
+    sync_epg: bool = True,
+) -> SyncRun:
+    """sync_sources/sync_epg let a caller run just one half (see SyncSchedule.sync_sources/
+    sync_epg - a schedule can be set to only refresh video sources, only EPG sources, or both).
+    apply_auto_clear/auto_map_epg_for_unmapped_channels always run regardless of which halves
+    ran - they're cheap, idempotent passes over whatever's currently in the DB (e.g. a
+    sources-only run can still auto-map newly-appeared channels against already-synced EPG
+    data), not something that depends on a sync having just happened."""
     run = SyncRun(started_at=datetime.now(timezone.utc), trigger=trigger, status=SyncStatus.RUNNING, summary={})
     db.add(run)
     await db.flush()
 
     summary: dict = {"sources": {}, "epg_sources": {}, "errors": []}
     try:
-        sources_summary = await sync_all_sources(db)
-        summary["sources"] = sources_summary["sources"]
-        summary["errors"].extend(sources_summary["errors"])
+        if sync_sources:
+            sources_summary = await sync_all_sources(db)
+            summary["sources"] = sources_summary["sources"]
+            summary["errors"].extend(sources_summary["errors"])
 
-        epg_summary = await sync_all_epg_sources(db)
-        summary["epg_sources"] = epg_summary["epg_sources"]
-        summary["errors"].extend(epg_summary["errors"])
+        if sync_epg:
+            epg_summary = await sync_all_epg_sources(db)
+            summary["epg_sources"] = epg_summary["epg_sources"]
+            summary["errors"].extend(epg_summary["errors"])
 
         summary["auto_cleared_channels"] = await apply_auto_clear(db)
         summary["auto_mapped_channels"] = await auto_map_epg_for_unmapped_channels(db, sensitivity=epg_sensitivity)
