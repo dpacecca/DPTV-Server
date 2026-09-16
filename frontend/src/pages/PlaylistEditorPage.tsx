@@ -354,6 +354,15 @@ export default function PlaylistEditorPage() {
                       <Menu.Item onClick={() => setBulkDummyEpgOpen(true)}>Set Dummy EPG mode...</Menu.Item>
                       <Menu.Item
                         onClick={() => {
+                          if (confirm(`Clear the EPG mapping for ${selectedChannelIds.size} channel(s)?`)) {
+                            runBulk({ action: "clear_epg_mapping" });
+                          }
+                        }}
+                      >
+                        Clear EPG mapping
+                      </Menu.Item>
+                      <Menu.Item
+                        onClick={() => {
                           if (confirm(`Clear the iptv-org mapping for ${selectedChannelIds.size} channel(s)?`)) {
                             runBulk({ action: "clear_iptv_org_mapping" });
                           }
@@ -1419,11 +1428,20 @@ function MapEpgModal({
     onSuccess: (data) => {
       setPreview(data);
       setApplied(null);
-      // Pre-select the top (closest) candidate for every confidently-matched row; unmatched
-      // rows start blank so they're skipped on Apply unless a match is picked by hand.
+      // Every previewed channel gets an explicit decision, not just the confidently-matched
+      // ones - a channel that already had a mapping (e.g. from a different EPG source) but
+      // doesn't confidently match this search is staged to have that mapping CLEARED, not left
+      // untouched. Otherwise re-running this against a different source silently kept the old
+      // source's mapping in place for anything that didn't happen to also match the new one,
+      // which defeats the point of "reassign to a different source." An admin can still
+      // hand-pick a different match (or restore "no mapping" on an already-cleared row) via its
+      // dropdown before hitting Apply.
       const initial: Record<number, number | null> = {};
       for (const row of data.matched) {
-        if (row.candidates[0]) initial[row.channel_id] = row.candidates[0].key;
+        initial[row.channel_id] = row.candidates[0]?.key ?? null;
+      }
+      for (const row of data.unmatched) {
+        initial[row.channel_id] = null;
       }
       setPending(initial);
     },
@@ -1603,6 +1621,7 @@ function MapEpgModal({
             <Text size="sm" c="green">
               {preview.matched.length} of {preview.matched.length + preview.unmatched.length} confidently matched -
               review below and adjust any that look wrong, then Apply.
+              {preview.unmatched.length > 0 && " The rest will have their EPG mapping cleared unless you pick one by hand."}
             </Text>
             <Stack gap={6} mah={320} style={{ overflowY: "auto" }}>
               {[...preview.matched, ...preview.unmatched].map((row) => (
