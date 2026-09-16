@@ -350,27 +350,58 @@ async def list_categories() -> list[CategoryOption]:
     return options
 
 
+def _dedupe_entries_by_channel(entries: list[GrabChannelEntry]) -> list[GrabChannelEntry]:
+    """Many sites list the same logical channel under multiple regional/quality feed variants
+    (e.g. BBCOne.uk@London, BBCOne.uk@LondonHD, BBCOne.uk@Scotland, ...) that all collapse to
+    the same base id once strip_feed_suffix() is applied - the vendored checkout has over
+    30,000 such @-suffixed feed entries in total, and BBCOne.uk alone resolves to 109
+    site+region combinations. Without deduping, selecting one mapped channel like that means
+    scraping the same programme guide (same schedule, a different market/quality picked
+    essentially at random) over a hundred times, which is almost entirely wasted grab time -
+    and worse, sync_epg_source stores every one of those site+region grabs under the same
+    EpgChannel row (they share a base id), so the result is a pile of duplicate/conflicting
+    programmes for one nominal channel, not just a slow scrape.
+
+    Keeps exactly one entry per base id: a non-region-suffixed ("default") feed if any site
+    offers one, otherwise the first match found. Entries with no trustworthy base id (unmatched
+    against channels.csv) are left untouched - there's nothing safe to dedupe them by."""
+    matched = [e for e in entries if e.matched]
+    unmatched = [e for e in entries if not e.matched]
+
+    best_by_id: dict[str, GrabChannelEntry] = {}
+    for e in matched:
+        base_id = strip_feed_suffix(e.xmltv_id)
+        is_default_feed = "@" not in e.xmltv_id
+        current = best_by_id.get(base_id)
+        if current is None or (is_default_feed and "@" in current.xmltv_id):
+            best_by_id[base_id] = e
+
+    return list(best_by_id.values()) + unmatched
+
+
 async def grab_entries_for_countries(country_names: list[str]) -> list[GrabChannelEntry]:
     wanted = set(country_names)
     entries = await build_grab_entries()
-    return [e for e in entries if e.country in wanted]
+    return _dedupe_entries_by_channel([e for e in entries if e.country in wanted])
 
 
 async def grab_entries_for_categories(category_ids: list[str]) -> list[GrabChannelEntry]:
     wanted = set(category_ids)
     entries = await build_grab_entries()
-    return [e for e in entries if wanted.intersection(e.categories)]
+    return _dedupe_entries_by_channel([e for e in entries if wanted.intersection(e.categories)])
 
 
 async def grab_entries_for_channel_ids(channel_ids: list[str]) -> list[GrabChannelEntry]:
     """Precise, admin-picked selection: only the exact channels requested (matched via the
-    same xmltv_id base-id lookup as everything else), across however many sites happen to
-    carry each one - deliberately not the whole country/category those channels live in.
-    Meant for "I only want guide data for the channels I actually use", which for a typical
-    admin is a few dozen channels rather than the thousands a country/category pull drags in."""
+    same xmltv_id base-id lookup as everything else) - deliberately not the whole
+    country/category those channels live in. Meant for "I only want guide data for the
+    channels I actually use", which for a typical admin is a few dozen channels rather than
+    the thousands a country/category pull drags in. One entry per channel (see
+    _dedupe_entries_by_channel) even when multiple sites carry it."""
     wanted = set(channel_ids)
     entries = await build_grab_entries()
-    return [e for e in entries if e.matched and strip_feed_suffix(e.xmltv_id) in wanted]
+    matches = [e for e in entries if e.matched and strip_feed_suffix(e.xmltv_id) in wanted]
+    return _dedupe_entries_by_channel(matches)
 
 
 @dataclass(frozen=True)
