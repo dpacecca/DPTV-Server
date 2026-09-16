@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ActionIcon, Badge, Button, Checkbox, Group, Modal, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
 import { TimeInput } from "@mantine/dates";
 import { notifications } from "@mantine/notifications";
-import { IconPlayerPlay, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconEdit, IconPlayerPlay, IconPlus, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { SyncRun, SyncSchedule } from "../api/types";
@@ -27,13 +27,42 @@ function localTimeToUtc(localHm: string): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}:00`;
 }
 
+// Same conversion as utcTimeToLocalDisplay, but as a plain 24h "HH:MM" - what TimeInput's
+// value/onChange (a thin wrapper over <input type="time">) needs, rather than a localized
+// display string.
+function utcTimeToLocalHm(utcHms: string): string {
+  const [h, m] = utcHms.split(":").map(Number);
+  const now = new Date();
+  const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), h, m));
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 export default function SchedulerPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [time, setTime] = useState("06:00");
   const [label, setLabel] = useState("");
   const [syncSources, setSyncSources] = useState(true);
   const [syncEpg, setSyncEpg] = useState(true);
+
+  const openAddModal = () => {
+    setEditingId(null);
+    setTime("06:00");
+    setLabel("");
+    setSyncSources(true);
+    setSyncEpg(true);
+    setModalOpen(true);
+  };
+
+  const openEditModal = (s: SyncSchedule) => {
+    setEditingId(s.id);
+    setTime(utcTimeToLocalHm(s.time_of_day));
+    setLabel(s.label);
+    setSyncSources(s.sync_sources);
+    setSyncEpg(s.sync_epg);
+    setModalOpen(true);
+  };
 
   const { data: schedules, isLoading } = useQuery<SyncSchedule[]>({
     queryKey: ["schedules"],
@@ -46,25 +75,24 @@ export default function SchedulerPage() {
     refetchInterval: 10000,
   });
 
-  const createMutation = useMutation({
-    mutationFn: () =>
-      api.post("/api/schedules", {
-        label,
-        time_of_day: localTimeToUtc(time),
-        sync_sources: syncSources,
-        sync_epg: syncEpg,
-      }),
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const payload = { label, time_of_day: localTimeToUtc(time), sync_sources: syncSources, sync_epg: syncEpg };
+      return editingId ? api.patch(`/api/schedules/${editingId}`, payload) : api.post("/api/schedules", payload);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["schedules"] });
       setModalOpen(false);
-      setLabel("");
-      setSyncSources(true);
-      setSyncEpg(true);
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/api/schedules/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["schedules"] }),
+  });
+
+  const toggleEnabledMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => api.patch(`/api/schedules/${id}`, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["schedules"] }),
   });
 
@@ -85,7 +113,7 @@ export default function SchedulerPage() {
           <Button variant="light" leftSection={<IconPlayerPlay size={16} />} loading={runNowMutation.isPending} onClick={() => runNowMutation.mutate()}>
             Sync Now
           </Button>
-          <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
+          <Button leftSection={<IconPlus size={16} />} onClick={openAddModal}>
             Add Sync Time
           </Button>
         </Group>
@@ -119,12 +147,20 @@ export default function SchedulerPage() {
                     </Group>
                   </Table.Td>
                   <Table.Td>
-                    <Switch checked={s.enabled} readOnly />
+                    <Switch
+                      checked={s.enabled}
+                      onChange={(e) => toggleEnabledMutation.mutate({ id: s.id, enabled: e.currentTarget.checked })}
+                    />
                   </Table.Td>
                   <Table.Td>
-                    <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(s.id)}>
-                      <IconTrash size={16} />
-                    </ActionIcon>
+                    <Group gap={4}>
+                      <ActionIcon variant="subtle" onClick={() => openEditModal(s)}>
+                        <IconEdit size={16} />
+                      </ActionIcon>
+                      <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(s.id)}>
+                        <IconTrash size={16} />
+                      </ActionIcon>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -163,7 +199,7 @@ export default function SchedulerPage() {
         )}
       </Paper>
 
-      <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title="Add Sync Time">
+      <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title={editingId ? "Edit Sync Time" : "Add Sync Time"}>
         <Stack>
           <TimeInput label="Time" value={time} onChange={(e) => setTime(e.currentTarget.value)} />
           <TextInput label="Label (optional)" value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
@@ -174,7 +210,7 @@ export default function SchedulerPage() {
             <Checkbox label="Video sources" checked={syncSources} onChange={(e) => setSyncSources(e.currentTarget.checked)} />
             <Checkbox label="EPG sources" checked={syncEpg} onChange={(e) => setSyncEpg(e.currentTarget.checked)} />
           </Stack>
-          <Button onClick={() => createMutation.mutate()} disabled={!syncSources && !syncEpg}>
+          <Button onClick={() => saveMutation.mutate()} disabled={!syncSources && !syncEpg} loading={saveMutation.isPending}>
             Save
           </Button>
         </Stack>

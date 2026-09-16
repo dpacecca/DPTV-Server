@@ -20,6 +20,14 @@ class ScheduleIn(BaseModel):
     sync_epg: bool = True
 
 
+class ScheduleUpdate(BaseModel):
+    label: str | None = None
+    time_of_day: time | None = None
+    enabled: bool | None = None
+    sync_sources: bool | None = None
+    sync_epg: bool | None = None
+
+
 def _serialize_schedule(s: SyncSchedule) -> dict:
     return {
         "id": s.id,
@@ -43,6 +51,27 @@ async def create_schedule(payload: ScheduleIn, db: DbSession, _admin: AdminUser)
         raise HTTPException(400, "At least one of sync_sources/sync_epg must be enabled")
     s = SyncSchedule(**payload.model_dump())
     db.add(s)
+    await db.commit()
+    await db.refresh(s)
+
+    from app.core.scheduler import reload_schedules
+
+    await reload_schedules(db)
+    return _serialize_schedule(s)
+
+
+@router.patch("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: int, payload: ScheduleUpdate, db: DbSession, _admin: AdminUser) -> dict:
+    s = await db.get(SyncSchedule, schedule_id)
+    if s is None:
+        raise HTTPException(404, "Schedule not found")
+    updates = payload.model_dump(exclude_unset=True)
+    new_sync_sources = updates.get("sync_sources", s.sync_sources)
+    new_sync_epg = updates.get("sync_epg", s.sync_epg)
+    if not new_sync_sources and not new_sync_epg:
+        raise HTTPException(400, "At least one of sync_sources/sync_epg must be enabled")
+    for key, value in updates.items():
+        setattr(s, key, value)
     await db.commit()
     await db.refresh(s)
 

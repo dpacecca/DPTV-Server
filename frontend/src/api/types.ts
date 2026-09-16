@@ -201,3 +201,9 @@ export interface SyncRun {
   status: string;
   summary: Record<string, unknown>;
 }
+
+export interface VersionStatus {
+  version: string;
+  latest_version: string | null;
+  up_to_date: boolean | null;
+}

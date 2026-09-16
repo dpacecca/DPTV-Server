@@ -685,6 +685,26 @@ async def list_category_channel_ids(
     return {"ids": [row[0] for row in result.all()]}
 
 
+@router.post("/{playlist_id}/categories/{category_id}/channels/reorder")
+async def reorder_channels(
+    playlist_id: int, category_id: int, items: list[ReorderItem], db: DbSession, _admin: AdminUser
+) -> dict:
+    """Mirrors /categories/reorder - the frontend calls this with the full, renumbered set of
+    currently-loaded (unfiltered, i.e. no search) channels after a drag-and-drop reorder. Since
+    list_category_channels always pages in sort_order, a loaded page is exactly the lowest-
+    numbered prefix of the category's channels, so renumbering just that prefix 0..N-1 can never
+    collide with an unloaded channel further down."""
+    cat = await db.get(PlaylistCategory, category_id)
+    if cat is None or cat.playlist_id != playlist_id:
+        raise HTTPException(404, "Category not found")
+    for item in items:
+        pc = await db.get(PlaylistChannel, item.id)
+        if pc and pc.playlist_category_id == category_id:
+            pc.sort_order = item.sort_order
+    await db.commit()
+    return {"ok": True}
+
+
 PREVIEW_MAX_CHANNELS = MAX_PAGE_SIZE
 PREVIEW_MAX_HOURS = 72
 

@@ -12,6 +12,7 @@ from app.core.scheduler import start_scheduler
 from app.core.security import hash_password
 from app.db import SessionLocal
 from app.models.xc_user import AdminUser
+from app.services import version as version_service
 from app.services import xc_log
 
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +34,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="DPTV-Server", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="DPTV-Server", version=version_service.get_current_version(), lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -77,3 +78,8 @@ app.include_router(logs.router)
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/version")
+async def version() -> dict:
+    return await version_service.get_version_status()

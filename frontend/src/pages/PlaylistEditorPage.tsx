@@ -34,6 +34,7 @@ import {
   IconDownload,
   IconEdit,
   IconEye,
+  IconGripVertical,
   IconLock,
   IconLockOpen,
   IconPlus,
@@ -45,6 +46,9 @@ import {
 } from "@tabler/icons-react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce } from "use-debounce";
 import { api, refreshEpgSource } from "../api/client";
@@ -68,6 +72,21 @@ const CHANNEL_PAGE_SIZE = 200;
 // ship) but we warn before firing - a 50k-row UPDATE/DELETE is a lot to ask of one request.
 const LARGE_SELECTION_WARNING = 5000;
 
+// Shared drag-and-drop reorder logic for both the category sidebar and the channel table: moves
+// either just the dragged item, or - when the dragged item is part of a larger multi-selection -
+// every selected item as one contiguous block, to just before whatever it was dropped on.
+// Preserves each moved item's relative order from before the drag.
+function reorderBlock(order: number[], selectedIds: Set<number>, activeId: number, overId: number): number[] {
+  if (activeId === overId) return order;
+  const movingIds = selectedIds.has(activeId) && selectedIds.size > 1 ? order.filter((id) => selectedIds.has(id)) : [activeId];
+  const movingSet = new Set(movingIds);
+  const remaining = order.filter((id) => !movingSet.has(id));
+  const insertAt = remaining.indexOf(overId);
+  return insertAt === -1
+    ? [...remaining, ...movingIds]
+    : [...remaining.slice(0, insertAt), ...movingIds, ...remaining.slice(insertAt)];
+}
+
 function useApiPlaylist(playlistId: string | undefined) {
   return useQuery<Playlist>({
     queryKey: ["playlist", playlistId],
@@ -83,6 +102,7 @@ export default function PlaylistEditorPage() {
   const { data: playlist, isLoading } = useApiPlaylist(playlistId);
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [multiSelectedCategoryIds, setMultiSelectedCategoryIds] = useState<Set<number>>(new Set());
   const [selectedChannelIds, setSelectedChannelIds] = useState<Set<number>>(new Set());
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -98,6 +118,8 @@ export default function PlaylistEditorPage() {
   const [epgPreviewOpen, setEpgPreviewOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebounce(search, 300);
+  const [draggingCategoryId, setDraggingCategoryId] = useState<number | null>(null);
+  const categorySensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const categories = playlist?.categories ?? [];
   const activeCategory = categories.find((c) => c.id === selectedCategoryId) ?? categories[0] ?? null;
@@ -123,6 +145,16 @@ export default function PlaylistEditorPage() {
       setSelectedCategoryId(null);
     },
   });
+
+  const reorderCategoriesMutation = useMutation({
+    mutationFn: (items: { id: number; sort_order: number }[]) => api.post(`/api/playlists/${playlistId}/categories/reorder`, items),
+    onSuccess: invalidate,
+  });
+
+  function handleCategoryDragEnd(activeId: number, overId: number) {
+    const newOrder = reorderBlock(categories.map((c) => c.id), multiSelectedCategoryIds, activeId, overId);
+    reorderCategoriesMutation.mutate(newOrder.map((id, i) => ({ id, sort_order: i })));
+  }
 
   const bulkMutation = useMutation({
     mutationFn: (payload: { channel_ids: number[]; action: string; text?: string; find?: string; replace?: string }) =>
@@ -220,48 +252,63 @@ export default function PlaylistEditorPage() {
             </ActionIcon>
           </Group>
           <ScrollArea style={{ flex: 1 }}>
-            <Stack gap={2}>
-              {categories.map((c) => (
-                <Group
-                  key={c.id}
-                  justify="space-between"
-                  p={6}
-                  style={{
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    background: activeCategory?.id === c.id ? "var(--mantine-color-indigo-light)" : undefined,
-                  }}
-                  onClick={() => {
-                    setSelectedCategoryId(c.id);
-                    setSelectedChannelIds(new Set());
-                    setSearch("");
-                  }}
-                >
-                  <Box>
-                    <Text size="sm">{c.name}</Text>
-                    <Text size="xs" c="dimmed">
-                      {c.channel_count} channels
+            <DndContext
+              sensors={categorySensors}
+              collisionDetection={closestCenter}
+              onDragStart={(e) => setDraggingCategoryId(Number(e.active.id))}
+              onDragEnd={(e) => {
+                setDraggingCategoryId(null);
+                const { active, over } = e;
+                if (over && active.id !== over.id) handleCategoryDragEnd(Number(active.id), Number(over.id));
+              }}
+              onDragCancel={() => setDraggingCategoryId(null)}
+            >
+              <SortableContext items={categories.map((c) => c.id)} strategy={verticalListSortingStrategy}>
+                <Stack gap={2}>
+                  {categories.map((c) => (
+                    <SortableCategoryRow
+                      key={c.id}
+                      category={c}
+                      active={activeCategory?.id === c.id}
+                      multiSelected={multiSelectedCategoryIds.has(c.id)}
+                      onSelect={() => {
+                        setSelectedCategoryId(c.id);
+                        setSelectedChannelIds(new Set());
+                        setSearch("");
+                      }}
+                      onToggleMultiSelect={() =>
+                        setMultiSelectedCategoryIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(c.id)) next.delete(c.id);
+                          else next.add(c.id);
+                          return next;
+                        })
+                      }
+                      onDelete={() => {
+                        if (confirm(`Delete category "${c.name}"?`)) deleteCategoryMutation.mutate(c.id);
+                      }}
+                    />
+                  ))}
+                  {categories.length === 0 && (
+                    <Text c="dimmed" size="sm" p="sm">
+                      No categories yet. Add one, or import from a source (which creates categories automatically).
                     </Text>
-                  </Box>
-                  <ActionIcon
-                    variant="subtle"
-                    color="red"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`Delete category "${c.name}"?`)) deleteCategoryMutation.mutate(c.id);
-                    }}
-                  >
-                    <IconTrash size={14} />
-                  </ActionIcon>
-                </Group>
-              ))}
-              {categories.length === 0 && (
-                <Text c="dimmed" size="sm" p="sm">
-                  No categories yet. Add one, or import from a source (which creates categories automatically).
-                </Text>
-              )}
-            </Stack>
+                  )}
+                </Stack>
+              </SortableContext>
+              <DragOverlay>
+                {draggingCategoryId != null &&
+                  (multiSelectedCategoryIds.has(draggingCategoryId) && multiSelectedCategoryIds.size > 1 ? (
+                    <Paper withBorder p={6} shadow="md" bg="var(--mantine-color-body)">
+                      <Text size="sm">Moving {multiSelectedCategoryIds.size} categories</Text>
+                    </Paper>
+                  ) : (
+                    <Paper withBorder p={6} shadow="md" bg="var(--mantine-color-body)">
+                      <Text size="sm">{categories.find((c) => c.id === draggingCategoryId)?.name}</Text>
+                    </Paper>
+                  ))}
+              </DragOverlay>
+            </DndContext>
           </ScrollArea>
         </Paper>
 
@@ -557,6 +604,68 @@ export default function PlaylistEditorPage() {
   );
 }
 
+function SortableCategoryRow({
+  category,
+  active,
+  multiSelected,
+  onSelect,
+  onToggleMultiSelect,
+  onDelete,
+}: {
+  category: PlaylistCategory;
+  active: boolean;
+  multiSelected: boolean;
+  onSelect: () => void;
+  onToggleMultiSelect: () => void;
+  onDelete: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: category.id });
+
+  return (
+    <Group
+      ref={setNodeRef}
+      justify="space-between"
+      wrap="nowrap"
+      p={6}
+      style={{
+        borderRadius: 6,
+        cursor: "pointer",
+        background: active ? "var(--mantine-color-indigo-light)" : multiSelected ? "var(--mantine-color-default-hover)" : undefined,
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.4 : 1,
+      }}
+      onClick={onSelect}
+    >
+      <Group gap={4} wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
+        <ActionIcon variant="subtle" size="sm" style={{ cursor: "grab", touchAction: "none", flexShrink: 0 }} {...attributes} {...listeners}>
+          <IconGripVertical size={14} />
+        </ActionIcon>
+        <Checkbox size="xs" checked={multiSelected} onClick={(e) => e.stopPropagation()} onChange={onToggleMultiSelect} />
+        <Box style={{ minWidth: 0 }}>
+          <Text size="sm" truncate>
+            {category.name}
+          </Text>
+          <Text size="xs" c="dimmed">
+            {category.channel_count} channels
+          </Text>
+        </Box>
+      </Group>
+      <ActionIcon
+        variant="subtle"
+        color="red"
+        size="sm"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <IconTrash size={14} />
+      </ActionIcon>
+    </Group>
+  );
+}
+
 const ROW_HEIGHT = 44;
 
 // Renders a category's channels as an infinite-scrolling, virtualized table: only the rows
@@ -585,6 +694,13 @@ function ChannelTable({
   selectAllPending: boolean;
 }) {
   const parentRef = useRef<HTMLDivElement | null>(null);
+  // Reordering only makes sense against the true, unfiltered sort_order - a search result is a
+  // scattered subset of it, and renumbering just the visible subset would silently scramble
+  // every other channel's position relative to it. See reorderMutation below for the rest of
+  // the contract this relies on (the loaded window is always the lowest-sort_order prefix).
+  const reorderEnabled = !search;
+  const channelSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const [draggingChannelId, setDraggingChannelId] = useState<number | null>(null);
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
     queryKey: ["playlist-channels", playlistId, category.id, search],
@@ -603,6 +719,13 @@ function ChannelTable({
 
   const rows = data?.pages.flatMap((p) => p.items) ?? [];
   const total = data?.pages[0]?.total ?? 0;
+  const rowsById = new Map(rows.map((r) => [r.id, r]));
+
+  const reorderMutation = useMutation({
+    mutationFn: (items: { id: number; sort_order: number }[]) =>
+      api.post(`/api/playlists/${playlistId}/categories/${category.id}/channels/reorder`, items),
+    onSuccess: onChanged,
+  });
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -642,55 +765,90 @@ function ChannelTable({
 
   return (
     <Stack gap={4} style={{ flex: 1, minHeight: 0 }}>
-      <ScrollArea viewportRef={parentRef} style={{ flex: 1, minHeight: 0 }}>
-        <Table stickyHeader striped highlightOnHover layout="fixed">
-          {/* Body rows are absolutely positioned (virtualized), so this header row uses the
-              same flex layout + column widths as ChannelRow to keep columns aligned - a plain
-              table-row header would use the table column algorithm instead and drift out of
-              sync with the flex-laid-out body. */}
-          <Table.Thead>
-            <Table.Tr display="flex">
-              <Table.Th w={30}>
-                <Checkbox
-                  checked={rows.length > 0 && rows.every((r) => selectedChannelIds.has(r.id)) && rows.length === total}
-                  indeterminate={selectedChannelIds.size > 0 && !(rows.every((r) => selectedChannelIds.has(r.id)) && rows.length === total)}
-                  onChange={(e) => setSelectedChannelIds(e.currentTarget.checked ? new Set(rows.map((r) => r.id)) : new Set())}
-                />
-              </Table.Th>
-              <Table.Th style={{ flex: 1, minWidth: 0 }}>Name</Table.Th>
-              <Table.Th w={180}>EPG</Table.Th>
-              <Table.Th w={120}>Dummy EPG</Table.Th>
-              <Table.Th w={90}>Enabled</Table.Th>
-              <Table.Th w={40} />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-            {virtualItems.map((virtualRow) => {
-              const ch = rows[virtualRow.index];
-              if (!ch) return null;
-              return (
-                <ChannelRow
-                  key={ch.id}
-                  channel={ch}
-                  selected={selectedChannelIds.has(ch.id)}
-                  style={{ position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${virtualRow.start}px)`, height: ROW_HEIGHT }}
-                  onToggleSelect={() =>
-                    setSelectedChannelIds((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(ch.id)) next.delete(ch.id);
-                      else next.add(ch.id);
-                      return next;
-                    })
-                  }
-                  playlistId={playlistId}
-                  onOpenDetail={() => onOpenDetail(ch)}
-                  onChanged={onChanged}
-                />
-              );
-            })}
-          </Table.Tbody>
-        </Table>
-      </ScrollArea>
+      {!reorderEnabled && (
+        <Text size="xs" c="dimmed">
+          Clear the search to drag-reorder channels.
+        </Text>
+      )}
+      <DndContext
+        sensors={channelSensors}
+        collisionDetection={closestCenter}
+        onDragStart={(e) => setDraggingChannelId(Number(e.active.id))}
+        onDragEnd={(e) => {
+          setDraggingChannelId(null);
+          const { active, over } = e;
+          if (!over || active.id === over.id) return;
+          const newOrder = reorderBlock(rows.map((r) => r.id), selectedChannelIds, Number(active.id), Number(over.id));
+          reorderMutation.mutate(newOrder.map((id, i) => ({ id, sort_order: i })));
+        }}
+        onDragCancel={() => setDraggingChannelId(null)}
+      >
+        <ScrollArea viewportRef={parentRef} style={{ flex: 1, minHeight: 0 }}>
+          <Table stickyHeader striped highlightOnHover layout="fixed">
+            {/* Body rows are absolutely positioned (virtualized), so this header row uses the
+                same flex layout + column widths as ChannelRow to keep columns aligned - a plain
+                table-row header would use the table column algorithm instead and drift out of
+                sync with the flex-laid-out body. */}
+            <Table.Thead>
+              <Table.Tr display="flex">
+                <Table.Th w={24} />
+                <Table.Th w={30}>
+                  <Checkbox
+                    checked={rows.length > 0 && rows.every((r) => selectedChannelIds.has(r.id)) && rows.length === total}
+                    indeterminate={selectedChannelIds.size > 0 && !(rows.every((r) => selectedChannelIds.has(r.id)) && rows.length === total)}
+                    onChange={(e) => setSelectedChannelIds(e.currentTarget.checked ? new Set(rows.map((r) => r.id)) : new Set())}
+                  />
+                </Table.Th>
+                <Table.Th style={{ flex: 1, minWidth: 0 }}>Name</Table.Th>
+                <Table.Th w={180}>EPG</Table.Th>
+                <Table.Th w={120}>Dummy EPG</Table.Th>
+                <Table.Th w={90}>Enabled</Table.Th>
+                <Table.Th w={40} />
+              </Table.Tr>
+            </Table.Thead>
+            <SortableContext items={rows.map((r) => r.id)} strategy={verticalListSortingStrategy}>
+              <Table.Tbody style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+                {virtualItems.map((virtualRow) => {
+                  const ch = rows[virtualRow.index];
+                  if (!ch) return null;
+                  return (
+                    <ChannelRow
+                      key={ch.id}
+                      channel={ch}
+                      selected={selectedChannelIds.has(ch.id)}
+                      reorderEnabled={reorderEnabled}
+                      style={{ position: "absolute", top: virtualRow.start, left: 0, right: 0, height: ROW_HEIGHT }}
+                      onToggleSelect={() =>
+                        setSelectedChannelIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(ch.id)) next.delete(ch.id);
+                          else next.add(ch.id);
+                          return next;
+                        })
+                      }
+                      playlistId={playlistId}
+                      onOpenDetail={() => onOpenDetail(ch)}
+                      onChanged={onChanged}
+                    />
+                  );
+                })}
+              </Table.Tbody>
+            </SortableContext>
+          </Table>
+        </ScrollArea>
+        <DragOverlay>
+          {draggingChannelId != null &&
+            (selectedChannelIds.has(draggingChannelId) && selectedChannelIds.size > 1 ? (
+              <Paper withBorder p={6} shadow="md" bg="var(--mantine-color-body)">
+                <Text size="sm">Moving {selectedChannelIds.size} channels</Text>
+              </Paper>
+            ) : (
+              <Paper withBorder p={6} shadow="md" bg="var(--mantine-color-body)">
+                <Text size="sm">{rowsById.get(draggingChannelId)?.name}</Text>
+              </Paper>
+            ))}
+        </DragOverlay>
+      </DndContext>
       <Group justify="space-between">
         <Text size="xs" c="dimmed">
           {rows.length} of {total} loaded{isFetchingNextPage ? " · loading more..." : ""}
@@ -708,6 +866,7 @@ function ChannelTable({
 function ChannelRow({
   channel,
   selected,
+  reorderEnabled,
   onToggleSelect,
   playlistId,
   onOpenDetail,
@@ -716,6 +875,7 @@ function ChannelRow({
 }: {
   channel: PlaylistChannel;
   selected: boolean;
+  reorderEnabled: boolean;
   onToggleSelect: () => void;
   playlistId: string;
   onOpenDetail: () => void;
@@ -726,9 +886,45 @@ function ChannelRow({
     mutationFn: (enabled: boolean) => api.patch(`/api/playlists/${playlistId}/channels/${channel.id}`, { enabled }),
     onSuccess: onChanged,
   });
+  // `style.top` (a real CSS property, set by the virtualizer) is what positions every row,
+  // dragged or not - dnd-kit's droppable measurement is transform-agnostic (it deliberately
+  // reads each item's untransformed layout rect, so a mid-animation transform never gets
+  // mistaken for a real position), so folding the virtualizer's offset into a transform instead
+  // of `top` made every row measure as being at the same spot and broke collision detection
+  // entirely. dnd-kit's own transform is only ever non-null for the actively dragged row (our
+  // `items` array never reorders mid-drag), so stacking it on top of `top` here just makes that
+  // one row visually follow the pointer; every other row is unaffected.
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: channel.id,
+    disabled: !reorderEnabled,
+  });
 
   return (
-    <Table.Tr style={style} display="flex">
+    <Table.Tr
+      ref={setNodeRef}
+      style={{
+        ...style,
+        transform: transform ? CSS.Transform.toString({ ...transform, x: 0 }) : undefined,
+        transition,
+        opacity: isDragging ? 0.4 : 1,
+        zIndex: isDragging ? 1 : undefined,
+      }}
+      display="flex"
+    >
+      <Table.Td w={24}>
+        <Tooltip label={reorderEnabled ? "Drag to reorder" : "Clear search to reorder"} disabled={!reorderEnabled}>
+          <ActionIcon
+            variant="subtle"
+            size="sm"
+            disabled={!reorderEnabled}
+            style={{ cursor: reorderEnabled ? "grab" : "not-allowed", touchAction: "none" }}
+            {...attributes}
+            {...listeners}
+          >
+            <IconGripVertical size={14} />
+          </ActionIcon>
+        </Tooltip>
+      </Table.Td>
       <Table.Td w={30}>
         <Checkbox checked={selected} onChange={onToggleSelect} />
       </Table.Td>
