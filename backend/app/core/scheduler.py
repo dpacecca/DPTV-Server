@@ -15,7 +15,10 @@ from app.services.sync_engine import refresh_iptv_org_channel_catalog, run_full_
 
 logger = logging.getLogger("dptv.scheduler")
 
-scheduler = AsyncIOScheduler()
+# Explicit UTC rather than APScheduler's default (the server OS's local timezone) - SyncSchedule.
+# time_of_day is stored and interpreted as UTC (the admin UI converts to/from the browser's local
+# time for display), so this has to be pinned regardless of what timezone the host itself runs in.
+scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 async def _refresh_logo_cache_job() -> None:
