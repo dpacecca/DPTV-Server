@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -502,8 +503,14 @@ async def _run_grab_batch(
         f"--channels={channels_xml_path}",
         f"--output={output_path}",
     ]
+    # Node's default V8 heap ceiling (~2GB old-space on 64-bit) is often hit well before the
+    # host actually runs out of RAM - raising it here lets a heavy batch (many channels, or a
+    # site like foxtel.com.au that does an extra HTTP request per program) use more of whatever
+    # RAM is actually available instead of crashing with "JavaScript heap out of memory".
+    grab_env = dict(os.environ)
+    grab_env["NODE_OPTIONS"] = f"--max-old-space-size={get_settings().iptv_org_grab_node_max_old_space_mb}"
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=str(epg_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *cmd, cwd=str(epg_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=grab_env
     )
     try:
         _, stderr_lines = await asyncio.wait_for(
