@@ -204,6 +204,7 @@ export interface SyncRun {
 
 export interface VersionStatus {
   version: string;
-  latest_version: string | null;
+  commit: string | null;
+  latest_commit: string | null;
   up_to_date: boolean | null;
 }
