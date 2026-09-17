@@ -678,7 +678,17 @@ async def _run_grab_batch(
 
     if proc.returncode != 0:
         stderr_text = b"".join(stderr_lines).decode(errors="replace")
-        raise RuntimeError(stderr_text[-2000:] or "grab failed with no output")
+        if proc.returncode is not None and proc.returncode < 0:
+            # A negative returncode is the signal number that killed the process (POSIX
+            # convention) - stderr is reliably empty here because a killed process (almost
+            # always the OOM killer, for a batch this size) never gets to write anything before
+            # it dies. Naming that explicitly turns a mystifying "no output" into an actionable
+            # signal, instead of leaving the batch-size/memory tuning to guesswork.
+            raise RuntimeError(
+                f"grab process killed by signal {-proc.returncode} "
+                f"(likely out-of-memory) for {len(entries)} channel(s)"
+            )
+        raise RuntimeError(stderr_text[-2000:] or f"grab failed with no output (exit code {proc.returncode})")
 
     if not output_path.exists():
         raise RuntimeError("Grab completed but no output file was produced")
@@ -701,6 +711,63 @@ def _merge_xmltv_batches(batch_paths: list[Path], output_path: Path) -> None:
         out.write("</tv>\n")
 
 
+_SPLIT_WORTHY_FAILURE_MARKERS = ("killed by signal", "timed out")
+_MIN_SPLITTABLE_BATCH = 10
+
+
+async def _run_grab_batch_resilient(
+    entries: list[GrabChannelEntry],
+    output_path: Path,
+    epg_dir: Path,
+    timeout: float,
+    log_prefix: str = "",
+    _retried: bool = False,
+    _already_split: bool = False,
+) -> None:
+    """Wraps _run_grab_batch with the retry logic a real network scrape needs to actually
+    finish reliably overnight, instead of one bad batch wasting every other batch's already-
+    completed work (see run_grab's caller - a failure here used to abort the whole grab,
+    discarding every batch that already succeeded).
+
+    A batch that dies from an OOM kill or a timeout (_SPLIT_WORTHY_FAILURE_MARKERS) is retried
+    once as two half-size batches instead of retried as-is - both failure modes scale with how
+    much guide data has piled up in memory for this batch, so simply trying the identical batch
+    again would almost certainly reproduce the identical failure. Splitting only ever happens
+    once (_already_split guards against runaway recursion on a batch that's failing for some
+    other reason entirely) and only above _MIN_SPLITTABLE_BATCH - below that, or for any other
+    kind of failure (a real scraper error, a site down, ...), it's just retried once as-is, which
+    is enough to ride out a transient blip without masking a genuine, reproducible failure."""
+    try:
+        await _run_grab_batch(entries, output_path, epg_dir, timeout, log_prefix=log_prefix)
+        return
+    except RuntimeError as exc:
+        worth_splitting = any(marker in str(exc) for marker in _SPLIT_WORTHY_FAILURE_MARKERS)
+        if not _already_split and worth_splitting and len(entries) > _MIN_SPLITTABLE_BATCH:
+            logger.warning("%s%s - retrying as two smaller batches", log_prefix, exc)
+            mid = len(entries) // 2
+            half_a_path = output_path.with_name(f"{output_path.stem}.splitA{output_path.suffix}")
+            half_b_path = output_path.with_name(f"{output_path.stem}.splitB{output_path.suffix}")
+            try:
+                await _run_grab_batch_resilient(
+                    entries[:mid], half_a_path, epg_dir, timeout, log_prefix, _already_split=True
+                )
+                await _run_grab_batch_resilient(
+                    entries[mid:], half_b_path, epg_dir, timeout, log_prefix, _already_split=True
+                )
+                _merge_xmltv_batches([half_a_path, half_b_path], output_path)
+            finally:
+                half_a_path.unlink(missing_ok=True)
+                half_b_path.unlink(missing_ok=True)
+            return
+        if not _retried:
+            logger.warning("%s%s - retrying once", log_prefix, exc)
+            await _run_grab_batch_resilient(
+                entries, output_path, epg_dir, timeout, log_prefix, _retried=True, _already_split=_already_split
+            )
+            return
+        raise
+
+
 async def run_grab(
     entries: list[GrabChannelEntry], output_path: Path, timeout_seconds: float | None = None
 ) -> None:
@@ -708,6 +775,9 @@ async def run_grab(
     output_path (an absolute path, since each grabber subprocess runs with the checkout as its
     cwd). Raises RuntimeError with the scraper's own stderr on failure - scraping real
     broadcaster sites is exactly the kind of thing that fails in ways worth surfacing verbatim.
+    Each batch retries through _run_grab_batch_resilient first though, so this only ever
+    propagates once a batch has genuinely exhausted its retries (including a split-in-half retry
+    for an OOM kill or timeout) - not on the first sign of trouble.
 
     Large selections are scraped in sequential batches (one grabber subprocess at a time, see
     iptv_org_grab_batch_size) instead of one monolithic run - the grabber holds an entire
@@ -731,7 +801,7 @@ async def run_grab(
         logger.info("Waiting for another iptv-org grab in progress to finish first")
     async with _grab_lock:
         if len(entries) <= batch_size:
-            await _run_grab_batch(entries, output_path, epg_dir, timeout, log_prefix="  grab: ")
+            await _run_grab_batch_resilient(entries, output_path, epg_dir, timeout, log_prefix="  grab: ")
             return
 
         batch_paths: list[Path] = []
@@ -742,7 +812,7 @@ async def run_grab(
                 batch_path = output_path.with_name(f"{output_path.stem}.batch{batch_num}{output_path.suffix}")
                 logger.info("Grabbing batch %d/%d (%d channels)", batch_num, total_batches, len(batch))
                 prefix = f"  batch {batch_num}/{total_batches}: "
-                await _run_grab_batch(batch, batch_path, epg_dir, timeout, log_prefix=prefix)
+                await _run_grab_batch_resilient(batch, batch_path, epg_dir, timeout, log_prefix=prefix)
                 batch_paths.append(batch_path)
             _merge_xmltv_batches(batch_paths, output_path)
         finally:
