@@ -52,6 +52,7 @@ function VersionBadge() {
     <Group gap={6}>
       <Text size="xs" c="dimmed">
         v{data.version}
+        {data.commit && ` build ${data.commit}`}
       </Text>
       {data.up_to_date === true && (
         <Badge size="xs" color="green" variant="light">
@@ -59,13 +60,13 @@ function VersionBadge() {
         </Badge>
       )}
       {data.up_to_date === false && (
-        <Tooltip label={`v${data.latest_version} is available`}>
+        <Tooltip label={`main is at ${data.latest_commit}`}>
           <Badge
             size="xs"
             color="orange"
             variant="light"
             component="a"
-            href="https://github.com/dpacecca/DPTV-Server/releases/latest"
+            href="https://github.com/dpacecca/DPTV-Server/commits/main"
             target="_blank"
             rel="noopener noreferrer"
             style={{ cursor: "pointer" }}
