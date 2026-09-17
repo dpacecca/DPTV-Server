@@ -10,7 +10,7 @@ _buffer: deque[str] = deque(maxlen=get_settings().guide_refresh_log_buffer_size)
 # manually-triggered syncs, plus the logo-cache refresh. Attaching to these specific loggers
 # rather than the root logger keeps unrelated noise (httpx, apscheduler's own bookkeeping,
 # uvicorn access logs) out of this buffer.
-_SOURCE_LOGGER_NAMES = ("dptv.iptv_org_epg", "dptv.scheduler", "dptv.epg_refresh_jobs")
+_SOURCE_LOGGER_NAMES = ("dptv.iptv_org_epg", "dptv.scheduler", "dptv.epg_refresh_jobs", "dptv.sync_engine")
 
 
 class _BufferHandler(logging.Handler):

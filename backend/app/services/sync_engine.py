@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -14,6 +15,8 @@ from app.services.xtream_client import ChannelData, XtreamClient, fetch_m3u_cate
 from app.models.base import SourceType
 
 import httpx
+
+logger = logging.getLogger("dptv.sync_engine")
 
 
 async def sync_source(db: AsyncSession, source: Source) -> dict:
@@ -165,6 +168,7 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
 
 
 async def sync_epg_source(db: AsyncSession, epg_source: EpgSource) -> dict:
+    logger.info("Refreshing EPG source %r (%s)", epg_source.name, epg_source.url)
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         resp = await client.get(epg_source.url)
         resp.raise_for_status()
@@ -230,6 +234,10 @@ async def sync_epg_source(db: AsyncSession, epg_source: EpgSource) -> dict:
     epg_source.last_refresh_status = SyncStatus.SUCCESS.value
     epg_source.last_refresh_error = None
     await db.flush()
+    logger.info(
+        "Refreshed EPG source %r: %d channels, %d programs",
+        epg_source.name, len(parsed_channels), len(parsed_programs),
+    )
     return {"channels": len(parsed_channels), "programs": len(parsed_programs)}
 
 
@@ -302,6 +310,7 @@ async def sync_all_epg_sources(db: AsyncSession) -> dict:
         try:
             summary["epg_sources"][epg_source.name] = await sync_epg_source(db, epg_source)
         except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to refresh EPG source %r", epg_source.name)
             epg_source.last_refresh_status = SyncStatus.FAILED.value
             epg_source.last_refresh_error = str(exc)
             summary["errors"].append(f"epg:{epg_source.name}: {exc}")
