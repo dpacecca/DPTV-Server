@@ -2,9 +2,8 @@ from rapidfuzz import fuzz, process
 
 from app.services.name_normalize import normalize_name
 
-# Deliberately model-agnostic (id -> display name) rather than typed to EpgChannel - the same
-# fuzzy-matching logic is used to match against both real EpgChannel rows and the persistent
-# IptvOrgChannel catalog. Callers look their own objects back up by the returned id.
+# Deliberately model-agnostic (id -> display name) rather than typed to EpgChannel - callers
+# look their own objects back up by the returned id.
 
 
 def search_candidates(channel_name: str, candidates: dict[int, str], limit: int = 10) -> list[tuple[int, float]]:

@@ -1,57 +1,25 @@
-import json
-
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.api.deps import AdminUser, DbSession
-from app.config import get_settings
 from app.models.epg import EpgChannel, EpgSource
-from app.services import epg_refresh_jobs, iptv_org_epg
+from app.services import epg_refresh_jobs
 
 router = APIRouter(prefix="/api/epg-sources", tags=["epg-sources"])
 
 
-class IptvOrgSelectionIn(BaseModel):
-    mode: str
-    """"country", "category", "channels", or "mapped"."""
-    values: list[str] = []
-    """Required (non-empty) for "country"/"category"/"channels". Unused for "mapped" - that
-    mode re-resolves against whichever channels are currently mapped (PlaylistChannel.
-    iptv_org_channel_id) at refresh time, across every playlist, instead of a fixed list."""
-
-
 class EpgSourceIn(BaseModel):
     name: str
-    source_kind: str = "url"
-    url: str | None = None
-    iptv_org_selection: IptvOrgSelectionIn | None = None
+    url: str
     refresh_interval_minutes: int = 720
-
-    @model_validator(mode="after")
-    def _validate_kind(self) -> "EpgSourceIn":
-        if self.source_kind == "url":
-            if not self.url:
-                raise ValueError("url is required for source_kind='url'")
-        elif self.source_kind == "iptv_org":
-            if self.iptv_org_selection is None:
-                raise ValueError("iptv_org_selection is required for source_kind='iptv_org'")
-            if self.iptv_org_selection.mode not in ("country", "category", "channels", "mapped"):
-                raise ValueError("iptv_org_selection.mode must be 'country', 'category', 'channels', or 'mapped'")
-            if self.iptv_org_selection.mode != "mapped" and not self.iptv_org_selection.values:
-                raise ValueError(f"iptv_org_selection.values is required for mode={self.iptv_org_selection.mode!r}")
-        else:
-            raise ValueError(f"Unknown source_kind: {self.source_kind!r}")
-        return self
 
 
 def _serialize(epg: EpgSource, channel_count: int = 0) -> dict:
     return {
         "id": epg.id,
         "name": epg.name,
-        "source_kind": epg.source_kind,
         "url": epg.url,
-        "iptv_org_selection": json.loads(epg.iptv_org_selection) if epg.iptv_org_selection else None,
         "refresh_interval_minutes": epg.refresh_interval_minutes,
         "last_refreshed_at": epg.last_refreshed_at.isoformat() if epg.last_refreshed_at else None,
         "last_refresh_status": epg.last_refresh_status,
@@ -71,62 +39,11 @@ async def list_epg_sources(db: DbSession, _admin: AdminUser) -> list[dict]:
     return [_serialize(e, count) for e, count in result.all()]
 
 
-@router.get("/iptv-org/catalog")
-async def get_iptv_org_catalog(_admin: AdminUser) -> dict:
-    """Countries/categories the vendored iptv-org/epg checkout can currently scrape. Returns
-    available=False (with empty lists) if the server hasn't been set up with the optional
-    Node.js + checkout dependency (DPTV_IPTV_ORG_EPG_DIR)."""
-    settings = get_settings()
-    if not settings.iptv_org_epg_dir:
-        return {"available": False, "countries": [], "categories": []}
-
-    countries = await iptv_org_epg.list_countries()
-    categories = await iptv_org_epg.list_categories()
-    return {
-        "available": True,
-        "countries": [
-            {"name": c.name, "channel_count": c.channel_count, "matched_channel_count": c.matched_channel_count}
-            for c in countries
-        ],
-        "categories": [{"id": c.id, "name": c.name, "channel_count": c.channel_count} for c in categories],
-    }
-
-
-@router.get("/iptv-org/search-channels")
-async def search_iptv_org_channels(q: str, _admin: AdminUser) -> dict:
-    """Search-as-you-type channel picker, for the "specific channels" selection mode - lets an
-    admin pick exactly the channels they use instead of pulling a whole country/category.
-    Empty results (not an error) if the scraper isn't configured or the query is blank."""
-    settings = get_settings()
-    if not settings.iptv_org_epg_dir:
-        return {"available": False, "results": []}
-
-    results = await iptv_org_epg.search_channels(q)
-    return {
-        "available": True,
-        "results": [
-            {
-                "id": r.id,
-                "name": r.name,
-                "country": r.country,
-                "categories": list(r.categories),
-                "site_count": r.site_count,
-            }
-            for r in results
-        ],
-    }
-
-
 @router.post("")
 async def create_epg_source(payload: EpgSourceIn, db: DbSession, _admin: AdminUser) -> dict:
-    if payload.source_kind == "iptv_org" and not get_settings().iptv_org_epg_dir:
-        raise HTTPException(400, "iptv-org/epg is not configured on this server (DPTV_IPTV_ORG_EPG_DIR is unset)")
-
     epg = EpgSource(
         name=payload.name,
-        source_kind=payload.source_kind,
         url=payload.url,
-        iptv_org_selection=payload.iptv_org_selection.model_dump_json() if payload.iptv_org_selection else None,
         refresh_interval_minutes=payload.refresh_interval_minutes,
     )
     db.add(epg)
@@ -147,13 +64,12 @@ async def delete_epg_source(epg_source_id: int, db: DbSession, _admin: AdminUser
 
 @router.post("/refresh-all")
 async def refresh_all_epg_sources(_admin: AdminUser) -> dict:
-    """Kicks off a background refresh of every EPG source (URL-based and iptv-org) and returns
-    immediately - scraping a slow broadcaster site can take many minutes, far longer than this
-    request should stay open, so the actual work happens in the background. Poll
-    GET /refresh-jobs/{job_id} for progress; once done, playlists reflect the new guide data
-    right away (read live from EpgChannel/EpgProgram, not cached per playlist). This does not
-    re-run EPG auto-mapping for newly-added channels or auto-clear; use Scheduler's "Sync Now"
-    for the full pass."""
+    """Kicks off a background refresh of every EPG source and returns immediately - fetching and
+    parsing a large XMLTV feed can take a while, far longer than this request should stay open,
+    so the actual work happens in the background. Poll GET /refresh-jobs/{job_id} for progress;
+    once done, playlists reflect the new guide data right away (read live from EpgChannel/
+    EpgProgram, not cached per playlist). This does not re-run EPG auto-mapping for newly-added
+    channels or auto-clear; use Scheduler's "Sync Now" for the full pass."""
     job = epg_refresh_jobs.start_all_refresh()
     return {"job_id": job.id}
 

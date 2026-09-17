@@ -1,5 +1,3 @@
-import csv
-import io
 import re
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
@@ -10,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
 from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType
-from app.models.epg import EpgChannel, IptvOrgChannel
+from app.models.epg import EpgChannel
 from app.models.playlist import (
     DummyEpgRule,
     Playlist,
@@ -21,7 +19,7 @@ from app.models.playlist import (
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
-from app.services import duplicate_scanner, dummy_epg, epg_mapper, iptv_org_epg, scan_jobs
+from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
 from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
@@ -69,9 +67,6 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
         "epg_channel_id": pc.epg_channel_id,
         "epg_display_name": pc.epg_channel.display_name if pc.epg_channel else None,
         "epg_match_type": pc.epg_match_type,
-        "iptv_org_channel_id": pc.iptv_org_channel_id,
-        "iptv_org_channel_name": pc.iptv_org_channel.name if pc.iptv_org_channel else None,
-        "iptv_org_channel_channel_id": pc.iptv_org_channel.channel_id if pc.iptv_org_channel else None,
         "dummy_epg_mode": pc.dummy_epg_mode,
         "dummy_epg_program_minutes": pc.dummy_epg_program_minutes,
     }
@@ -621,9 +616,7 @@ def _category_channels_query(category_id: int, q: str | None, enabled: bool | No
     if enabled is not None:
         query = query.where(PlaylistChannel.enabled == enabled)
     if unmapped:
-        # Matches the "unmapped" badge in the channel list: no real EPG mapping AND no pending
-        # iptv-org mapping either (a channel already pending iptv-org doesn't need remapping).
-        query = query.where(PlaylistChannel.epg_channel_id.is_(None), PlaylistChannel.iptv_org_channel_id.is_(None))
+        query = query.where(PlaylistChannel.epg_channel_id.is_(None))
     return query
 
 
@@ -654,7 +647,7 @@ async def list_category_channels(
 
     total = await db.scalar(select(func.count()).select_from(base_query.subquery()))
     result = await db.execute(
-        base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel))
+        base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
         .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
         .offset(offset)
         .limit(limit)
@@ -733,7 +726,7 @@ async def preview_category_epg(
     result = await db.execute(
         select(PlaylistChannel)
         .where(PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True))
-        .options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel))
+        .options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
         .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
         .limit(PREVIEW_MAX_CHANNELS)
     )
@@ -848,7 +841,7 @@ class ChannelUpdate(BaseModel):
 
 @router.patch("/{playlist_id}/channels/{channel_id}")
 async def update_channel(playlist_id: int, channel_id: int, payload: ChannelUpdate, db: DbSession, _admin: AdminUser) -> dict:
-    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel)])
+    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel)])
     if pc is None:
         raise HTTPException(404, "Channel not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -860,7 +853,7 @@ async def update_channel(playlist_id: int, channel_id: int, payload: ChannelUpda
 
 @router.post("/{playlist_id}/channels/{channel_id}/revert-name")
 async def revert_channel_name(playlist_id: int, channel_id: int, db: DbSession, _admin: AdminUser) -> dict:
-    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.iptv_org_channel)])
+    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel)])
     if pc is None:
         raise HTTPException(404, "Channel not found")
     if pc.source_channel:
@@ -883,7 +876,7 @@ class BulkAction(BaseModel):
     channel_ids: list[int]
     action: str
     """One of: uppercase, sentence_case, add_prefix, add_suffix, find_replace, enable, disable,
-    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_iptv_org_mapping, clear_epg_mapping."""
+    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_epg_mapping."""
     find: str | None = None
     replace: str | None = None
     text: str | None = None
@@ -927,8 +920,6 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
                 pc.dummy_epg_program_minutes = payload.dummy_epg_program_minutes
         elif payload.action == "delete":
             await db.delete(pc)
-        elif payload.action == "clear_iptv_org_mapping":
-            pc.iptv_org_channel_id = None
         elif payload.action == "clear_epg_mapping":
             pc.epg_channel_id = None
             pc.epg_match_type = EpgMatchType.NONE
@@ -1137,9 +1128,9 @@ class BulkEpgAutoMapIn(BaseModel):
 @router.post("/{playlist_id}/channels/epg/bulk-preview")
 async def preview_bulk_auto_map_epg(playlist_id: int, payload: BulkEpgAutoMapIn, db: DbSession, _admin: AdminUser) -> dict:
     """Proposes EPG matches for many channels at once, e.g. everything selected in the channel
-    list - a preview only, nothing is written here. Mirrors the iptv-org bulk-auto-map preview
-    below: each channel comes back with its top few candidates (best first) so an admin can
-    review and swap out any wrong match before committing via bulk-assign."""
+    list - a preview only, nothing is written here. Each channel comes back with its top few
+    candidates (best first) so an admin can review and swap out any wrong match before
+    committing via bulk-assign."""
     candidates = await _epg_candidates(db, payload.epg_source_ids)
     name_by_id = {c.id: c.display_name for c in candidates}
     by_id = {c.id: c for c in candidates}
@@ -1210,326 +1201,6 @@ async def assign_epg(playlist_id: int, channel_id: int, payload: EpgAssign, db: 
     pc.epg_match_type = EpgMatchType.MANUAL if payload.epg_channel_id else EpgMatchType.NONE
     await db.commit()
     return {"ok": True}
-
-
-# ---------- iptv-org channel mapping ("map first, scrape only what's mapped") ----------
-#
-# Separate from EPG mapping above: this maps against the persistent IptvOrgChannel catalog
-# (refreshed daily, independent of any actual scrape - see sync_engine.refresh_iptv_org_channel_
-# catalog), recording *intent* (PlaylistChannel.iptv_org_channel_id) before any guide data
-# exists. A "mapped"-mode iptv-org EpgSource scrapes exactly the channels referenced here, then
-# auto-fills epg_channel_id/epg_match_type once real guide data lands - see
-# sync_engine._grab_iptv_org_xmltv and sync_epg_source.
-
-
-def _serialize_iptv_org_match(channel: IptvOrgChannel, score: float | None = None) -> dict:
-    out = {
-        "iptv_org_channel_id": channel.id,
-        "channel_id": channel.channel_id,
-        "name": channel.name,
-        "country": channel.country,
-        "categories": channel.categories.split(",") if channel.categories else [],
-        "site_count": channel.site_count,
-    }
-    if score is not None:
-        out["score"] = score
-    return out
-
-
-async def _iptv_org_candidates(db: DbSession, country: str | None, category: str | None) -> list[IptvOrgChannel]:
-    """Optionally narrowed to a single country and/or category - lets an admin scope a search
-    (e.g. "just US channels", "just Sports") the same way EPG mapping already scopes to
-    specific EPG sources, without ever triggering a scrape of anything not actually mapped."""
-    query = select(IptvOrgChannel)
-    if country:
-        query = query.where(IptvOrgChannel.country == country)
-    if category:
-        # categories is a flat comma-joined string (e.g. "news,general") - comma-wrap both
-        # sides so a substring of one category id can't spuriously match a different one.
-        query = query.where(func.concat(",", IptvOrgChannel.categories, ",").contains(f",{category},"))
-    return list((await db.execute(query)).scalars().all())
-
-
-@router.get("/iptv-org/catalog-filters")
-async def get_iptv_org_catalog_filters(db: DbSession, _admin: AdminUser) -> dict:
-    """Countries/categories actually present in the persisted iptv-org channel catalog (not
-    the live/ephemeral one) - powers the country/category filter on the mapping search below,
-    so it only ever offers scopes that are actually searchable right now."""
-    rows = (await db.execute(select(IptvOrgChannel.country, IptvOrgChannel.categories))).all()
-    country_counts: dict[str, int] = {}
-    category_counts: dict[str, int] = {}
-    for country, categories in rows:
-        if country:
-            country_counts[country] = country_counts.get(country, 0) + 1
-        if categories:
-            for cid in categories.split(","):
-                category_counts[cid] = category_counts.get(cid, 0) + 1
-
-    ref = await iptv_org_epg.get_reference_data()
-    countries = sorted(
-        [{"name": c, "channel_count": n} for c, n in country_counts.items()], key=lambda x: x["name"]
-    )
-    categories = sorted(
-        [{"id": cid, "name": ref.categories_by_id.get(cid, cid), "channel_count": n} for cid, n in category_counts.items()],
-        key=lambda x: x["name"],
-    )
-    return {"countries": countries, "categories": categories}
-
-
-@router.get("/{playlist_id}/channels/{channel_id}/iptv-org/search")
-async def search_iptv_org_channel(
-    playlist_id: int,
-    channel_id: int,
-    db: DbSession,
-    _admin: AdminUser,
-    q: str | None = None,
-    limit: int = 10,
-    country: str | None = None,
-    category: str | None = None,
-) -> list[dict]:
-    """Fuzzy search against the persistent iptv-org channel catalog - results always include
-    the raw channel_id (e.g. "ESPN.us") alongside the display name, since a name alone is
-    frequently ambiguous across countries (ESPN.us vs ESPN.au vs ESPN.br, ...)."""
-    pc = await db.get(PlaylistChannel, channel_id)
-    if pc is None:
-        raise HTTPException(404, "Channel not found")
-    query_name = q or pc.name
-    candidates = await _iptv_org_candidates(db, country, category)
-    name_by_id = {c.id: c.name for c in candidates}
-    by_id = {c.id: c for c in candidates}
-    matches = epg_mapper.search_candidates(query_name, name_by_id, limit=limit)
-    return [_serialize_iptv_org_match(by_id[cid], score) for cid, score in matches]
-
-
-@router.post("/{playlist_id}/channels/{channel_id}/iptv-org/auto")
-async def auto_map_iptv_org_channel(
-    playlist_id: int,
-    channel_id: int,
-    db: DbSession,
-    _admin: AdminUser,
-    sensitivity: float = 0.9,
-    country: str | None = None,
-    category: str | None = None,
-) -> dict:
-    pc = await db.get(PlaylistChannel, channel_id)
-    if pc is None:
-        raise HTTPException(404, "Channel not found")
-    candidates = await _iptv_org_candidates(db, country, category)
-    name_by_id = {c.id: c.name for c in candidates}
-    by_id = {c.id: c for c in candidates}
-    best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
-    if best is None:
-        return {"matched": False}
-    cid, score = best
-    pc.iptv_org_channel_id = cid
-    await db.commit()
-    return {"matched": True, **_serialize_iptv_org_match(by_id[cid], score)}
-
-
-class BulkIptvOrgAutoMapIn(BaseModel):
-    channel_ids: list[int]
-    sensitivity: float = 0.9
-    country: str | None = None
-    category: str | None = None
-
-
-@router.post("/{playlist_id}/channels/iptv-org/bulk-auto-map")
-async def preview_bulk_auto_map_iptv_org_channels(
-    playlist_id: int, payload: BulkIptvOrgAutoMapIn, db: DbSession, _admin: AdminUser
-) -> dict:
-    """Proposes matches for many channels at once against the iptv-org catalog, e.g. everything
-    selected in the channel list - a preview only, nothing is written here. Each channel comes
-    back with its top few candidates (best first) rather than just the winner, so an admin can
-    review and swap out any that auto-matched to the wrong regional feed before committing via
-    bulk-assign below."""
-    candidates = await _iptv_org_candidates(db, payload.country, payload.category)
-    name_by_id = {c.id: c.name for c in candidates}
-    by_id = {c.id: c for c in candidates}
-    result = await db.execute(
-        select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)).order_by(PlaylistChannel.sort_order)
-    )
-    channels = result.scalars().all()
-
-    matched: list[dict] = []
-    unmatched: list[dict] = []
-    for pc in channels:
-        ranked = epg_mapper.search_candidates(pc.name, name_by_id, limit=5)
-        candidate_list = [_serialize_iptv_org_match(by_id[cid], score) for cid, score in ranked]
-        row = {"channel_id": pc.id, "channel_name": pc.name, "candidates": candidate_list}
-        if ranked and ranked[0][1] >= payload.sensitivity:
-            matched.append(row)
-        else:
-            unmatched.append(row)
-
-    return {"matched": matched, "unmatched": unmatched}
-
-
-class BulkIptvOrgAssignEntry(BaseModel):
-    channel_id: int
-    iptv_org_channel_id: int | None
-
-
-class BulkIptvOrgAssignIn(BaseModel):
-    assignments: list[BulkIptvOrgAssignEntry]
-
-
-@router.post("/{playlist_id}/channels/iptv-org/bulk-assign")
-async def bulk_assign_iptv_org_channels(
-    playlist_id: int, payload: BulkIptvOrgAssignIn, db: DbSession, _admin: AdminUser
-) -> dict:
-    """Commits a reviewed (and possibly hand-edited) set of matches from bulk-auto-map above -
-    always overwrites whatever was previously set, same as the single-channel PATCH."""
-    result = await db.execute(
-        select(PlaylistChannel)
-        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
-        .where(PlaylistCategory.playlist_id == playlist_id)
-    )
-    channels_by_id = {pc.id: pc for pc in result.scalars().all()}
-
-    applied = 0
-    invalid: list[dict] = []
-    for entry in payload.assignments:
-        pc = channels_by_id.get(entry.channel_id)
-        if pc is None:
-            invalid.append({"channel_id": entry.channel_id, "reason": "channel not found in this playlist"})
-            continue
-        pc.iptv_org_channel_id = entry.iptv_org_channel_id
-        applied += 1
-
-    await db.commit()
-    return {"applied": applied, "invalid": invalid}
-
-
-class IptvOrgAssign(BaseModel):
-    iptv_org_channel_id: int | None
-
-
-@router.patch("/{playlist_id}/channels/{channel_id}/iptv-org")
-async def assign_iptv_org_channel(
-    playlist_id: int, channel_id: int, payload: IptvOrgAssign, db: DbSession, _admin: AdminUser
-) -> dict:
-    pc = await db.get(PlaylistChannel, channel_id)
-    if pc is None:
-        raise HTTPException(404, "Channel not found")
-    pc.iptv_org_channel_id = payload.iptv_org_channel_id
-    await db.commit()
-    return {"ok": True}
-
-
-def _csv_response(rows: list[list[str]], filename: str) -> Response:
-    buf = io.StringIO()
-    csv.writer(buf).writerows(rows)
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@router.get("/{playlist_id}/channels/iptv-org/export.csv")
-async def export_iptv_org_mapping_csv(playlist_id: int, db: DbSession, _admin: AdminUser) -> Response:
-    """Every channel in the playlist, one row each, with its current iptv-org mapping (if any)
-    - meant for a first bulk pass done in a spreadsheet rather than one-by-one in the GUI: fill
-    in/replace the iptv_org_channel_id column (values come from the catalog.csv export below,
-    or the mapping UI's search) and feed the result back to the import endpoint. Blank rows on
-    import are left untouched, so this file only needs edits where a mapping is actually
-    changing."""
-    pl = await db.get(Playlist, playlist_id)
-    if pl is None:
-        raise HTTPException(404, "Playlist not found")
-
-    result = await db.execute(
-        select(PlaylistChannel, PlaylistCategory.name, IptvOrgChannel.channel_id, IptvOrgChannel.name)
-        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
-        .outerjoin(IptvOrgChannel, PlaylistChannel.iptv_org_channel_id == IptvOrgChannel.id)
-        .where(PlaylistCategory.playlist_id == playlist_id)
-        .order_by(PlaylistCategory.sort_order, PlaylistChannel.sort_order)
-    )
-    rows = [["channel_id", "category", "channel_name", "iptv_org_channel_id", "iptv_org_name"]]
-    for pc, category_name, iptv_org_channel_id, iptv_org_name in result.all():
-        rows.append([str(pc.id), category_name, pc.name, iptv_org_channel_id or "", iptv_org_name or ""])
-    return _csv_response(rows, f"{pl.name}-iptv-org-mapping.csv")
-
-
-@router.get("/iptv-org/catalog.csv")
-async def export_iptv_org_catalog_csv(
-    db: DbSession, _admin: AdminUser, country: str | None = None, category: str | None = None
-) -> Response:
-    """The persisted iptv-org channel catalog as a lookup sheet - find the channel_id values to
-    paste into the mapping export above. Optionally narrowed the same way the search/bulk-map UI
-    can be, since the full catalog runs to several thousand rows."""
-    candidates = await _iptv_org_candidates(db, country, category)
-    rows = [["channel_id", "name", "country", "categories", "site_count"]]
-    for c in sorted(candidates, key=lambda c: c.name):
-        rows.append([c.channel_id, c.name, c.country or "", c.categories or "", str(c.site_count)])
-    return _csv_response(rows, "iptv-org-catalog.csv")
-
-
-@router.post("/{playlist_id}/channels/iptv-org/import-csv")
-async def import_iptv_org_mapping_csv(
-    playlist_id: int, db: DbSession, _admin: AdminUser, file: UploadFile = File(...)
-) -> dict:
-    """Applies a mapping CSV edited from the export.csv above (or built by hand, as long as it
-    has channel_id/iptv_org_channel_id columns). A blank iptv_org_channel_id cell is a no-op -
-    leaves that channel's existing mapping alone - so re-uploading a mostly-unedited export is
-    safe. Only channel_id and iptv_org_channel_id are read; the other export columns are purely
-    for reference and ignored here."""
-    pl = await db.get(Playlist, playlist_id)
-    if pl is None:
-        raise HTTPException(404, "Playlist not found")
-
-    raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("utf-8", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None or "channel_id" not in reader.fieldnames or "iptv_org_channel_id" not in reader.fieldnames:
-        raise HTTPException(400, "CSV must have channel_id and iptv_org_channel_id columns")
-
-    pc_result = await db.execute(
-        select(PlaylistChannel)
-        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
-        .where(PlaylistCategory.playlist_id == playlist_id)
-    )
-    channels_by_id = {pc.id: pc for pc in pc_result.scalars().all()}
-
-    applied: list[dict] = []
-    invalid: list[dict] = []
-    skipped = 0
-    wanted_channel_ids: set[str] = set()
-    parsed_rows: list[tuple[str, str]] = []
-    for row in reader:
-        channel_id_cell = (row.get("channel_id") or "").strip()
-        iptv_org_channel_id_cell = (row.get("iptv_org_channel_id") or "").strip()
-        if not iptv_org_channel_id_cell:
-            skipped += 1
-            continue
-        parsed_rows.append((channel_id_cell, iptv_org_channel_id_cell))
-        wanted_channel_ids.add(iptv_org_channel_id_cell)
-
-    catalog_result = await db.execute(select(IptvOrgChannel).where(IptvOrgChannel.channel_id.in_(wanted_channel_ids)))
-    catalog_by_channel_id = {c.channel_id: c for c in catalog_result.scalars().all()}
-
-    for channel_id_cell, iptv_org_channel_id_cell in parsed_rows:
-        pc = channels_by_id.get(int(channel_id_cell)) if channel_id_cell.isdigit() else None
-        if pc is None:
-            invalid.append({"channel_id": channel_id_cell, "reason": "channel not found in this playlist"})
-            continue
-        catalog_channel = catalog_by_channel_id.get(iptv_org_channel_id_cell)
-        if catalog_channel is None:
-            invalid.append({
-                "channel_id": channel_id_cell,
-                "channel_name": pc.name,
-                "iptv_org_channel_id": iptv_org_channel_id_cell,
-                "reason": "iptv-org channel_id not found in catalog",
-            })
-            continue
-        pc.iptv_org_channel_id = catalog_channel.id
-        applied.append({"channel_id": pc.id, "channel_name": pc.name, "iptv_org_channel_id": iptv_org_channel_id_cell})
-
-    await db.commit()
-    return {"applied": applied, "invalid": invalid, "skipped": skipped}
 
 
 # ---------- Dummy EPG rules (advanced "event" mode parsing) ----------
