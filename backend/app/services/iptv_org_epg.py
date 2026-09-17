@@ -678,15 +678,24 @@ async def _run_grab_batch(
 
     if proc.returncode != 0:
         stderr_text = b"".join(stderr_lines).decode(errors="replace")
-        if proc.returncode is not None and proc.returncode < 0:
-            # A negative returncode is the signal number that killed the process (POSIX
-            # convention) - stderr is reliably empty here because a killed process (almost
-            # always the OOM killer, for a batch this size) never gets to write anything before
-            # it dies. Naming that explicitly turns a mystifying "no output" into an actionable
-            # signal, instead of leaving the batch-size/memory tuning to guesswork.
+        # A killed process is reported two different ways depending on exactly what asyncio
+        # waited on: a negative returncode is the raw POSIX convention (the signal number that
+        # killed the process directly), but the command here is "npm run grab" - npm itself
+        # isn't killed, it just observes its child die and exits with the *shell* convention
+        # (128 + signal number) instead, e.g. 137 for SIGKILL. Checked this against a real
+        # production failure: the exit code was 137, not -9, so a negative-only check silently
+        # never fires for the actual failure this whole branch exists to catch. Either way,
+        # stderr is reliably empty - a killed process (almost always the OOM killer, for a
+        # batch this size) never gets the chance to write anything before it dies.
+        signal_num: int | None = None
+        if proc.returncode is not None:
+            if proc.returncode < 0:
+                signal_num = -proc.returncode
+            elif proc.returncode > 128:
+                signal_num = proc.returncode - 128
+        if signal_num is not None:
             raise RuntimeError(
-                f"grab process killed by signal {-proc.returncode} "
-                f"(likely out-of-memory) for {len(entries)} channel(s)"
+                f"grab process killed by signal {signal_num} (likely out-of-memory) for {len(entries)} channel(s)"
             )
         raise RuntimeError(stderr_text[-2000:] or f"grab failed with no output (exit code {proc.returncode})")
 
@@ -722,7 +731,6 @@ async def _run_grab_batch_resilient(
     timeout: float,
     log_prefix: str = "",
     _retried: bool = False,
-    _already_split: bool = False,
 ) -> None:
     """Wraps _run_grab_batch with the retry logic a real network scrape needs to actually
     finish reliably overnight, instead of one bad batch wasting every other batch's already-
@@ -730,30 +738,29 @@ async def _run_grab_batch_resilient(
     discarding every batch that already succeeded).
 
     A batch that dies from an OOM kill or a timeout (_SPLIT_WORTHY_FAILURE_MARKERS) is retried
-    once as two half-size batches instead of retried as-is - both failure modes scale with how
-    much guide data has piled up in memory for this batch, so simply trying the identical batch
-    again would almost certainly reproduce the identical failure. Splitting only ever happens
-    once (_already_split guards against runaway recursion on a batch that's failing for some
-    other reason entirely) and only above _MIN_SPLITTABLE_BATCH - below that, or for any other
-    kind of failure (a real scraper error, a site down, ...), it's just retried once as-is, which
-    is enough to ride out a transient blip without masking a genuine, reproducible failure."""
+    as two half-size batches instead of retried as-is - both failure modes scale with how much
+    guide data has piled up in memory for this batch, so simply trying the identical batch again
+    would almost certainly reproduce the identical failure (confirmed against a real production
+    log: a same-size retry took the same ~4 minutes to reach the same channel and die the same
+    way). Splitting recurses - a half that OOMs again gets split again - bounded purely by
+    _MIN_SPLITTABLE_BATCH, which is what actually keeps this from ever being unbounded (50 -> 25
+    -> 12, three levels at most for a default-sized batch), not a single-level-only flag. Below
+    that floor, or for any other kind of failure (a real scraper error, a site down, ...), it's
+    just retried once as-is, which is enough to ride out a transient blip without masking a
+    genuine, reproducible failure."""
     try:
         await _run_grab_batch(entries, output_path, epg_dir, timeout, log_prefix=log_prefix)
         return
     except RuntimeError as exc:
         worth_splitting = any(marker in str(exc) for marker in _SPLIT_WORTHY_FAILURE_MARKERS)
-        if not _already_split and worth_splitting and len(entries) > _MIN_SPLITTABLE_BATCH:
+        if worth_splitting and len(entries) > _MIN_SPLITTABLE_BATCH:
             logger.warning("%s%s - retrying as two smaller batches", log_prefix, exc)
             mid = len(entries) // 2
             half_a_path = output_path.with_name(f"{output_path.stem}.splitA{output_path.suffix}")
             half_b_path = output_path.with_name(f"{output_path.stem}.splitB{output_path.suffix}")
             try:
-                await _run_grab_batch_resilient(
-                    entries[:mid], half_a_path, epg_dir, timeout, log_prefix, _already_split=True
-                )
-                await _run_grab_batch_resilient(
-                    entries[mid:], half_b_path, epg_dir, timeout, log_prefix, _already_split=True
-                )
+                await _run_grab_batch_resilient(entries[:mid], half_a_path, epg_dir, timeout, log_prefix)
+                await _run_grab_batch_resilient(entries[mid:], half_b_path, epg_dir, timeout, log_prefix)
                 _merge_xmltv_batches([half_a_path, half_b_path], output_path)
             finally:
                 half_a_path.unlink(missing_ok=True)
@@ -761,9 +768,7 @@ async def _run_grab_batch_resilient(
             return
         if not _retried:
             logger.warning("%s%s - retrying once", log_prefix, exc)
-            await _run_grab_batch_resilient(
-                entries, output_path, epg_dir, timeout, log_prefix, _retried=True, _already_split=_already_split
-            )
+            await _run_grab_batch_resilient(entries, output_path, epg_dir, timeout, log_prefix, _retried=True)
             return
         raise
 
