@@ -170,7 +170,7 @@ async def list_categories(source_id: int, db: DbSession, _admin: AdminUser) -> l
     result = await db.execute(
         select(SourceCategory, func.count(SourceChannel.id))
         .outerjoin(SourceChannel, SourceChannel.source_category_id == SourceCategory.id)
-        .where(SourceCategory.source_id == source_id)
+        .where(SourceCategory.source_id == source_id, SourceCategory.removed_at.is_(None))
         .group_by(SourceCategory.id)
         .order_by(SourceCategory.sort_order, SourceCategory.name)
     )
