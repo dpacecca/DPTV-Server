@@ -54,48 +54,15 @@ export interface PaginatedSourceChannels {
   limit: number;
 }
 
-export interface IptvOrgSelection {
-  mode: "country" | "category" | "channels" | "mapped";
-  values: string[];
-}
-
 export interface EpgSource {
   id: number;
   name: string;
-  source_kind: "url" | "iptv_org";
-  url: string | null;
-  iptv_org_selection: IptvOrgSelection | null;
+  url: string;
   refresh_interval_minutes: number;
   last_refreshed_at: string | null;
   last_refresh_status: string | null;
   last_refresh_error: string | null;
   channel_count: number;
-}
-
-export interface IptvOrgCountryOption {
-  name: string;
-  channel_count: number;
-  matched_channel_count: number;
-}
-
-export interface IptvOrgCategoryOption {
-  id: string;
-  name: string;
-  channel_count: number;
-}
-
-export interface IptvOrgChannelSearchResult {
-  id: string;
-  name: string;
-  country: string | null;
-  categories: string[];
-  site_count: number;
-}
-
-export interface IptvOrgCatalog {
-  available: boolean;
-  countries: IptvOrgCountryOption[];
-  categories: IptvOrgCategoryOption[];
 }
 
 export interface PlaylistChannel {
@@ -112,26 +79,8 @@ export interface PlaylistChannel {
   epg_channel_id: number | null;
   epg_display_name: string | null;
   epg_match_type: EpgMatchType;
-  iptv_org_channel_id: number | null;
-  iptv_org_channel_name: string | null;
-  iptv_org_channel_channel_id: string | null;
   dummy_epg_mode: DummyEpgMode;
   dummy_epg_program_minutes: number | null;
-}
-
-export interface IptvOrgChannelMatch {
-  iptv_org_channel_id: number;
-  channel_id: string;
-  name: string;
-  country: string | null;
-  categories: string[];
-  site_count: number;
-  score?: number;
-}
-
-export interface IptvOrgCatalogFilters {
-  countries: { name: string; channel_count: number }[];
-  categories: { id: string; name: string; channel_count: number }[];
 }
 
 /** Category shape used everywhere in the UI: counts only, never the (potentially huge) channel list. */

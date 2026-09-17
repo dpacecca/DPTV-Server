@@ -42,27 +42,11 @@ instead of local files.
   resolution into the channel name (e.g. `ESPN [1080p]`) instead of
   removing anything. Requires the `ffmpeg` package on the server (see
   Running it below).
-- **EPG from iptv-org/epg**: browse [iptv-org/epg](https://github.com/iptv-org/epg)'s
-  251 site scrapers by country, category, specific channel search, or
-  your own channel mappings (using the real per-channel metadata from
-  [iptv-org/database](https://github.com/iptv-org/database) where
-  available) and add one as a normal, auto-refreshing EPG source — the
-  server runs the scrape itself on a schedule. Country/category pulls
-  are broad but slow. The "From my mappings" mode is the better choice
-  for an existing library: a daily-refreshed local catalog of every
-  scrapable channel lets you bulk auto-map or manually search-and-pick
-  which iptv-org channel each of your playlist channels corresponds to
-  (via "Map to iptv-org..." on the Playlists page) *before* anything is
-  scraped — then a single "From my mappings" source scrapes exactly
-  those channels, however many playlists they're spread across, and
-  automatically fills in each channel's EPG mapping once guide data
-  lands. Optional; requires Node.js and a local checkout (see "Optional:
-  iptv-org/epg scraper" below).
 - **Automatic channel logos**: channels missing a logo from their provider
   get one automatically looked up from iptv-org's community-maintained
   logo database (matched via the mapped EPG channel id), refreshed daily
-  in the background. Works independently of the scraper above — no setup
-  needed. A logo set manually on a channel always takes priority.
+  in the background. No setup needed. A logo set manually on a channel
+  always takes priority.
 
 ## Architecture
 
@@ -182,52 +166,6 @@ whatever scheme/host actually reaches players from the outside (e.g.
 nginx site itself only speaks plain HTTP internally — Cloudflare
 terminates TLS at its edge).
 
-### Optional: iptv-org/epg scraper
-
-Lets you add an EPG source by picking countries or categories in the UI
-instead of hunting down an XMLTV URL yourself. The server runs
-[iptv-org/epg](https://github.com/iptv-org/epg)'s scrapers directly, so it
-needs its own checkout with dependencies installed — it's not bundled,
-since it's a separate, occasionally-updated project with 250+ site
-scrapers you'd otherwise have to rebuild the whole app image just to
-update. Skip this section if you're happy adding EPG sources by URL.
-
-Requires Node.js >= 20.20. Debian's own `apt install nodejs` (used above
-for building the frontend, which doesn't need anything this recent) can
-land just under that — check with `node --version` first, and if it's
-older, install a current one via NodeSource before cloning:
-
-```bash
-node --version   # if this prints < v20.20, run the two lines below first
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
-sudo apt install -y nodejs
-
-sudo -u dptv git clone https://github.com/iptv-org/epg.git /opt/DPTV-Server/iptv-org-epg
-cd /opt/DPTV-Server/iptv-org-epg
-sudo -u dptv npm install
-```
-
-`npm install`'s own `npm audit` may flag high-severity findings in `pm2`
-(a transitive dependency of iptv-org/epg's own tooling, used for its
-process-manager mode) - not reachable through anything DPTV-Server
-invokes here (just `npm run grab`), so no action needed on those.
-
-Then set `DPTV_IPTV_ORG_EPG_DIR=/opt/DPTV-Server/iptv-org-epg` — for a
-native/systemd install, add it as another `Environment=` line in
-`dptv-backend.service` (see the other variables there) and
-`sudo systemctl restart dptv-backend`; for Docker, uncomment the
-`DPTV_IPTV_ORG_EPG_DIR` line and volume mount in `docker-compose.yml`
-(clone the checkout somewhere on the host first, same as above, and point
-the volume at it) and `docker compose up -d --build`.
-
-Country/category lists and channel logos come from
-[iptv-org/database](https://github.com/iptv-org/database) (fetched
-directly by the backend — no separate setup needed for that part; it's
-what powers the automatic-logo feature above even without this scraper
-configured). Grabbing a country/category can take a while since it's
-scraping real broadcaster sites one by one — keep refresh intervals
-reasonable.
-
 ### Updating a native install
 
 `deploy/update.sh` runs the full update sequence for the native/systemd
@@ -275,9 +213,8 @@ regex rules for naming conventions the built-in parser doesn't handle),
 scheduled sync with auto-add/auto-remove, XC server with pass-through
 streaming, XC user management, sync history, duplicate-channel quality
 scanning (ffprobe-based resolution/framerate/bitrate detection,
-keep-the-best dedup, resolution tagging into channel names), EPG sources
-scraped from iptv-org/epg by country/category, automatic channel logos
-from iptv-org's logo database.
+keep-the-best dedup, resolution tagging into channel names), automatic
+channel logos from iptv-org's logo database.
 
 Not yet built (lower priority for a self-hosted single-VM setup, since
 IPTVBoss's cloud-sync/email features existed mainly to work around it

@@ -5,7 +5,6 @@ import {
   Box,
   Button,
   Checkbox,
-  FileInput,
   Group,
   Loader,
   Menu,
@@ -40,7 +39,6 @@ import {
   IconPlus,
   IconSearch,
   IconTrash,
-  IconUpload,
   IconVideo,
   IconWand,
 } from "@tabler/icons-react";
@@ -51,13 +49,11 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce } from "use-debounce";
-import { api, refreshEpgSource } from "../api/client";
+import { api } from "../api/client";
 import type {
   ChannelType,
   DummyEpgMode,
   EpgSource,
-  IptvOrgCatalogFilters,
-  IptvOrgChannelMatch,
   PaginatedChannels,
   Playlist,
   PlaylistCategory,
@@ -113,7 +109,6 @@ export default function PlaylistEditorPage() {
   const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
   const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
   const [dummyEpgRulesOpen, setDummyEpgRulesOpen] = useState(false);
-  const [iptvOrgCsvOpen, setIptvOrgCsvOpen] = useState(false);
   const [bulkDummyEpgOpen, setBulkDummyEpgOpen] = useState(false);
   const [epgPreviewOpen, setEpgPreviewOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -201,10 +196,9 @@ export default function PlaylistEditorPage() {
     onSuccess: (ids) => setSelectedChannelIds(new Set(ids)),
   });
 
-  // Same idea as selectAllMatchingMutation, scoped to channels with no EPG mapping at all (not
-  // even a pending iptv-org one) - a quick way to select exactly what still needs "Map EPG..."
-  // run against it, without hand-picking rows or selecting everything and weeding out the
-  // already-mapped ones.
+  // Same idea as selectAllMatchingMutation, scoped to channels with no EPG mapping at all - a
+  // quick way to select exactly what still needs "Map EPG..." run against it, without
+  // hand-picking rows or selecting everything and weeding out the already-mapped ones.
   const selectAllUnmappedMutation = useMutation({
     mutationFn: () =>
       api
@@ -233,9 +227,6 @@ export default function PlaylistEditorPage() {
           </Button>
           <Button leftSection={<IconDownload size={16} />} variant="light" onClick={() => setImportOpen(true)}>
             Import from Source
-          </Button>
-          <Button leftSection={<IconWand size={16} />} variant="light" onClick={() => setIptvOrgCsvOpen(true)}>
-            iptv-org Mapping CSV...
           </Button>
         </Group>
       </Group>
@@ -407,15 +398,6 @@ export default function PlaylistEditorPage() {
                         }}
                       >
                         Clear EPG mapping
-                      </Menu.Item>
-                      <Menu.Item
-                        onClick={() => {
-                          if (confirm(`Clear the iptv-org mapping for ${selectedChannelIds.size} channel(s)?`)) {
-                            runBulk({ action: "clear_iptv_org_mapping" });
-                          }
-                        }}
-                      >
-                        Clear iptv-org mapping
                       </Menu.Item>
                       <Menu.Item
                         color="red"
@@ -591,15 +573,6 @@ export default function PlaylistEditorPage() {
         />
       )}
 
-      {playlistId && (
-        <IptvOrgCsvModal
-          opened={iptvOrgCsvOpen}
-          onClose={() => setIptvOrgCsvOpen(false)}
-          playlistId={playlistId}
-          playlistName={playlist.name}
-          onChanged={invalidate}
-        />
-      )}
     </Stack>
   );
 }
@@ -939,12 +912,6 @@ function ChannelRow({
           <Badge color={channel.epg_match_type === "manual" ? "blue" : "teal"} variant="light">
             {channel.epg_display_name}
           </Badge>
-        ) : channel.iptv_org_channel_id ? (
-          <Tooltip label={`Mapped to ${channel.iptv_org_channel_channel_id} - awaiting scrape`}>
-            <Badge color="grape" variant="light">
-              iptv-org: pending
-            </Badge>
-          </Tooltip>
         ) : (
           <Badge color="gray" variant="light">
             unmapped
@@ -984,14 +951,13 @@ function ChannelDetailModal({
   const [epgSourcesInitialized, setEpgSourcesInitialized] = useState(false);
   const [suggestRulesOpen, setSuggestRulesOpen] = useState(false);
   // Which source this channel's EPG mapping section is currently showing - mirrors the bulk
-  // "Map EPG..." modal's source picker (EPG source / iptv-org catalog / Dummy EPG), mutually
-  // exclusive, so there's one consistent place to pick a source and search/configure it instead
-  // of three permanently-stacked sections. Defaults to whichever this channel is actually using
-  // right now rather than always "epg", since (unlike the bulk modal) there's a real single
-  // channel state to read at open time.
-  const [channelMapSource, setChannelMapSource] = useState<"epg" | "iptv_org" | "dummy">(() => {
+  // "Map EPG..." modal's source picker (EPG source / Dummy EPG), mutually exclusive, so there's
+  // one consistent place to pick a source and search/configure it instead of two permanently-
+  // stacked sections. Defaults to whichever this channel is actually using right now rather than
+  // always "epg", since (unlike the bulk modal) there's a real single channel state to read at
+  // open time.
+  const [channelMapSource, setChannelMapSource] = useState<"epg" | "dummy">(() => {
     if (channel.epg_channel_id) return "epg";
-    if (channel.iptv_org_channel_id) return "iptv_org";
     if (channel.dummy_epg_mode !== "inherit") return "dummy";
     return "epg";
   });
@@ -1052,80 +1018,6 @@ function ChannelDetailModal({
     onSuccess: onChanged,
   });
 
-  const [iptvOrgSearch, setIptvOrgSearch] = useState("");
-  const [iptvOrgCountry, setIptvOrgCountry] = useState<string | null>(null);
-  const [iptvOrgCategory, setIptvOrgCategory] = useState<string | null>(null);
-
-  // What's actually committed on the server for this channel right now - seeded from the
-  // (possibly stale, snapshotted-at-open-time) channel prop, then kept in sync locally as
-  // Apply actually commits changes, so the badge below reflects reality for the rest of this
-  // modal session without needing the whole channel list to be refetched and re-passed in.
-  const [committedIptvOrg, setCommittedIptvOrg] = useState<{ id: number | null; name: string | null; channelId: string | null }>({
-    id: channel.iptv_org_channel_id,
-    name: channel.iptv_org_channel_name,
-    channelId: channel.iptv_org_channel_channel_id,
-  });
-  // A staged-but-not-yet-applied choice: undefined = no pending change (show committedIptvOrg),
-  // null = pending clear, a match = pending new mapping. Nothing reaches the server until Apply.
-  const [pendingIptvOrgMatch, setPendingIptvOrgMatch] = useState<IptvOrgChannelMatch | null | undefined>(undefined);
-
-  const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
-    queryKey: ["iptv-org-catalog-filters"],
-    queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
-  });
-
-  const { data: iptvOrgSearchResults } = useQuery<IptvOrgChannelMatch[]>({
-    queryKey: ["iptv-org-search", playlistId, channelId, iptvOrgSearch, iptvOrgCountry, iptvOrgCategory],
-    queryFn: () =>
-      api
-        .get(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org/search`, {
-          params: { q: iptvOrgSearch || undefined, country: iptvOrgCountry || undefined, category: iptvOrgCategory || undefined },
-        })
-        .then((r) => r.data),
-  });
-
-  const mappedEpgSource = epgSources?.find((s) => s.source_kind === "iptv_org" && s.iptv_org_selection?.mode === "mapped");
-  const refreshMappedSourceMutation = useMutation({
-    mutationFn: () => refreshEpgSource(mappedEpgSource!.id),
-    onSuccess: (result) => {
-      onChanged();
-      notifications.show({ message: `Loaded ${result.channels} channels, ${result.programs} programs`, color: "green" });
-    },
-    onError: (err: any) =>
-      notifications.show({ message: err?.response?.data?.detail || err?.message || "Refresh failed", color: "red" }),
-  });
-
-  const assignIptvOrgMutation = useMutation({
-    mutationFn: (target: IptvOrgChannelMatch | null) =>
-      api.patch(`/api/playlists/${playlistId}/channels/${channelId}/iptv-org`, {
-        iptv_org_channel_id: target ? target.iptv_org_channel_id : null,
-      }),
-    onSuccess: (_res, target) => {
-      setCommittedIptvOrg(
-        target ? { id: target.iptv_org_channel_id, name: target.name, channelId: target.channel_id } : { id: null, name: null, channelId: null },
-      );
-      setPendingIptvOrgMatch(undefined);
-      onChanged();
-      notifications.show({ message: "iptv-org mapping applied", color: "green" });
-    },
-    onError: (err: any) =>
-      notifications.show({
-        message: err?.response?.data?.detail || "Failed to apply mapping - check the browser console for details",
-        color: "red",
-      }),
-  });
-
-  // Auto-map is a one-click action: it commits the top confident match immediately (no staging)
-  // and closes the whole Channel Settings modal, since there's nothing left to review.
-  function autoMapAndClose() {
-    const top = iptvOrgSearchResults?.[0];
-    if (!top || (top.score ?? 0) < 0.5) {
-      notifications.show({ message: "No confident match found", color: "yellow" });
-      return;
-    }
-    assignIptvOrgMutation.mutate(top, { onSuccess: onClose });
-  }
-
   return (
     <Modal opened onClose={onClose} title="Channel Settings" size="lg">
       <Stack>
@@ -1185,11 +1077,6 @@ function ChannelDetailModal({
             </Text>
           )}
           <Checkbox
-            label="iptv-org catalog"
-            checked={channelMapSource === "iptv_org"}
-            onChange={(e) => setChannelMapSource(e.currentTarget.checked ? "iptv_org" : "epg")}
-          />
-          <Checkbox
             label="Dummy EPG"
             checked={channelMapSource === "dummy"}
             onChange={(e) => setChannelMapSource(e.currentTarget.checked ? "dummy" : "epg")}
@@ -1228,134 +1115,6 @@ function ChannelDetailModal({
                   </Badge>
                 </Group>
               ))}
-            </Stack>
-          </>
-        )}
-
-        {channelMapSource === "iptv_org" && (
-          <>
-            <Group align="flex-start" justify="space-between" wrap="nowrap">
-              <Text size="xs" c="dimmed">
-                Maps to a channel in iptv-org's catalog before any guide data exists - once a "From
-                my channel mappings" EPG source (EPG Sources page) refreshes, this channel's real
-                guide data lands here automatically. Auto-map applies immediately; search results are
-                staged for review until you hit Apply.
-              </Text>
-              {mappedEpgSource && (
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  loading={refreshMappedSourceMutation.isPending}
-                  onClick={() => refreshMappedSourceMutation.mutate()}
-                  style={{ flexShrink: 0 }}
-                >
-                  Fetch guide data now
-                </Button>
-              )}
-            </Group>
-            <Group>
-              <Button
-                size="xs"
-                leftSection={<IconWand size={14} />}
-                variant="light"
-                loading={assignIptvOrgMutation.isPending}
-                onClick={autoMapAndClose}
-              >
-                Auto-map
-              </Button>
-              {committedIptvOrg.id && pendingIptvOrgMatch === undefined && (
-                <Button size="xs" variant="subtle" color="red" onClick={() => setPendingIptvOrgMatch(null)}>
-                  Clear mapping
-                </Button>
-              )}
-            </Group>
-            {pendingIptvOrgMatch !== undefined ? (
-              <Group gap="xs">
-                <Badge variant="light" color="yellow" style={{ alignSelf: "flex-start" }}>
-                  Pending: {pendingIptvOrgMatch ? `${pendingIptvOrgMatch.name} (${pendingIptvOrgMatch.channel_id})` : "clear mapping"}
-                </Badge>
-                <Button
-                  size="xs"
-                  color="green"
-                  loading={assignIptvOrgMutation.isPending}
-                  onClick={() => assignIptvOrgMutation.mutate(pendingIptvOrgMatch ?? null)}
-                >
-                  Apply
-                </Button>
-                <Button size="xs" variant="subtle" onClick={() => setPendingIptvOrgMatch(undefined)}>
-                  Cancel
-                </Button>
-              </Group>
-            ) : (
-              committedIptvOrg.id && (
-                <Badge variant="light" color="grape" style={{ alignSelf: "flex-start" }}>
-                  {committedIptvOrg.name} ({committedIptvOrg.channelId})
-                </Badge>
-              )
-            )}
-            <Group grow>
-              <Select
-                placeholder="Any country"
-                searchable
-                clearable
-                data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
-                value={iptvOrgCountry}
-                onChange={setIptvOrgCountry}
-              />
-              <Select
-                placeholder="Any category"
-                searchable
-                clearable
-                data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
-                value={iptvOrgCategory}
-                onChange={setIptvOrgCategory}
-              />
-            </Group>
-            <TextInput
-              placeholder="Search iptv-org channels (e.g. ESPN)..."
-              value={iptvOrgSearch}
-              onChange={(e) => setIptvOrgSearch(e.currentTarget.value)}
-            />
-            <Stack gap={4} mah={220} style={{ overflowY: "auto" }}>
-              {iptvOrgSearchResults?.map((r) => {
-                const effectiveId = pendingIptvOrgMatch !== undefined ? pendingIptvOrgMatch?.iptv_org_channel_id : committedIptvOrg.id;
-                return (
-                <Group
-                  key={r.iptv_org_channel_id}
-                  justify="space-between"
-                  p={6}
-                  style={{
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    background: effectiveId === r.iptv_org_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
-                  }}
-                  onClick={() => setPendingIptvOrgMatch(r)}
-                >
-                  <div>
-                    <Group gap={6}>
-                      <Text size="sm">{r.name}</Text>
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        {r.channel_id}
-                      </Text>
-                    </Group>
-                    <Text size="xs" c="dimmed">
-                      {r.country ?? "International"} · {r.site_count} site{r.site_count === 1 ? "" : "s"}
-                    </Text>
-                  </div>
-                  {r.score !== undefined && (
-                    <Badge size="xs" variant="light">
-                      {(r.score * 100).toFixed(0)}%
-                    </Badge>
-                  )}
-                </Group>
-                );
-              })}
-              {iptvOrgSearchResults?.length === 0 && (
-                <Text size="xs" c="dimmed">
-                  No matches. Try a different search, or the iptv-org channel catalog may not be
-                  configured yet on this server.
-                </Text>
-              )}
             </Stack>
           </>
         )}
@@ -1410,9 +1169,7 @@ function ChannelDetailModal({
   );
 }
 
-// A single row of a bulk mapping preview, normalized to a common shape regardless of whether
-// it came from a real EPG source's already-scraped channels or the raw iptv-org catalog - lets
-// one BulkMapRow component (and one search-as-you-type popover) serve both.
+// A single row of a bulk mapping preview.
 interface MatchCandidate {
   key: number;
   label: string;
@@ -1430,22 +1187,12 @@ function normalizeEpgCandidate(c: { epg_channel_id: number; display_name: string
   return { key: c.epg_channel_id, label: c.display_name, sublabel: c.epg_id, score: c.score };
 }
 
-function normalizeIptvOrgCandidate(c: IptvOrgChannelMatch): MatchCandidate {
-  return {
-    key: c.iptv_org_channel_id,
-    label: c.name,
-    sublabel: `${c.channel_id}${c.country ? ` · ${c.country}` : ""} · ${c.site_count} site${c.site_count === 1 ? "" : "s"}`,
-    score: c.score,
-  };
-}
-
 // One review row in the bulk mapping modal. The auto-matched top-5 candidates cover a simple
 // rename (the channel's own name still resembles the target one), but not a full rebrand
 // ("Fox Sports 501 HD" -> "Fox Cricket") where nothing in the original name resembles the
 // correct match - so this also lets an admin type a free-text query, which re-searches
-// server-side (scoped to whatever source/filters are currently active) instead of just
-// client-filtering the original 5 options. searchFn/searchKey abstract over which kind of
-// source is being searched (a real EPG source's channels, or the iptv-org catalog).
+// server-side (scoped to whatever EPG sources are currently active) instead of just
+// client-filtering the original 5 options.
 function BulkMapRow({
   row,
   pendingValue,
@@ -1562,11 +1309,8 @@ function BulkMapRow({
   );
 }
 
-// Unified "Map EPG" flow: pick a source (a real EPG source's already-scraped channels, or the
-// raw iptv-org catalog with country/category filters), preview matches, review/override any of
-// them via BulkMapRow's dropdown, then Apply. Folds in what used to be a separate "Map to
-// iptv-org" modal/button - the two matching backends stay separate (they target different
-// fields: epg_channel_id vs iptv_org_channel_id) but share this one UI.
+// "Map EPG" flow: pick which EPG sources to search, preview matches, review/override any of
+// them via BulkMapRow's dropdown, then Apply.
 function MapEpgModal({
   opened,
   onClose,
@@ -1580,17 +1324,13 @@ function MapEpgModal({
   channelIds: number[];
   onChanged: () => void;
 }) {
-  const [sourceType, setSourceType] = useState<"epg" | "iptv_org">("epg");
   const [selectedEpgSourceIds, setSelectedEpgSourceIds] = useState<Set<number>>(new Set());
-  const [country, setCountry] = useState<string | null>(null);
-  const [category, setCategory] = useState<string | null>(null);
   const [sensitivity, setSensitivity] = useState(0.9);
   const [preview, setPreview] = useState<{ matched: PreviewRow[]; unmatched: PreviewRow[] } | null>(null);
   // channel_id -> chosen candidate key (null = explicitly left unmapped). A row with no entry
   // here hasn't been touched and is left alone on Apply - lets a partial review (only fixing the
   // ones that look wrong) still Apply safely without clobbering the rest.
   const [pending, setPending] = useState<Record<number, number | null>>({});
-  const [applied, setApplied] = useState<number | null>(null);
 
   const { data: epgSources } = useQuery<EpgSource[]>({
     queryKey: ["epg-sources-lite"],
@@ -1606,56 +1346,22 @@ function MapEpgModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, epgSources]);
 
-  const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
-    queryKey: ["iptv-org-catalog-filters"],
-    queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
-    enabled: opened && sourceType === "iptv_org",
-  });
-
-  // Applying an iptv-org mapping only records which catalog channel each of yours corresponds
-  // to - it doesn't fetch guide data itself. That happens when a "mapped" iptv-org EPG source
-  // refreshes, so once matching is done we offer to kick that off right here instead of sending
-  // the user to hunt for it on the EPG Sources page.
-  const mappedEpgSource = epgSources?.find((s) => s.source_kind === "iptv_org" && s.iptv_org_selection?.mode === "mapped");
-  const refreshMappedSourceMutation = useMutation({
-    mutationFn: () => refreshEpgSource(mappedEpgSource!.id),
-    onSuccess: (result) => {
-      onChanged();
-      notifications.show({ message: `Loaded ${result.channels} channels, ${result.programs} programs`, color: "green" });
-    },
-    onError: (err: any) =>
-      notifications.show({ message: err?.response?.data?.detail || err?.message || "Refresh failed", color: "red" }),
-  });
-
   const activeEpgSourceIds = epgSources && selectedEpgSourceIds.size === epgSources.length ? null : [...selectedEpgSourceIds];
 
   const previewMutation = useMutation({
     mutationFn: async (): Promise<{ matched: PreviewRow[]; unmatched: PreviewRow[] }> => {
-      if (sourceType === "epg") {
-        const { data } = await api.post(`/api/playlists/${playlistId}/channels/epg/bulk-preview`, {
-          channel_ids: channelIds,
-          sensitivity,
-          epg_source_ids: activeEpgSourceIds,
-        });
-        return {
-          matched: data.matched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeEpgCandidate) })),
-          unmatched: data.unmatched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeEpgCandidate) })),
-        };
-      }
-      const { data } = await api.post(`/api/playlists/${playlistId}/channels/iptv-org/bulk-auto-map`, {
+      const { data } = await api.post(`/api/playlists/${playlistId}/channels/epg/bulk-preview`, {
         channel_ids: channelIds,
         sensitivity,
-        country,
-        category,
+        epg_source_ids: activeEpgSourceIds,
       });
       return {
-        matched: data.matched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeIptvOrgCandidate) })),
-        unmatched: data.unmatched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeIptvOrgCandidate) })),
+        matched: data.matched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeEpgCandidate) })),
+        unmatched: data.unmatched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeEpgCandidate) })),
       };
     },
     onSuccess: (data) => {
       setPreview(data);
-      setApplied(null);
       // Every previewed channel gets an explicit decision, not just the confidently-matched
       // ones - a channel that already had a mapping (e.g. from a different EPG source) but
       // doesn't confidently match this search is staged to have that mapping CLEARED, not left
@@ -1683,19 +1389,12 @@ function MapEpgModal({
   const applyMutation = useMutation({
     mutationFn: async () => {
       const entries = Object.entries(pending);
-      if (sourceType === "epg") {
-        const { data } = await api.post(`/api/playlists/${playlistId}/channels/epg/bulk-assign`, {
-          assignments: entries.map(([channelId, key]) => ({ channel_id: Number(channelId), epg_channel_id: key })),
-        });
-        return data as { applied: number; invalid: { channel_id: number; reason: string }[] };
-      }
-      const { data } = await api.post(`/api/playlists/${playlistId}/channels/iptv-org/bulk-assign`, {
-        assignments: entries.map(([channelId, key]) => ({ channel_id: Number(channelId), iptv_org_channel_id: key })),
+      const { data } = await api.post(`/api/playlists/${playlistId}/channels/epg/bulk-assign`, {
+        assignments: entries.map(([channelId, key]) => ({ channel_id: Number(channelId), epg_channel_id: key })),
       });
       return data as { applied: number; invalid: { channel_id: number; reason: string }[] };
     },
     onSuccess: (data) => {
-      setApplied(data.applied);
       onChanged();
       notifications.show({
         message: data.invalid.length
@@ -1714,7 +1413,6 @@ function MapEpgModal({
   function resetPreview() {
     setPreview(null);
     setPending({});
-    setApplied(null);
   }
 
   function handleClose() {
@@ -1722,30 +1420,16 @@ function MapEpgModal({
     onClose();
   }
 
-  function handleSourceTypeChange(v: string) {
-    setSourceType(v as "epg" | "iptv_org");
-    resetPreview();
-  }
-
-  // Scopes the per-row search-as-you-type cache to whatever source/filters are currently active,
-  // so switching sources or filters doesn't show stale results cached under the same row.
-  const searchKey =
-    sourceType === "epg"
-      ? `epg:${(activeEpgSourceIds ?? []).slice().sort().join(",")}`
-      : `iptv_org:${country ?? ""}|${category ?? ""}`;
+  // Scopes the per-row search-as-you-type cache to whatever sources are currently active, so
+  // switching sources doesn't show stale results cached under the same row.
+  const searchKey = `epg:${(activeEpgSourceIds ?? []).slice().sort().join(",")}`;
 
   function makeSearchFn(rowChannelId: number) {
     return async (query: string): Promise<MatchCandidate[]> => {
-      if (sourceType === "epg") {
-        const { data } = await api.get(`/api/playlists/${playlistId}/channels/${rowChannelId}/epg/search`, {
-          params: { q: query, epg_source_ids: activeEpgSourceIds ?? undefined },
-        });
-        return data.map(normalizeEpgCandidate);
-      }
-      const { data } = await api.get(`/api/playlists/${playlistId}/channels/${rowChannelId}/iptv-org/search`, {
-        params: { q: query, country: country || undefined, category: category || undefined },
+      const { data } = await api.get(`/api/playlists/${playlistId}/channels/${rowChannelId}/epg/search`, {
+        params: { q: query, epg_source_ids: activeEpgSourceIds ?? undefined },
       });
-      return data.map(normalizeIptvOrgCandidate);
+      return data.map(normalizeEpgCandidate);
     };
   }
 
@@ -1762,8 +1446,7 @@ function MapEpgModal({
             <Checkbox
               key={s.id}
               label={s.name}
-              checked={sourceType === "epg" && selectedEpgSourceIds.has(s.id)}
-              disabled={sourceType === "iptv_org"}
+              checked={selectedEpgSourceIds.has(s.id)}
               onChange={(e) => {
                 const checked = e.currentTarget.checked;
                 setSelectedEpgSourceIds((prev) => {
@@ -1779,47 +1462,6 @@ function MapEpgModal({
             <Text size="sm" c="dimmed">
               No EPG sources yet — add one under EPG Sources first.
             </Text>
-          )}
-
-          {/* Not a real EpgSource - matches against the raw iptv-org catalog instead of an
-              already-scraped source, so it needs its own country/category filters and is
-              mutually exclusive with the real sources above (different target field, see
-              MapEpgModal's doc comment). */}
-          <Checkbox
-            label="iptv-org catalog"
-            checked={sourceType === "iptv_org"}
-            onChange={(e) => handleSourceTypeChange(e.currentTarget.checked ? "iptv_org" : "epg")}
-          />
-          {sourceType === "iptv_org" && (
-            <Stack gap={4} ml="lg">
-              <Text size="xs" c="dimmed">
-                Matches each channel's name against iptv-org's channel catalog and proposes the
-                closest candidates for review - nothing is saved until you hit Apply. Once
-                applied, nothing is scraped until a "From my channel mappings" EPG source (EPG
-                Sources page) is refreshed, at which point guide data for exactly these channels
-                is fetched automatically.
-              </Text>
-              <Group grow>
-                <Select
-                  label="Country"
-                  placeholder="Any country"
-                  searchable
-                  clearable
-                  data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
-                  value={country}
-                  onChange={setCountry}
-                />
-                <Select
-                  label="Category"
-                  placeholder="Any category"
-                  searchable
-                  clearable
-                  data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
-                  value={category}
-                  onChange={setCategory}
-                />
-              </Group>
-            </Stack>
           )}
         </Stack>
 
@@ -1838,7 +1480,7 @@ function MapEpgModal({
           <Button
             onClick={() => previewMutation.mutate()}
             loading={previewMutation.isPending}
-            disabled={sourceType === "epg" && selectedEpgSourceIds.size === 0}
+            disabled={selectedEpgSourceIds.size === 0}
           >
             Preview matches for {channelIds.length} channel(s)
           </Button>
@@ -1872,203 +1514,6 @@ function MapEpgModal({
                 Re-run preview
               </Button>
             </Group>
-
-            {applied !== null &&
-              sourceType === "iptv_org" &&
-              (mappedEpgSource ? (
-                <Button
-                  size="xs"
-                  variant="light"
-                  loading={refreshMappedSourceMutation.isPending}
-                  onClick={() => refreshMappedSourceMutation.mutate()}
-                >
-                  Fetch guide data now ({mappedEpgSource.name})
-                </Button>
-              ) : (
-                <Text size="xs" c="yellow">
-                  No "From my channel mappings" EPG source exists yet - add one on the EPG
-                  Sources page to fetch guide data for these mappings.
-                </Text>
-              ))}
-          </Stack>
-        )}
-      </Stack>
-    </Modal>
-  );
-}
-
-interface IptvOrgImportResult {
-  applied: { channel_id: number; channel_name: string; iptv_org_channel_id: string }[];
-  invalid: { channel_id: string; channel_name?: string; iptv_org_channel_id?: string; reason: string }[];
-  skipped: number;
-}
-
-function downloadBlob(blob: Blob, fallbackFilename: string, contentDisposition?: string) {
-  const match = contentDisposition?.match(/filename="?([^"]+)"?/);
-  const filename = match?.[1] || fallbackFilename;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-// A CSV round trip for the "map hundreds of channels once, then tidy up a handful in the GUI"
-// workflow - the mapping UI (single-channel search, bulk auto-map above) is precise but doesn't
-// scale to eyeballing every row when a playlist has thousands of channels across many
-// categories. Downloads pair the playlist's channels (with their current mapping) and the
-// iptv-org catalog (as a lookup sheet) as plain CSVs an admin can work in a spreadsheet; the
-// upload only ever sets iptv_org_channel_id for rows that were actually filled in, so
-// re-uploading a mostly-untouched export is always safe.
-function IptvOrgCsvModal({
-  opened,
-  onClose,
-  playlistId,
-  playlistName,
-  onChanged,
-}: {
-  opened: boolean;
-  onClose: () => void;
-  playlistId: string;
-  playlistName: string;
-  onChanged: () => void;
-}) {
-  const [country, setCountry] = useState<string | null>(null);
-  const [category, setCategory] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [importResult, setImportResult] = useState<IptvOrgImportResult | null>(null);
-
-  const { data: iptvOrgFilters } = useQuery<IptvOrgCatalogFilters>({
-    queryKey: ["iptv-org-catalog-filters"],
-    queryFn: () => api.get("/api/playlists/iptv-org/catalog-filters").then((r) => r.data),
-    enabled: opened,
-  });
-
-  const exportMappingMutation = useMutation({
-    mutationFn: () => api.get(`/api/playlists/${playlistId}/channels/iptv-org/export.csv`, { responseType: "blob" }),
-    onSuccess: (res) => downloadBlob(res.data, `${playlistName}-iptv-org-mapping.csv`, res.headers["content-disposition"]),
-    onError: () => notifications.show({ message: "Export failed", color: "red" }),
-  });
-
-  const exportCatalogMutation = useMutation({
-    mutationFn: () =>
-      api.get("/api/playlists/iptv-org/catalog.csv", {
-        params: { country: country || undefined, category: category || undefined },
-        responseType: "blob",
-      }),
-    onSuccess: (res) => downloadBlob(res.data, "iptv-org-catalog.csv", res.headers["content-disposition"]),
-    onError: () => notifications.show({ message: "Export failed", color: "red" }),
-  });
-
-  const importMutation = useMutation({
-    mutationFn: () => {
-      const form = new FormData();
-      form.append("file", file as File);
-      return api.post<IptvOrgImportResult>(`/api/playlists/${playlistId}/channels/iptv-org/import-csv`, form).then((r) => r.data);
-    },
-    onSuccess: (data) => {
-      setImportResult(data);
-      onChanged();
-      notifications.show({
-        message: `Applied ${data.applied.length} mapping(s), ${data.skipped} row(s) unchanged, ${data.invalid.length} invalid`,
-        color: data.invalid.length ? "yellow" : "green",
-      });
-    },
-    onError: (err: any) => notifications.show({ message: err?.response?.data?.detail || "Import failed", color: "red" }),
-  });
-
-  function handleClose() {
-    setFile(null);
-    setImportResult(null);
-    onClose();
-  }
-
-  return (
-    <Modal opened={opened} onClose={handleClose} title="iptv-org Mapping via CSV" size="lg">
-      <Stack>
-        <Text size="sm" c="dimmed">
-          For matching a lot of channels at once: download this playlist's channels below, fill
-          in the iptv_org_channel_id column (use the catalog lookup sheet or the mapping UI's
-          search results for the right values), then upload the edited file back here. A blank
-          iptv_org_channel_id cell is left untouched, so it's safe to re-upload a file you've
-          only partly edited.
-        </Text>
-
-        <Button
-          leftSection={<IconDownload size={14} />}
-          variant="light"
-          loading={exportMappingMutation.isPending}
-          onClick={() => exportMappingMutation.mutate()}
-        >
-          Download this playlist's channels (CSV)
-        </Button>
-
-        <Text fw={600} size="sm" mt="sm">
-          Catalog lookup sheet
-        </Text>
-        <Group grow>
-          <Select
-            placeholder="Any country"
-            searchable
-            clearable
-            data={(iptvOrgFilters?.countries ?? []).map((c) => ({ value: c.name, label: `${c.name} (${c.channel_count})` }))}
-            value={country}
-            onChange={setCountry}
-          />
-          <Select
-            placeholder="Any category"
-            searchable
-            clearable
-            data={(iptvOrgFilters?.categories ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.channel_count})` }))}
-            value={category}
-            onChange={setCategory}
-          />
-        </Group>
-        <Button
-          leftSection={<IconDownload size={14} />}
-          variant="light"
-          loading={exportCatalogMutation.isPending}
-          onClick={() => exportCatalogMutation.mutate()}
-        >
-          Download iptv-org catalog (CSV)
-        </Button>
-
-        <Text fw={600} size="sm" mt="sm">
-          Apply an edited CSV
-        </Text>
-        <FileInput placeholder="Choose CSV file..." accept=".csv,text/csv" value={file} onChange={setFile} clearable />
-        <Button
-          leftSection={<IconUpload size={14} />}
-          disabled={!file}
-          loading={importMutation.isPending}
-          onClick={() => importMutation.mutate()}
-        >
-          Upload &amp; apply
-        </Button>
-
-        {importResult && (
-          <Stack gap={4}>
-            <Text size="sm" c="green">
-              Applied {importResult.applied.length} mapping(s), {importResult.skipped} row(s) left unchanged
-            </Text>
-            {importResult.invalid.length > 0 && (
-              <>
-                <Text size="sm" c="red">
-                  {importResult.invalid.length} row(s) couldn't be applied:
-                </Text>
-                <Stack gap={2} mah={160} style={{ overflowY: "auto" }}>
-                  {importResult.invalid.map((row, i) => (
-                    <Text key={i} size="xs" c="dimmed">
-                      {row.channel_name ?? `channel_id ${row.channel_id}`}
-                      {row.iptv_org_channel_id ? ` → ${row.iptv_org_channel_id}` : ""}: {row.reason}
-                    </Text>
-                  ))}
-                </Stack>
-              </>
-            )}
           </Stack>
         )}
       </Stack>

@@ -12,14 +12,7 @@ class EpgSource(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    source_kind: Mapped[str] = mapped_column(String(20), default="url")
-    """"url" (a plain XMLTV/.xml.gz fetch) or "iptv_org" (server-side iptv-org/epg scrape)."""
-    url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    """Required when source_kind == "url"; unused for "iptv_org" sources."""
-    iptv_org_selection: Mapped[str | None] = mapped_column(Text, nullable=True)
-    """JSON-encoded {"mode": "country"|"category", "values": [...]} recording what was picked,
-    so a refresh can re-resolve the current channel catalog instead of a frozen snapshot, and
-    the admin UI can show/edit the selection. Only set when source_kind == "iptv_org"."""
+    url: Mapped[str] = mapped_column(Text)
     refresh_interval_minutes: Mapped[int] = mapped_column(Integer, default=720)
 
     last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -45,29 +38,6 @@ class EpgChannel(Base):
     programs: Mapped[list["EpgProgram"]] = relationship(
         back_populates="epg_channel", cascade="all, delete-orphan"
     )
-
-
-class IptvOrgChannel(Base, TimestampMixin):
-    """A persistent, periodically-refreshed snapshot of iptv-org/epg's scrapable channel
-    catalog - deliberately NOT stored as EpgChannel rows under some "virtual" EpgSource,
-    because a normal EPG source refresh does a full replace (deletes any EpgChannel not
-    present in that refresh's freshly-parsed XMLTV), which would wipe this whole browsable
-    catalog every time an iptv-org EpgSource actually scrapes. This table lives entirely
-    outside that lifecycle, refreshed on its own daily schedule, and only ever read from -
-    never touched by any EpgSource sync."""
-
-    __tablename__ = "iptv_org_channels"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    channel_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    """iptv-org/database's base channel id (e.g. "CNN.us"), matching what grab_entries_for_*
-    resolves against and what EpgChannel.epg_channel_id ends up holding once actually scraped."""
-    name: Mapped[str] = mapped_column(String(500))
-    country: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    categories: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    """Comma-joined category ids, e.g. "news,general"."""
-    site_count: Mapped[int] = mapped_column(Integer, default=0)
-    logo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EpgProgram(Base):

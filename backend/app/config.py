@@ -35,9 +35,8 @@ class Settings(BaseSettings):
 
     guide_refresh_log_buffer_size: int = 2000
     """How many recent guide-refresh log lines (see app/services/guide_refresh_log.py) are kept
-    in memory for the admin log viewer - scheduled/manual EPG sync activity and, for iptv-org
-    sources, the scraper's own per-batch/per-channel progress output. Same bounded, in-memory,
-    resets-on-restart tradeoff as xc_log_buffer_size."""
+    in memory for the admin log viewer - scheduled/manual EPG sync activity. Bounded and
+    in-memory rather than a file, resets on restart."""
 
     ffprobe_path: str = "ffprobe"
     """Path to the ffprobe binary, used to detect stream resolution/framerate/bitrate when
@@ -48,48 +47,6 @@ class Settings(BaseSettings):
     something that needs to race to finish."""
     scan_max_concurrency: int = 8
     scan_default_timeout_seconds: float = 8.0
-
-    iptv_org_epg_dir: str | None = None
-    """Path to a local clone of github.com/iptv-org/epg (with `npm install` already run), used
-    to scrape iptv-org's site-specific EPG guides on demand. None disables the feature entirely -
-    it's an optional system dependency (Node.js + the vendored checkout), not bundled."""
-    iptv_org_grab_timeout_seconds: float = 900.0
-    """Some sites (e.g. ones with 500+ channels) genuinely take minutes to scrape. Applies per
-    batch (see iptv_org_grab_batch_size), not to the whole selection."""
-    iptv_org_grab_batch_size: int = 50
-    """The grabber holds an entire selection's guide data in memory and only writes it to disk
-    once, at the very end - fine for a handful of channels, but a large country/category
-    selection can hold enough in memory at once to OOM a small server. Selections larger than
-    this are scraped in sequential batches of this size instead (one grabber subprocess at a
-    time), each written and merged separately, so peak memory stays bounded regardless of how
-    many channels were picked overall. Kept conservative (rather than e.g. 200) because a batch
-    of channels that actually scrape successfully - real guide data held in memory for real
-    programme listings, not the near-instant failures a sandboxed test environment without
-    normal internet access sees - costs meaningfully more memory per channel than an empty or
-    failed one; observed ~1.5GB RSS for a single 200-channel batch against real sites."""
-    iptv_org_grab_max_connections: int = 1
-    """Passed to the grabber as --maxConnections. The grabber's own default (and this app's,
-    matching it) is 1 - every request to a given site made strictly one at a time, which is why
-    a grab paces at roughly one channel/day every 1-2 seconds even on a fast connection. Per the
-    grabber's own README: "under heavy load some sites may start return an error or completely
-    block your access" - raising this trades that risk for speed, and different sites tolerate
-    it differently, so there's no single safe number to default to. Applies per site (each
-    concurrently-running request still targets whichever channel/day it's currently on), not
-    across the whole batch."""
-    iptv_org_grab_node_max_old_space_mb: int | None = None
-    """Node's default V8 heap ceiling (~2GB old-space on 64-bit) is often hit well before the
-    host actually runs out of RAM, crashing the grabber with "JavaScript heap out of memory" on
-    a large or heavy batch (e.g. a site like foxtel.com.au that does an extra HTTP request per
-    program, not just per channel - see foxtel.com.au.config.js's loadProgramDetails). Passed as
-    NODE_OPTIONS=--max-old-space-size=<this> to the grabber subprocess so it can use more of
-    whatever RAM is actually available, instead of self-terminating well below it.
-
-    None (the default) auto-detects the actual memory allocation - the container's cgroup limit
-    if there is one (LXC/Docker/Kubernetes), else the host's total physical RAM - and uses 70%
-    of it, leaving headroom for this app's own backend process, Postgres, and the OS (see
-    services.iptv_org_epg._grab_node_max_old_space_mb). Set an explicit value only to override
-    that detection - e.g. if this container shares its host with other memory-hungry services
-    whose usage the cgroup limit alone wouldn't account for."""
 
 
 @lru_cache

@@ -88,11 +88,11 @@ async def _run_all(job_id: str) -> None:
 
 
 def start_single_refresh(epg_source_id: int) -> EpgRefreshJob:
-    """Refreshing a source - especially an iptv-org one scraping a slow/chatty broadcaster site
-    - can take many minutes were it to run synchronously in the request; that's long enough to
-    outlive any reverse proxy or tunnel in front of this app, producing a spurious client-side
-    failure even though the backend keeps working. So this only kicks the work off in the
-    background; poll GET /refresh-jobs/{job_id} for progress."""
+    """Refreshing a source - especially one fetching a large XMLTV feed - can take many minutes
+    were it to run synchronously in the request; that's long enough to outlive any reverse proxy
+    or tunnel in front of this app, producing a spurious client-side failure even though the
+    backend keeps working. So this only kicks the work off in the background; poll
+    GET /refresh-jobs/{job_id} for progress."""
     job = _new_job()
     asyncio.create_task(_run_single(job.id, epg_source_id))
     return job

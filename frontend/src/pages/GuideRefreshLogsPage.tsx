@@ -54,8 +54,7 @@ export default function GuideRefreshLogsPage() {
       </Group>
 
       <Text size="xs" c="dimmed">
-        Scheduled and manually-triggered EPG source refresh activity, including the iptv-org
-        scraper's own per-batch/per-channel scrape progress.
+        Scheduled and manually-triggered EPG source refresh activity.
       </Text>
 
       <Paper withBorder style={{ overflow: "hidden" }}>
