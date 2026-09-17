@@ -13,7 +13,7 @@ import {
   Title,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
+import { IconEdit, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, refreshAllEpgSources, refreshEpgSource } from "../api/client";
 import type { EpgSource } from "../api/types";
@@ -22,6 +22,7 @@ import { EmptyState } from "../App";
 export default function EpgSourcesPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [refreshInterval, setRefreshInterval] = useState(720);
@@ -32,24 +33,37 @@ export default function EpgSourcesPage() {
   });
 
   const resetForm = () => {
+    setEditingId(null);
     setName("");
     setUrl("");
     setRefreshInterval(720);
   };
 
-  const createMutation = useMutation({
-    mutationFn: () =>
-      api.post("/api/epg-sources", {
-        name,
-        url,
-        refresh_interval_minutes: refreshInterval,
-      }),
+  const openAddModal = () => {
+    resetForm();
+    setModalOpen(true);
+  };
+
+  const openEditModal = (s: EpgSource) => {
+    setEditingId(s.id);
+    setName(s.name);
+    setUrl(s.url);
+    setRefreshInterval(s.refresh_interval_minutes);
+    setModalOpen(true);
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const payload = { name, url, refresh_interval_minutes: refreshInterval };
+      return editingId ? api.patch(`/api/epg-sources/${editingId}`, payload) : api.post("/api/epg-sources", payload);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["epg-sources"] });
       setModalOpen(false);
       resetForm();
     },
-    onError: () => notifications.show({ message: "Failed to create EPG source", color: "red" }),
+    onError: () =>
+      notifications.show({ message: editingId ? "Failed to update EPG source" : "Failed to create EPG source", color: "red" }),
   });
 
   const refreshMutation = useMutation({
@@ -99,7 +113,7 @@ export default function EpgSourcesPage() {
           >
             Update All
           </Button>
-          <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
+          <Button leftSection={<IconPlus size={16} />} onClick={openAddModal}>
             Add EPG Source
           </Button>
         </Group>
@@ -138,6 +152,9 @@ export default function EpgSourcesPage() {
                       >
                         <IconRefresh size={16} />
                       </ActionIcon>
+                      <ActionIcon variant="subtle" onClick={() => openEditModal(s)}>
+                        <IconEdit size={16} />
+                      </ActionIcon>
                       <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(s.id)}>
                         <IconTrash size={16} />
                       </ActionIcon>
@@ -156,7 +173,7 @@ export default function EpgSourcesPage() {
           setModalOpen(false);
           resetForm();
         }}
-        title="Add EPG Source"
+        title={editingId ? "Edit EPG Source" : "Add EPG Source"}
         size="lg"
       >
         <Stack>
@@ -177,7 +194,7 @@ export default function EpgSourcesPage() {
             min={15}
           />
 
-          <Button onClick={() => createMutation.mutate()} loading={createMutation.isPending} disabled={!canSave}>
+          <Button onClick={() => saveMutation.mutate()} loading={saveMutation.isPending} disabled={!canSave}>
             Save
           </Button>
         </Stack>

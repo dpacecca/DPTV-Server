@@ -52,6 +52,19 @@ async def create_epg_source(payload: EpgSourceIn, db: DbSession, _admin: AdminUs
     return _serialize(epg)
 
 
+@router.patch("/{epg_source_id}")
+async def update_epg_source(epg_source_id: int, payload: EpgSourceIn, db: DbSession, _admin: AdminUser) -> dict:
+    epg = await db.get(EpgSource, epg_source_id)
+    if epg is None:
+        raise HTTPException(404, "EPG source not found")
+    epg.name = payload.name
+    epg.url = payload.url
+    epg.refresh_interval_minutes = payload.refresh_interval_minutes
+    await db.commit()
+    await db.refresh(epg)
+    return _serialize(epg)
+
+
 @router.delete("/{epg_source_id}")
 async def delete_epg_source(epg_source_id: int, db: DbSession, _admin: AdminUser) -> dict:
     epg = await db.get(EpgSource, epg_source_id)
