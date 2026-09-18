@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     scan_max_concurrency: int = 8
     scan_default_timeout_seconds: float = 8.0
 
+    rapidapi_key: str | None = None
+    """RapidAPI key used for live-sport fixture providers (e.g. Rugby Live Data) behind a Live
+    Sport category (see app/services/sport_data.py). Required only once a Live Sport category
+    exists - without it, that category's refresh fails with a clear error recorded on the
+    category, the same way an EPG source records a fetch failure."""
+    sport_refresh_interval_minutes: int = 30
+    """How often the scheduler re-fetches today's fixtures and recomputes which channels are
+    showing a live match, for every Live Sport category across every playlist. Lower values give
+    more up-to-date "is this live right now" status at the cost of more requests against
+    whatever rate limit the configured provider key has."""
+
 
 @lru_cache
 def get_settings() -> Settings:

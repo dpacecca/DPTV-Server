@@ -4,7 +4,15 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Te
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, ProbeStatus, TimestampMixin, enum_column
+from app.models.base import (
+    ChannelType,
+    DummyEpgMode,
+    EpgMatchType,
+    ProbeStatus,
+    SportType,
+    TimestampMixin,
+    enum_column,
+)
 
 
 class Playlist(Base, TimestampMixin):
@@ -63,6 +71,14 @@ class PlaylistCategory(Base, TimestampMixin):
     dummy_epg_for_unassigned: Mapped[bool] = mapped_column(Boolean, default=False)
     dummy_epg_program_minutes: Mapped[int] = mapped_column(Integer, default=60)
 
+    sport_type: Mapped[SportType | None] = mapped_column(enum_column(SportType), nullable=True)
+    """Marks this as an auto-managed "Live Sport" category (e.g. Live Rugby) rather than an
+    ordinary one - its channel list is entirely computed by the periodic sport refresh job (see
+    services/sport_refresh.py), not edited by hand. None for a normal category."""
+    sport_last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sport_last_refresh_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sport_last_refresh_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     playlist: Mapped["Playlist"] = relationship(back_populates="categories")
     channels: Mapped[list["PlaylistChannel"]] = relationship(
         back_populates="category", cascade="all, delete-orphan", order_by="PlaylistChannel.sort_order"
@@ -117,6 +133,12 @@ class PlaylistChannel(Base, TimestampMixin):
 
     dummy_epg_mode: Mapped[DummyEpgMode] = mapped_column(enum_column(DummyEpgMode), default=DummyEpgMode.INHERIT)
     dummy_epg_program_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dummy_epg_rule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dummy_epg_rules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """Pins "event" mode to try only this one rule (falling back to the built-in parser if it
+    doesn't match), instead of the default of trying every enabled playlist rule in sort_order.
+    Ignored for any other dummy_epg_mode. None if the rule was deleted or never set."""
 
     detected_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detected_height: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
-from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType
+from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType, SportType
 from app.models.epg import EpgChannel
 from app.models.playlist import (
     DummyEpgRule,
@@ -19,10 +19,11 @@ from app.models.playlist import (
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
-from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
+from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs, sport_refresh_jobs
 from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
+from app.services.sport_data import SPORT_LABELS
 
 router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
@@ -69,6 +70,7 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
         "epg_match_type": pc.epg_match_type,
         "dummy_epg_mode": pc.dummy_epg_mode,
         "dummy_epg_program_minutes": pc.dummy_epg_program_minutes,
+        "dummy_epg_rule_id": pc.dummy_epg_rule_id,
     }
 
 
@@ -82,7 +84,20 @@ def _serialize_category_summary(cat: PlaylistCategory, channel_count: int) -> di
         "dummy_epg_for_unassigned": cat.dummy_epg_for_unassigned,
         "dummy_epg_program_minutes": cat.dummy_epg_program_minutes,
         "channel_count": channel_count,
+        "sport_type": cat.sport_type,
+        "sport_last_refreshed_at": cat.sport_last_refreshed_at,
+        "sport_last_refresh_status": cat.sport_last_refresh_status,
+        "sport_last_refresh_error": cat.sport_last_refresh_error,
     }
+
+
+def _ensure_not_sport_managed(cat: PlaylistCategory) -> None:
+    """A "Live Sport" category's channel list is entirely computed by the periodic refresh job
+    (see services/sport_refresh.py) - any manual add/move/copy/import/reorder into or within it
+    would just be wiped out by the next refresh, so reject it outright instead of silently
+    losing the admin's change a few minutes later."""
+    if cat.sport_type is not None:
+        raise HTTPException(400, "This category is automatically managed and can't be edited manually")
 
 
 async def _category_channel_counts(db: DbSession, category_ids: list[int]) -> dict[int, int]:
@@ -273,6 +288,13 @@ async def list_timezones(_admin: AdminUser) -> list[str]:
     return dummy_epg.list_timezones()
 
 
+@router.get("/sports")
+async def list_supported_sports(_admin: AdminUser) -> list[dict]:
+    """Backs the sport picker in "Create Live Sport Category" - only rugby today. Same literal-
+    path-before-{playlist_id} reasoning as /timezones above."""
+    return [{"value": sport.value, "label": label} for sport, label in SPORT_LABELS.items()]
+
+
 @router.get("/{playlist_id}")
 async def get_playlist(playlist_id: int, db: DbSession, _admin: AdminUser) -> dict:
     return await _get_playlist_with_category_summaries(db, playlist_id)
@@ -306,6 +328,10 @@ class CategoryIn(BaseModel):
     name: str
     channel_type: ChannelType = ChannelType.LIVE
     sort_order: int = 0
+    sport_type: SportType | None = None
+    """Creates a "Live Sport" category instead of an ordinary one - `name` is ignored in favor
+    of the sport's own display name (e.g. "Live Rugby"), and its channel list is populated by an
+    initial background refresh right away (see GET /sports for the supported list)."""
 
 
 class CategoryUpdate(BaseModel):
@@ -319,10 +345,15 @@ class CategoryUpdate(BaseModel):
 async def create_category(playlist_id: int, payload: CategoryIn, db: DbSession, _admin: AdminUser) -> dict:
     if await db.get(Playlist, playlist_id) is None:
         raise HTTPException(404, "Playlist not found")
-    cat = PlaylistCategory(playlist_id=playlist_id, **payload.model_dump())
+    data = payload.model_dump()
+    if payload.sport_type is not None:
+        data["name"] = SPORT_LABELS[payload.sport_type]
+    cat = PlaylistCategory(playlist_id=playlist_id, **data)
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
+    if cat.sport_type is not None:
+        sport_refresh_jobs.start_refresh(cat.id)
     return _serialize_category_summary(cat, channel_count=0)
 
 
@@ -388,6 +419,28 @@ async def merge_categories(
             await db.delete(src_cat)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/{playlist_id}/categories/{category_id}/sport-refresh")
+async def refresh_sport_category_now(playlist_id: int, category_id: int, db: DbSession, _admin: AdminUser) -> dict:
+    """Kicks off a background refresh of this one Live Sport category and returns immediately -
+    same "poll for progress" pattern as EPG source refresh (see epg_sources.py). The scheduled
+    job already does this on an interval; this is the "Refresh Now" button."""
+    cat = await db.get(PlaylistCategory, category_id)
+    if cat is None or cat.playlist_id != playlist_id:
+        raise HTTPException(404, "Category not found")
+    if cat.sport_type is None:
+        raise HTTPException(400, "This category is not a Live Sport category")
+    job = sport_refresh_jobs.start_refresh(category_id)
+    return {"job_id": job.id}
+
+
+@router.get("/{playlist_id}/sport-refresh-jobs/{job_id}")
+async def get_sport_refresh_job(playlist_id: int, job_id: str, _admin: AdminUser) -> dict:
+    job = sport_refresh_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Refresh job not found")
+    return {"job_id": job.id, "status": job.status, "error": job.error}
 
 
 # ---------- New Channel Manager: source links ----------
@@ -565,6 +618,7 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
         target_cat = await db.get(PlaylistCategory, payload.target_category_id)
         if target_cat is None or target_cat.playlist_id != playlist_id:
             raise HTTPException(404, "Target category not found")
+        _ensure_not_sport_managed(target_cat)
     elif payload.target_category_name:
         result = await db.execute(
             select(PlaylistCategory).where(
@@ -690,6 +744,7 @@ async def reorder_channels(
     cat = await db.get(PlaylistCategory, category_id)
     if cat is None or cat.playlist_id != playlist_id:
         raise HTTPException(404, "Category not found")
+    _ensure_not_sport_managed(cat)
     for item in items:
         pc = await db.get(PlaylistChannel, item.id)
         if pc and pc.playlist_category_id == category_id:
@@ -765,6 +820,7 @@ async def add_manual_channel(
     cat = await db.get(PlaylistCategory, category_id)
     if cat is None or cat.playlist_id != playlist_id:
         raise HTTPException(404, "Category not found")
+    _ensure_not_sport_managed(cat)
     pc = PlaylistChannel(
         playlist_category_id=category_id,
         name=payload.name,
@@ -790,6 +846,7 @@ async def move_channels(playlist_id: int, payload: ChannelBatchTarget, db: DbSes
     target_cat = await db.get(PlaylistCategory, payload.target_category_id)
     if target_cat is None or target_cat.playlist_id != playlist_id:
         raise HTTPException(404, "Target category not found")
+    _ensure_not_sport_managed(target_cat)
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     moved = 0
     for pc in result.scalars().all():
@@ -804,6 +861,7 @@ async def copy_channels(playlist_id: int, payload: ChannelBatchTarget, db: DbSes
     target_cat = await db.get(PlaylistCategory, payload.target_category_id)
     if target_cat is None or target_cat.playlist_id != playlist_id:
         raise HTTPException(404, "Target category not found")
+    _ensure_not_sport_managed(target_cat)
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     copied = 0
     for pc in result.scalars().all():
@@ -821,6 +879,7 @@ async def copy_channels(playlist_id: int, payload: ChannelBatchTarget, db: DbSes
                 epg_match_type=pc.epg_match_type,
                 dummy_epg_mode=pc.dummy_epg_mode,
                 dummy_epg_program_minutes=pc.dummy_epg_program_minutes,
+                dummy_epg_rule_id=pc.dummy_epg_rule_id,
             )
         )
         copied += 1
@@ -837,6 +896,7 @@ class ChannelUpdate(BaseModel):
     manual_stream_url: str | None = None
     dummy_epg_mode: DummyEpgMode | None = None
     dummy_epg_program_minutes: int | None = None
+    dummy_epg_rule_id: int | None = None
 
 
 @router.patch("/{playlist_id}/channels/{channel_id}")
@@ -885,6 +945,11 @@ class BulkAction(BaseModel):
     dummy_epg_program_minutes: int | None = None
     """For set_dummy_epg_mode - omit to leave each channel's existing program length as-is
     (e.g. when only switching several channels into "event" mode without also fixing minutes)."""
+    dummy_epg_rule_id: int | None = None
+    """For set_dummy_epg_mode, to pin "event" mode to one specific rule instead of the default
+    of trying every enabled playlist rule - omit the field entirely to leave each channel's
+    existing pinned rule (if any) as-is; send it explicitly as null to clear back to "try every
+    enabled rule"."""
 
 
 @router.post("/{playlist_id}/channels/bulk")
@@ -918,6 +983,8 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
             pc.dummy_epg_mode = payload.dummy_epg_mode
             if payload.dummy_epg_program_minutes is not None:
                 pc.dummy_epg_program_minutes = payload.dummy_epg_program_minutes
+            if "dummy_epg_rule_id" in payload.model_fields_set:
+                pc.dummy_epg_rule_id = payload.dummy_epg_rule_id
         elif payload.action == "delete":
             await db.delete(pc)
         elif payload.action == "clear_epg_mapping":

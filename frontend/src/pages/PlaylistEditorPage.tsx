@@ -37,8 +37,10 @@ import {
   IconLock,
   IconLockOpen,
   IconPlus,
+  IconRefresh,
   IconSearch,
   IconTrash,
+  IconTrophy,
   IconVideo,
   IconWand,
 } from "@tabler/icons-react";
@@ -49,7 +51,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce } from "use-debounce";
-import { api } from "../api/client";
+import { api, refreshSportCategory } from "../api/client";
 import type {
   ChannelType,
   DummyEpgMode,
@@ -60,6 +62,8 @@ import type {
   PlaylistChannel,
   Source,
   SourceCategory,
+  SportType,
+  SupportedSport,
 } from "../api/types";
 import { EmptyState } from "../App";
 import { toggleSelection } from "../utils/selection";
@@ -104,6 +108,8 @@ export default function PlaylistEditorPage() {
   const [selectedChannelIds, setSelectedChannelIds] = useState<Set<number>>(new Set());
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [newSportCategoryOpen, setNewSportCategoryOpen] = useState(false);
+  const [selectedSport, setSelectedSport] = useState<SportType | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [moveMode, setMoveMode] = useState<"move" | "copy" | null>(null);
   const [detailChannel, setDetailChannel] = useState<PlaylistChannel | null>(null);
@@ -133,6 +139,33 @@ export default function PlaylistEditorPage() {
       setNewCategoryOpen(false);
       setNewCategoryName("");
     },
+  });
+
+  const { data: supportedSports } = useQuery<SupportedSport[]>({
+    queryKey: ["sports"],
+    queryFn: () => api.get("/api/playlists/sports").then((r) => r.data),
+    enabled: newSportCategoryOpen,
+  });
+
+  const createSportCategoryMutation = useMutation({
+    mutationFn: (sportType: SportType) => {
+      const label = supportedSports?.find((s) => s.value === sportType)?.label ?? sportType;
+      return api.post(`/api/playlists/${playlistId}/categories`, { name: label, channel_type: "live", sport_type: sportType });
+    },
+    onSuccess: () => {
+      invalidate();
+      setNewSportCategoryOpen(false);
+      setSelectedSport(null);
+    },
+  });
+
+  const sportRefreshNowMutation = useMutation({
+    mutationFn: (categoryId: number) => refreshSportCategory(Number(playlistId), categoryId),
+    onSuccess: () => {
+      invalidate();
+      notifications.show({ message: "Live sport category refreshed", color: "green" });
+    },
+    onError: (err: Error) => notifications.show({ message: err.message || "Refresh failed", color: "red" }),
   });
 
   const deleteCategoryMutation = useMutation({
@@ -240,9 +273,18 @@ export default function PlaylistEditorPage() {
             <Text fw={600} size="sm">
               Categories
             </Text>
-            <ActionIcon variant="subtle" onClick={() => setNewCategoryOpen(true)}>
-              <IconPlus size={16} />
-            </ActionIcon>
+            <Group gap={4}>
+              <Tooltip label="Create Live Sport Category">
+                <ActionIcon variant="subtle" onClick={() => setNewSportCategoryOpen(true)}>
+                  <IconTrophy size={16} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Add Category">
+                <ActionIcon variant="subtle" onClick={() => setNewCategoryOpen(true)}>
+                  <IconPlus size={16} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
           </Group>
           <ScrollArea style={{ flex: 1 }}>
             <DndContext
@@ -317,27 +359,51 @@ export default function PlaylistEditorPage() {
                   {activeCategory.name}
                 </Text>
                 <Group gap="xs">
-                  <Button size="xs" variant="light" leftSection={<IconPlus size={14} />} onClick={() => setManualChannelOpen(true)}>
-                    Add Channel
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    leftSection={<IconArrowRight size={14} />}
-                    disabled={selectedChannelIds.size === 0}
-                    onClick={() => setMoveMode("move")}
-                  >
-                    Move to...
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    leftSection={<IconCopy size={14} />}
-                    disabled={selectedChannelIds.size === 0}
-                    onClick={() => setMoveMode("copy")}
-                  >
-                    Copy to...
-                  </Button>
+                  {activeCategory.sport_type && (
+                    <>
+                      <Text size="xs" c={activeCategory.sport_last_refresh_status === "failed" ? "red" : "dimmed"}>
+                        {activeCategory.sport_last_refresh_status === "failed"
+                          ? `Refresh failed: ${activeCategory.sport_last_refresh_error}`
+                          : activeCategory.sport_last_refreshed_at
+                            ? `Last refreshed ${new Date(activeCategory.sport_last_refreshed_at).toLocaleTimeString()}`
+                            : "Never refreshed yet"}
+                      </Text>
+                      <Button
+                        size="xs"
+                        variant="light"
+                        leftSection={<IconRefresh size={14} />}
+                        loading={sportRefreshNowMutation.isPending}
+                        onClick={() => sportRefreshNowMutation.mutate(activeCategory.id)}
+                      >
+                        Refresh Now
+                      </Button>
+                    </>
+                  )}
+                  {!activeCategory.sport_type && (
+                    <>
+                      <Button size="xs" variant="light" leftSection={<IconPlus size={14} />} onClick={() => setManualChannelOpen(true)}>
+                        Add Channel
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="light"
+                        leftSection={<IconArrowRight size={14} />}
+                        disabled={selectedChannelIds.size === 0}
+                        onClick={() => setMoveMode("move")}
+                      >
+                        Move to...
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="light"
+                        leftSection={<IconCopy size={14} />}
+                        disabled={selectedChannelIds.size === 0}
+                        onClick={() => setMoveMode("copy")}
+                      >
+                        Copy to...
+                      </Button>
+                    </>
+                  )}
                   <Button
                     size="xs"
                     variant="light"
@@ -468,13 +534,36 @@ export default function PlaylistEditorPage() {
         </Stack>
       </Modal>
 
+      <Modal opened={newSportCategoryOpen} onClose={() => setNewSportCategoryOpen(false)} title="Create Live Sport Category">
+        <Stack>
+          <Select
+            label="Sport"
+            placeholder="Choose a sport"
+            data={(supportedSports ?? []).map((s) => ({ value: s.value, label: s.label }))}
+            value={selectedSport}
+            onChange={(v) => setSelectedSport(v as SportType | null)}
+          />
+          <Text size="xs" c="dimmed">
+            Channels showing a live match are found automatically each day and kept up to date on
+            a refresh interval - there's nothing to add, remove, or reorder by hand.
+          </Text>
+          <Button
+            onClick={() => selectedSport && createSportCategoryMutation.mutate(selectedSport)}
+            disabled={!selectedSport}
+            loading={createSportCategoryMutation.isPending}
+          >
+            Create
+          </Button>
+        </Stack>
+      </Modal>
+
       <Modal opened={moveMode !== null} onClose={() => setMoveMode(null)} title={moveMode === "move" ? "Move to..." : "Copy to..."}>
         <Stack>
           <Text size="sm" c="dimmed">
             {selectedChannelIds.size} channel(s) selected
           </Text>
           {categories
-            .filter((c) => c.id !== activeCategory?.id)
+            .filter((c) => c.id !== activeCategory?.id && !c.sport_type)
             .map((c) => (
               <Button
                 key={c.id}
@@ -628,11 +717,18 @@ function SortableCategoryRow({
           onChange={() => onToggleMultiSelect(shiftKeyRef.current)}
         />
         <Box style={{ minWidth: 0 }}>
-          <Text size="sm" truncate>
-            {category.name}
-          </Text>
+          <Group gap={4} wrap="nowrap">
+            <Text size="sm" truncate>
+              {category.name}
+            </Text>
+            {category.sport_type && (
+              <Badge size="xs" variant="light" color={category.sport_last_refresh_status === "failed" ? "red" : "orange"}>
+                Live
+              </Badge>
+            )}
+          </Group>
           <Text size="xs" c="dimmed">
-            {category.channel_count} channels
+            {category.channel_count} {category.sport_type ? "live now" : "channels"}
           </Text>
         </Box>
       </Group>
@@ -682,8 +778,10 @@ function ChannelTable({
   // Reordering only makes sense against the true, unfiltered sort_order - a search result is a
   // scattered subset of it, and renumbering just the visible subset would silently scramble
   // every other channel's position relative to it. See reorderMutation below for the rest of
-  // the contract this relies on (the loaded window is always the lowest-sort_order prefix).
-  const reorderEnabled = !search;
+  // the contract this relies on (the loaded window is always the lowest-sort_order prefix). A
+  // Live Sport category's channel list is entirely computed by the periodic refresh job, so
+  // there's no manual order to preserve there either.
+  const reorderEnabled = !search && !category.sport_type;
   const channelSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const [draggingChannelId, setDraggingChannelId] = useState<number | null>(null);
   // Shift-click range-select's anchor - only ever meaningful against rows actually loaded into
@@ -755,7 +853,7 @@ function ChannelTable({
     <Stack gap={4} style={{ flex: 1, minHeight: 0 }}>
       {!reorderEnabled && (
         <Text size="xs" c="dimmed">
-          Clear the search to drag-reorder channels.
+          {category.sport_type ? "This category's order is set automatically." : "Clear the search to drag-reorder channels."}
         </Text>
       )}
       <DndContext
@@ -987,6 +1085,12 @@ function ChannelDetailModal({
     queryFn: () => api.get("/api/epg-sources").then((r) => r.data),
   });
 
+  const { data: dummyEpgRules } = useQuery<DummyEpgRule[]>({
+    queryKey: ["dummy-epg-rules", playlistId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
+    enabled: channelMapSource === "dummy",
+  });
+
   useEffect(() => {
     if (epgSources && !epgSourcesInitialized) {
       setEpgSourceIds(new Set(epgSources.map((s) => s.id)));
@@ -1171,6 +1275,19 @@ function ChannelDetailModal({
                   program at that time for the configured duration, with the channel name filling the rest of the day.
                   Custom rules (playlist-wide) are tried first for naming conventions the built-in parser can't handle.
                 </Text>
+                <Select
+                  label="Rule"
+                  description="Which custom rule to use - leave on the default to try every enabled rule in order."
+                  data={[
+                    { value: "", label: "Any enabled rule (default)" },
+                    ...(dummyEpgRules ?? []).map((r) => ({
+                      value: String(r.id),
+                      label: r.enabled ? r.name : `${r.name} (disabled)`,
+                    })),
+                  ]}
+                  value={channel.dummy_epg_rule_id ? String(channel.dummy_epg_rule_id) : ""}
+                  onChange={(v) => updateMutation.mutate({ dummy_epg_rule_id: v ? Number(v) : null })}
+                />
                 <Button size="xs" variant="light" onClick={() => setSuggestRulesOpen(true)} style={{ alignSelf: "flex-start" }}>
                   Suggest Rule from This Name...
                 </Button>
@@ -1894,6 +2011,7 @@ function ImportModal({
   });
 
   const relevantCategories = (sourceCategories ?? []).filter((c) => c.channel_type === channelType && c.enabled);
+  const targetableCategories = categories.filter((c) => !c.sport_type);
 
   return (
     <Modal opened={opened} onClose={onClose} title="Import Channels from Source" size="lg">
@@ -1998,7 +2116,7 @@ function ImportModal({
             ) : (
               <Select
                 placeholder="Choose category"
-                data={categories.map((c) => ({ value: String(c.id), label: c.name }))}
+                data={targetableCategories.map((c) => ({ value: String(c.id), label: c.name }))}
                 value={targetCategoryId}
                 onChange={setTargetCategoryId}
               />
@@ -2413,6 +2531,15 @@ function BulkDummyEpgModal({
 }) {
   const [mode, setMode] = useState<DummyEpgMode>("event");
   const [minutes, setMinutes] = useState<number | "">("");
+  // "" = leave each channel's existing pinned rule as-is, "0" = explicitly clear it (try every
+  // enabled rule), otherwise a specific rule id.
+  const [ruleId, setRuleId] = useState("");
+
+  const { data: dummyEpgRules } = useQuery<DummyEpgRule[]>({
+    queryKey: ["dummy-epg-rules", playlistId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
+    enabled: opened && mode === "event",
+  });
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -2421,6 +2548,7 @@ function BulkDummyEpgModal({
         action: "set_dummy_epg_mode",
         dummy_epg_mode: mode,
         dummy_epg_program_minutes: minutes === "" ? null : minutes,
+        ...(ruleId !== "" ? { dummy_epg_rule_id: ruleId === "0" ? null : Number(ruleId) } : {}),
       }),
     onSuccess: () => {
       onChanged();
@@ -2455,6 +2583,22 @@ function BulkDummyEpgModal({
           onChange={(v) => setMinutes(v === "" ? "" : Number(v))}
           min={5}
         />
+        {mode === "event" && (
+          <Select
+            label="Rule"
+            description="Leave unchanged to keep each channel's existing pinned rule"
+            data={[
+              { value: "", label: "Leave unchanged" },
+              { value: "0", label: "Any enabled rule (default)" },
+              ...(dummyEpgRules ?? []).map((r) => ({
+                value: String(r.id),
+                label: r.enabled ? r.name : `${r.name} (disabled)`,
+              })),
+            ]}
+            value={ruleId}
+            onChange={(v) => setRuleId(v ?? "")}
+          />
+        )}
         <Button onClick={() => mutation.mutate()} loading={mutation.isPending} disabled={channelIds.length === 0}>
           Apply to {channelIds.length} channel(s)
         </Button>
