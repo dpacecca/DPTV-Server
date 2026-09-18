@@ -2,6 +2,12 @@ export type ChannelType = "live" | "vod" | "series";
 export type SourceType = "xtream" | "m3u";
 export type EpgMatchType = "none" | "auto" | "manual";
 export type DummyEpgMode = "inherit" | "off" | "name" | "event";
+export type SportType = "rugby";
+
+export interface SupportedSport {
+  value: SportType;
+  label: string;
+}
 
 export interface Source {
   id: number;
@@ -93,6 +99,10 @@ export interface PlaylistCategory {
   dummy_epg_for_unassigned: boolean;
   dummy_epg_program_minutes: number;
   channel_count: number;
+  sport_type: SportType | null;
+  sport_last_refreshed_at: string | null;
+  sport_last_refresh_status: string | null;
+  sport_last_refresh_error: string | null;
 }
 
 export interface Playlist {

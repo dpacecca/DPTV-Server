@@ -68,3 +68,26 @@ export async function refreshAllEpgSources(): Promise<{ epg_sources: Record<stri
   if (job.status === "error") throw new Error(job.error || "Refresh failed");
   return job.result as { epg_sources: Record<string, unknown>; errors: string[] };
 }
+
+interface SportRefreshJobStatus {
+  job_id: string;
+  status: "running" | "done" | "error";
+  error: string | null;
+}
+
+// Same "kick off a background job, poll for it to settle" pattern as EPG refresh above -
+// fetching fixtures and re-matching channels can take a moment, and this may run right after
+// creating a brand new Live Sport category.
+async function pollSportRefreshJob(playlistId: number, jobId: string): Promise<SportRefreshJobStatus> {
+  for (;;) {
+    const { data } = await api.get<SportRefreshJobStatus>(`/api/playlists/${playlistId}/sport-refresh-jobs/${jobId}`);
+    if (data.status !== "running") return data;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+}
+
+export async function refreshSportCategory(playlistId: number, categoryId: number): Promise<void> {
+  const { data } = await api.post(`/api/playlists/${playlistId}/categories/${categoryId}/sport-refresh`);
+  const job = await pollSportRefreshJob(playlistId, data.job_id);
+  if (job.status === "error") throw new Error(job.error || "Refresh failed");
+}

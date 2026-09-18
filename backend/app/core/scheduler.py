@@ -7,10 +7,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
 from app.services.iptv_org_epg import refresh_logo_cache
+from app.services.sport_refresh import refresh_all_sport_categories
 from app.services.sync_engine import run_full_sync
 
 logger = logging.getLogger("dptv.scheduler")
@@ -26,6 +28,15 @@ async def _refresh_logo_cache_job() -> None:
         await refresh_logo_cache()
     except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
         logger.exception("Failed to refresh iptv-org logo cache")
+
+
+async def _refresh_sport_categories_job() -> None:
+    async with SessionLocal() as db:
+        try:
+            count = await refresh_all_sport_categories(db)
+            logger.info("Refreshed %d live sport categor(y/ies)", count)
+        except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
+            logger.exception("Failed to refresh live sport categories")
 
 
 async def _run_scheduled_sync(schedule_id: int) -> None:
@@ -82,5 +93,19 @@ async def start_scheduler() -> None:
         _refresh_logo_cache_job,
         trigger=DateTrigger(),
         id="iptv-org-logo-cache-refresh-initial",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _refresh_sport_categories_job,
+        trigger=IntervalTrigger(minutes=get_settings().sport_refresh_interval_minutes),
+        id="sport-categories-refresh",
+        replace_existing=True,
+    )
+    # Fire once immediately so a freshly created Live Sport category doesn't sit empty until the
+    # first interval elapses.
+    scheduler.add_job(
+        _refresh_sport_categories_job,
+        trigger=DateTrigger(),
+        id="sport-categories-refresh-initial",
         replace_existing=True,
     )

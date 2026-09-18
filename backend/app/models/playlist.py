@@ -4,7 +4,15 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Te
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, ProbeStatus, TimestampMixin, enum_column
+from app.models.base import (
+    ChannelType,
+    DummyEpgMode,
+    EpgMatchType,
+    ProbeStatus,
+    SportType,
+    TimestampMixin,
+    enum_column,
+)
 
 
 class Playlist(Base, TimestampMixin):
@@ -62,6 +70,14 @@ class PlaylistCategory(Base, TimestampMixin):
 
     dummy_epg_for_unassigned: Mapped[bool] = mapped_column(Boolean, default=False)
     dummy_epg_program_minutes: Mapped[int] = mapped_column(Integer, default=60)
+
+    sport_type: Mapped[SportType | None] = mapped_column(enum_column(SportType), nullable=True)
+    """Marks this as an auto-managed "Live Sport" category (e.g. Live Rugby) rather than an
+    ordinary one - its channel list is entirely computed by the periodic sport refresh job (see
+    services/sport_refresh.py), not edited by hand. None for a normal category."""
+    sport_last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sport_last_refresh_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sport_last_refresh_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     playlist: Mapped["Playlist"] = relationship(back_populates="categories")
     channels: Mapped[list["PlaylistChannel"]] = relationship(

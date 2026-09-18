@@ -70,3 +70,11 @@ class ProbeStatus(str, enum.Enum):
     UNREACHABLE = "unreachable"
     NO_VIDEO_STREAM = "no_video_stream"
     NO_URL = "no_url"
+
+
+class SportType(str, enum.Enum):
+    """Which live-sport data provider a "Live Sport" PlaylistCategory is backed by - see
+    app/services/sport_data.py. Only rugby today; adding another sport means adding a value here
+    plus a matching fetcher, nothing else needs to know the difference."""
+
+    RUGBY = "rugby"
