@@ -33,7 +33,12 @@ async def _run_scheduled_sync(schedule_id: int) -> None:
         schedule = await db.get(SyncSchedule, schedule_id)
         if schedule is None or not schedule.enabled:
             return
-        logger.info("Running scheduled sync (schedule_id=%s)", schedule_id)
+        parts = [
+            name
+            for enabled, name in ((schedule.sync_sources, "sources"), (schedule.sync_epg, "epg"))
+            if enabled
+        ]
+        logger.info("Running scheduled sync (schedule_id=%s, syncing %s)", schedule_id, "+".join(parts) or "nothing")
         try:
             await run_full_sync(db, SyncTrigger.SCHEDULED, sync_sources=schedule.sync_sources, sync_epg=schedule.sync_epg)
             await db.commit()
