@@ -81,6 +81,7 @@ export interface PlaylistChannel {
   epg_match_type: EpgMatchType;
   dummy_epg_mode: DummyEpgMode;
   dummy_epg_program_minutes: number | null;
+  dummy_epg_rule_id: number | null;
 }
 
 /** Category shape used everywhere in the UI: counts only, never the (potentially huge) channel list. */

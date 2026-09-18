@@ -69,6 +69,7 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
         "epg_match_type": pc.epg_match_type,
         "dummy_epg_mode": pc.dummy_epg_mode,
         "dummy_epg_program_minutes": pc.dummy_epg_program_minutes,
+        "dummy_epg_rule_id": pc.dummy_epg_rule_id,
     }
 
 
@@ -821,6 +822,7 @@ async def copy_channels(playlist_id: int, payload: ChannelBatchTarget, db: DbSes
                 epg_match_type=pc.epg_match_type,
                 dummy_epg_mode=pc.dummy_epg_mode,
                 dummy_epg_program_minutes=pc.dummy_epg_program_minutes,
+                dummy_epg_rule_id=pc.dummy_epg_rule_id,
             )
         )
         copied += 1
@@ -837,6 +839,7 @@ class ChannelUpdate(BaseModel):
     manual_stream_url: str | None = None
     dummy_epg_mode: DummyEpgMode | None = None
     dummy_epg_program_minutes: int | None = None
+    dummy_epg_rule_id: int | None = None
 
 
 @router.patch("/{playlist_id}/channels/{channel_id}")
@@ -885,6 +888,11 @@ class BulkAction(BaseModel):
     dummy_epg_program_minutes: int | None = None
     """For set_dummy_epg_mode - omit to leave each channel's existing program length as-is
     (e.g. when only switching several channels into "event" mode without also fixing minutes)."""
+    dummy_epg_rule_id: int | None = None
+    """For set_dummy_epg_mode, to pin "event" mode to one specific rule instead of the default
+    of trying every enabled playlist rule - omit the field entirely to leave each channel's
+    existing pinned rule (if any) as-is; send it explicitly as null to clear back to "try every
+    enabled rule"."""
 
 
 @router.post("/{playlist_id}/channels/bulk")
@@ -918,6 +926,8 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
             pc.dummy_epg_mode = payload.dummy_epg_mode
             if payload.dummy_epg_program_minutes is not None:
                 pc.dummy_epg_program_minutes = payload.dummy_epg_program_minutes
+            if "dummy_epg_rule_id" in payload.model_fields_set:
+                pc.dummy_epg_rule_id = payload.dummy_epg_rule_id
         elif payload.action == "delete":
             await db.delete(pc)
         elif payload.action == "clear_epg_mapping":

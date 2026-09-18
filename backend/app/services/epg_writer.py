@@ -38,21 +38,30 @@ def _resolve_program_minutes(pc: PlaylistChannel) -> int:
     return pc.category.dummy_epg_program_minutes
 
 
-async def _load_event_rules(db: AsyncSession, playlist_id: int) -> list[tuple[re.Pattern, str | None]]:
+async def _load_event_rules(
+    db: AsyncSession, playlist_id: int
+) -> tuple[list[tuple[re.Pattern, str | None]], dict[int, tuple[re.Pattern, str | None]]]:
+    """Returns the enabled rules in sort_order (the "try everything" default for a channel with
+    no rule pinned) alongside the same compiled rules keyed by id (for a channel pinned to one
+    specific rule via PlaylistChannel.dummy_epg_rule_id - see compute_channel_programs below)."""
     result = await db.execute(
         select(DummyEpgRule)
         .where(DummyEpgRule.playlist_id == playlist_id, DummyEpgRule.enabled.is_(True))
         .order_by(DummyEpgRule.sort_order)
     )
     patterns: list[tuple[re.Pattern, str | None]] = []
+    by_id: dict[int, tuple[re.Pattern, str | None]] = {}
     for rule in result.scalars().all():
         try:
-            patterns.append((dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone))
+            compiled = (dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone)
         except ValueError:
             # Already validated on save - only reachable if a pattern was edited directly in the
             # DB. Skip rather than fail the whole XMLTV output over one bad rule.
             logger.warning("Skipping invalid dummy EPG rule %r (id=%s)", rule.name, rule.id)
-    return patterns
+            continue
+        patterns.append(compiled)
+        by_id[rule.id] = compiled
+    return patterns, by_id
 
 
 @dataclass
@@ -79,7 +88,7 @@ async def compute_channel_programs(
     and "Up Next" blocks) - so a preview and the real feed can never silently disagree."""
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(hours=window_hours)
-    event_rules = await _load_event_rules(db, playlist_id)
+    event_rules, event_rules_by_id = await _load_event_rules(db, playlist_id)
 
     real_epg_channel_ids = {pc.epg_channel_id for pc in channels if pc.epg_channel_id}
     programs_by_epg_channel: dict[int, list[EpgProgram]] = {}
@@ -115,7 +124,14 @@ async def compute_channel_programs(
             continue
         minutes = _resolve_program_minutes(pc)
         if mode == DummyEpgMode.EVENT:
-            dummies = dummy_epg.generate_event_dummy(pc.name, now, window_hours, minutes, custom_patterns=event_rules)
+            # A channel pinned to one specific rule (see PlaylistChannel.dummy_epg_rule_id) only
+            # ever tries that rule, not every enabled playlist rule - if the pinned rule was since
+            # disabled/deleted, this falls through to just the built-in parser, same as a channel
+            # with no custom rules configured at all, rather than silently trying rules the admin
+            # never selected for it.
+            pinned = event_rules_by_id.get(pc.dummy_epg_rule_id) if pc.dummy_epg_rule_id else None
+            channel_rules = [pinned] if pinned else ([] if pc.dummy_epg_rule_id else event_rules)
+            dummies = dummy_epg.generate_event_dummy(pc.name, now, window_hours, minutes, custom_patterns=channel_rules)
         else:
             dummies = dummy_epg.generate_name_dummy(pc.name, now, window_hours, minutes)
         results.append(

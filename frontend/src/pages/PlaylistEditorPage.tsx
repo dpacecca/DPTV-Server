@@ -987,6 +987,12 @@ function ChannelDetailModal({
     queryFn: () => api.get("/api/epg-sources").then((r) => r.data),
   });
 
+  const { data: dummyEpgRules } = useQuery<DummyEpgRule[]>({
+    queryKey: ["dummy-epg-rules", playlistId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
+    enabled: channelMapSource === "dummy",
+  });
+
   useEffect(() => {
     if (epgSources && !epgSourcesInitialized) {
       setEpgSourceIds(new Set(epgSources.map((s) => s.id)));
@@ -1171,6 +1177,19 @@ function ChannelDetailModal({
                   program at that time for the configured duration, with the channel name filling the rest of the day.
                   Custom rules (playlist-wide) are tried first for naming conventions the built-in parser can't handle.
                 </Text>
+                <Select
+                  label="Rule"
+                  description="Which custom rule to use - leave on the default to try every enabled rule in order."
+                  data={[
+                    { value: "", label: "Any enabled rule (default)" },
+                    ...(dummyEpgRules ?? []).map((r) => ({
+                      value: String(r.id),
+                      label: r.enabled ? r.name : `${r.name} (disabled)`,
+                    })),
+                  ]}
+                  value={channel.dummy_epg_rule_id ? String(channel.dummy_epg_rule_id) : ""}
+                  onChange={(v) => updateMutation.mutate({ dummy_epg_rule_id: v ? Number(v) : null })}
+                />
                 <Button size="xs" variant="light" onClick={() => setSuggestRulesOpen(true)} style={{ alignSelf: "flex-start" }}>
                   Suggest Rule from This Name...
                 </Button>
@@ -2413,6 +2432,15 @@ function BulkDummyEpgModal({
 }) {
   const [mode, setMode] = useState<DummyEpgMode>("event");
   const [minutes, setMinutes] = useState<number | "">("");
+  // "" = leave each channel's existing pinned rule as-is, "0" = explicitly clear it (try every
+  // enabled rule), otherwise a specific rule id.
+  const [ruleId, setRuleId] = useState("");
+
+  const { data: dummyEpgRules } = useQuery<DummyEpgRule[]>({
+    queryKey: ["dummy-epg-rules", playlistId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
+    enabled: opened && mode === "event",
+  });
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -2421,6 +2449,7 @@ function BulkDummyEpgModal({
         action: "set_dummy_epg_mode",
         dummy_epg_mode: mode,
         dummy_epg_program_minutes: minutes === "" ? null : minutes,
+        ...(ruleId !== "" ? { dummy_epg_rule_id: ruleId === "0" ? null : Number(ruleId) } : {}),
       }),
     onSuccess: () => {
       onChanged();
@@ -2455,6 +2484,22 @@ function BulkDummyEpgModal({
           onChange={(v) => setMinutes(v === "" ? "" : Number(v))}
           min={5}
         />
+        {mode === "event" && (
+          <Select
+            label="Rule"
+            description="Leave unchanged to keep each channel's existing pinned rule"
+            data={[
+              { value: "", label: "Leave unchanged" },
+              { value: "0", label: "Any enabled rule (default)" },
+              ...(dummyEpgRules ?? []).map((r) => ({
+                value: String(r.id),
+                label: r.enabled ? r.name : `${r.name} (disabled)`,
+              })),
+            ]}
+            value={ruleId}
+            onChange={(v) => setRuleId(v ?? "")}
+          />
+        )}
         <Button onClick={() => mutation.mutate()} loading={mutation.isPending} disabled={channelIds.length === 0}>
           Apply to {channelIds.length} channel(s)
         </Button>

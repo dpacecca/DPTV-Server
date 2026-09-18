@@ -117,6 +117,12 @@ class PlaylistChannel(Base, TimestampMixin):
 
     dummy_epg_mode: Mapped[DummyEpgMode] = mapped_column(enum_column(DummyEpgMode), default=DummyEpgMode.INHERIT)
     dummy_epg_program_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dummy_epg_rule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dummy_epg_rules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """Pins "event" mode to try only this one rule (falling back to the built-in parser if it
+    doesn't match), instead of the default of trying every enabled playlist rule in sort_order.
+    Ignored for any other dummy_epg_mode. None if the rule was deleted or never set."""
 
     detected_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detected_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
