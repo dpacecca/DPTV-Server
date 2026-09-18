@@ -53,11 +53,21 @@ class Settings(BaseSettings):
     Sport category (see app/services/sport_data.py). Required only once a Live Sport category
     exists - without it, that category's refresh fails with a clear error recorded on the
     category, the same way an EPG source records a fetch failure."""
-    sport_refresh_interval_minutes: int = 30
-    """How often the scheduler re-fetches today's fixtures and recomputes which channels are
-    showing a live match, for every Live Sport category across every playlist. Lower values give
-    more up-to-date "is this live right now" status at the cost of more requests against
-    whatever rate limit the configured provider key has."""
+    sport_lookahead_days: int = 3
+    """How many days ahead (today plus this many) each Live Sport refresh fetches fixtures for,
+    so a category shows what's on today and coming up, not just what's live this exact minute.
+    Each day costs one provider API call, so this multiplies request volume right alongside
+    sport_refresh_interval_minutes - see its docstring for the two together against a provider's
+    monthly call budget."""
+    sport_refresh_interval_minutes: int = 720
+    """How often the scheduler re-fetches fixtures (sport_lookahead_days days' worth) and
+    recomputes which channels are showing a live or upcoming match, for every Live Sport category
+    across every playlist. Defaults to 12 hours because free-tier sports data APIs (e.g. RapidAPI
+    plans around 250 calls/month) burn through their quota fast once you account for
+    sport_lookahead_days: at the 3-day default, every refresh costs 3 calls, so 12h (2/day) is
+    about 3 * 2 * 31 = 186 calls/month - safe headroom under a 250/month cap even after manual
+    "Refresh Now" clicks. Halving this to 6h roughly doubles that to ~360/month, over a 250 cap -
+    do the same multiplication against your own provider's limit before lowering it."""
 
 
 @lru_cache
