@@ -62,6 +62,7 @@ import type {
   SourceCategory,
 } from "../api/types";
 import { EmptyState } from "../App";
+import { toggleSelection } from "../utils/selection";
 
 const CHANNEL_PAGE_SIZE = 200;
 // Above this many selected channels, bulk actions still work (ids are just integers, cheap to
@@ -99,6 +100,7 @@ export default function PlaylistEditorPage() {
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [multiSelectedCategoryIds, setMultiSelectedCategoryIds] = useState<Set<number>>(new Set());
+  const categorySelectionAnchorRef = useRef<number | null>(null);
   const [selectedChannelIds, setSelectedChannelIds] = useState<Set<number>>(new Set());
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -267,13 +269,14 @@ export default function PlaylistEditorPage() {
                         setSelectedChannelIds(new Set());
                         setSearch("");
                       }}
-                      onToggleMultiSelect={() =>
-                        setMultiSelectedCategoryIds((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(c.id)) next.delete(c.id);
-                          else next.add(c.id);
-                          return next;
-                        })
+                      onToggleMultiSelect={(shiftKey) =>
+                        toggleSelection(
+                          c.id,
+                          categories.map((cat) => cat.id),
+                          shiftKey,
+                          setMultiSelectedCategoryIds,
+                          categorySelectionAnchorRef,
+                        )
                       }
                       onDelete={() => {
                         if (confirm(`Delete category "${c.name}"?`)) deleteCategoryMutation.mutate(c.id);
@@ -589,10 +592,11 @@ function SortableCategoryRow({
   active: boolean;
   multiSelected: boolean;
   onSelect: () => void;
-  onToggleMultiSelect: () => void;
+  onToggleMultiSelect: (shiftKey: boolean) => void;
   onDelete: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: category.id });
+  const shiftKeyRef = useRef(false);
 
   return (
     <Group
@@ -614,7 +618,15 @@ function SortableCategoryRow({
         <ActionIcon variant="subtle" size="sm" style={{ cursor: "grab", touchAction: "none", flexShrink: 0 }} {...attributes} {...listeners}>
           <IconGripVertical size={14} />
         </ActionIcon>
-        <Checkbox size="xs" checked={multiSelected} onClick={(e) => e.stopPropagation()} onChange={onToggleMultiSelect} />
+        <Checkbox
+          size="xs"
+          checked={multiSelected}
+          onClick={(e) => {
+            e.stopPropagation();
+            shiftKeyRef.current = e.shiftKey;
+          }}
+          onChange={() => onToggleMultiSelect(shiftKeyRef.current)}
+        />
         <Box style={{ minWidth: 0 }}>
           <Text size="sm" truncate>
             {category.name}
@@ -674,6 +686,9 @@ function ChannelTable({
   const reorderEnabled = !search;
   const channelSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const [draggingChannelId, setDraggingChannelId] = useState<number | null>(null);
+  // Shift-click range-select's anchor - only ever meaningful against rows actually loaded into
+  // `rows` below, same as any other infinite-scroll list.
+  const selectionAnchorRef = useRef<number | null>(null);
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
     queryKey: ["playlist-channels", playlistId, category.id, search],
@@ -791,13 +806,8 @@ function ChannelTable({
                       selected={selectedChannelIds.has(ch.id)}
                       reorderEnabled={reorderEnabled}
                       style={{ position: "absolute", top: virtualRow.start, left: 0, right: 0, height: ROW_HEIGHT }}
-                      onToggleSelect={() =>
-                        setSelectedChannelIds((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(ch.id)) next.delete(ch.id);
-                          else next.add(ch.id);
-                          return next;
-                        })
+                      onToggleSelect={(shiftKey) =>
+                        toggleSelection(ch.id, rows.map((r) => r.id), shiftKey, setSelectedChannelIds, selectionAnchorRef)
                       }
                       playlistId={playlistId}
                       onOpenDetail={() => onOpenDetail(ch)}
@@ -849,7 +859,7 @@ function ChannelRow({
   channel: PlaylistChannel;
   selected: boolean;
   reorderEnabled: boolean;
-  onToggleSelect: () => void;
+  onToggleSelect: (shiftKey: boolean) => void;
   playlistId: string;
   onOpenDetail: () => void;
   onChanged: () => void;
@@ -871,6 +881,10 @@ function ChannelRow({
     id: channel.id,
     disabled: !reorderEnabled,
   });
+  // Captured on click (which always fires before change) so onChange - which runs after the
+  // browser's own native toggle, letting that happen normally rather than fighting it with
+  // preventDefault - knows whether this was a shift-click.
+  const shiftKeyRef = useRef(false);
 
   return (
     <Table.Tr
@@ -899,7 +913,11 @@ function ChannelRow({
         </Tooltip>
       </Table.Td>
       <Table.Td w={30}>
-        <Checkbox checked={selected} onChange={onToggleSelect} />
+        <Checkbox
+          checked={selected}
+          onClick={(e) => (shiftKeyRef.current = e.shiftKey)}
+          onChange={() => onToggleSelect(shiftKeyRef.current)}
+        />
       </Table.Td>
       <Table.Td style={{ cursor: "pointer", flex: 1, minWidth: 0 }} onClick={onOpenDetail}>
         <Group gap={6}>
@@ -948,6 +966,8 @@ function ChannelDetailModal({
   const [name, setName] = useState(channel.name);
   const [search, setSearch] = useState("");
   const [epgSourceIds, setEpgSourceIds] = useState<Set<number>>(new Set());
+  const epgSourceSelectionAnchorRef = useRef<number | null>(null);
+  const epgSourceShiftKeyRef = useRef(false);
   const [epgSourcesInitialized, setEpgSourcesInitialized] = useState(false);
   const [suggestRulesOpen, setSuggestRulesOpen] = useState(false);
   // Which source this channel's EPG mapping section is currently showing - mirrors the bulk
@@ -1059,15 +1079,16 @@ function ChannelDetailModal({
               label={s.name}
               checked={channelMapSource === "epg" && epgSourceIds.has(s.id)}
               disabled={channelMapSource !== "epg"}
-              onChange={(e) => {
+              onClick={(e) => (epgSourceShiftKeyRef.current = e.shiftKey)}
+              onChange={() => {
                 setChannelMapSource("epg");
-                const checked = e.currentTarget.checked;
-                setEpgSourceIds((prev) => {
-                  const next = new Set(prev);
-                  if (checked) next.add(s.id);
-                  else next.delete(s.id);
-                  return next;
-                });
+                toggleSelection(
+                  s.id,
+                  (epgSources ?? []).map((es) => es.id),
+                  epgSourceShiftKeyRef.current,
+                  setEpgSourceIds,
+                  epgSourceSelectionAnchorRef,
+                );
               }}
             />
           ))}
@@ -1325,6 +1346,8 @@ function MapEpgModal({
   onChanged: () => void;
 }) {
   const [selectedEpgSourceIds, setSelectedEpgSourceIds] = useState<Set<number>>(new Set());
+  const epgSourceSelectionAnchorRef = useRef<number | null>(null);
+  const epgSourceShiftKeyRef = useRef(false);
   const [sensitivity, setSensitivity] = useState(0.9);
   const [preview, setPreview] = useState<{ matched: PreviewRow[]; unmatched: PreviewRow[] } | null>(null);
   // channel_id -> chosen candidate key (null = explicitly left unmapped). A row with no entry
@@ -1447,15 +1470,16 @@ function MapEpgModal({
               key={s.id}
               label={s.name}
               checked={selectedEpgSourceIds.has(s.id)}
-              onChange={(e) => {
-                const checked = e.currentTarget.checked;
-                setSelectedEpgSourceIds((prev) => {
-                  const next = new Set(prev);
-                  if (checked) next.add(s.id);
-                  else next.delete(s.id);
-                  return next;
-                });
-              }}
+              onClick={(e) => (epgSourceShiftKeyRef.current = e.shiftKey)}
+              onChange={() =>
+                toggleSelection(
+                  s.id,
+                  (epgSources ?? []).map((es) => es.id),
+                  epgSourceShiftKeyRef.current,
+                  setSelectedEpgSourceIds,
+                  epgSourceSelectionAnchorRef,
+                )
+              }
             />
           ))}
           {epgSources?.length === 0 && (
@@ -1826,6 +1850,8 @@ function ImportModal({
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [channelType, setChannelType] = useState<ChannelType>("live");
   const [selectedSourceCategories, setSelectedSourceCategories] = useState<Set<number>>(new Set());
+  const sourceCategorySelectionAnchorRef = useRef<number | null>(null);
+  const shiftKeyRef = useRef(false);
   const [importMode, setImportMode] = useState<"per_category" | "merge">("per_category");
   const [targetMode, setTargetMode] = useState<"existing" | "new">("new");
   const [targetCategoryId, setTargetCategoryId] = useState<string | null>(null);
@@ -1909,15 +1935,16 @@ function ImportModal({
                 key={c.id}
                 label={`${c.name} (${c.channel_count})`}
                 checked={selectedSourceCategories.has(c.id)}
-                onChange={(e) => {
-                  const checked = e.currentTarget.checked;
-                  setSelectedSourceCategories((prev) => {
-                    const next = new Set(prev);
-                    if (checked) next.add(c.id);
-                    else next.delete(c.id);
-                    return next;
-                  });
-                }}
+                onClick={(e) => (shiftKeyRef.current = e.shiftKey)}
+                onChange={() =>
+                  toggleSelection(
+                    c.id,
+                    relevantCategories.map((rc) => rc.id),
+                    shiftKeyRef.current,
+                    setSelectedSourceCategories,
+                    sourceCategorySelectionAnchorRef,
+                  )
+                }
               />
             ))}
             {relevantCategories.length === 0 && (

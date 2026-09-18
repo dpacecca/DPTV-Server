@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 
-_buffer: deque[str] = deque(maxlen=get_settings().xc_log_buffer_size)
+_buffer: deque[dict] = deque(maxlen=get_settings().xc_log_buffer_size)
 
 _SENSITIVE_QUERY_KEYS = ("password",)
 
@@ -29,12 +29,16 @@ def _redact_query_string(query: str) -> str:
 
 
 def log_request(client_ip: str, method: str, path: str, query: str, status_code: int, duration_ms: float) -> None:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     target = f"{path}?{_redact_query_string(query)}" if query else path
-    _buffer.append(f"{ts} | {client_ip:<15} | {method:<6} | {status_code} | {duration_ms:6.1f}ms | {target}")
+    # Timestamp shipped as UTC ISO-8601 rather than pre-formatted text - the admin UI localizes
+    # it to the viewer's own browser timezone rather than the server's.
+    _buffer.append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "line": f"{client_ip:<15} | {method:<6} | {status_code} | {duration_ms:6.1f}ms | {target}",
+    })
 
 
-def get_lines(limit: int) -> list[str]:
+def get_lines(limit: int) -> list[dict]:
     if limit >= len(_buffer):
         return list(_buffer)
     return list(_buffer)[-limit:]

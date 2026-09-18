@@ -247,7 +247,10 @@ def suggest_rule_pattern(sample_name: str, now: datetime | None = None) -> RuleS
     else:
         fragments = [time_fragment]
         match_start, match_end = time_match.start(), time_match.end()
-    joined = r"\s+".join(fragments)
+    # Same permissive boundary as the title separator below - providers commonly pipe/dash-
+    # delimit fields ("18-09-2026 | 05:00 (GMT)"), not just space them, so a plain \s+ here
+    # would fail to match the very sample name this rule is being built from.
+    joined = r"[\s\-:|()]+".join(fragments)
 
     prefix = sample_name[:match_start].strip(" -|:()")
     suffix = sample_name[match_end:].strip(" -|:()")

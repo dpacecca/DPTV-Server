@@ -3,8 +3,14 @@ import { Badge, Button, Group, Paper, ScrollArea, Select, Stack, Switch, Text, T
 import { IconRefresh } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { formatLocalTimestamp } from "../utils/formatTimestamp";
 
 const LINE_OPTIONS = ["50", "100", "200", "500", "1000"];
+
+interface LogLine {
+  ts: string;
+  line: string;
+}
 
 export default function GuideRefreshLogsPage() {
   const [lines, setLines] = useState("100");
@@ -14,7 +20,7 @@ export default function GuideRefreshLogsPage() {
   // live-updating page would keep yanking them away from whatever older line they scrolled up to read.
   const wasAtBottomRef = useRef(true);
 
-  const { data, isFetching, isError, refetch } = useQuery<{ lines: string[] }>({
+  const { data, isFetching, isError, refetch } = useQuery<{ lines: LogLine[] }>({
     queryKey: ["guide-refresh-logs", lines],
     queryFn: () => api.get("/api/logs/guide-refresh", { params: { lines: Number(lines) } }).then((r) => r.data),
     refetchInterval: live ? 2000 : false,
@@ -60,7 +66,9 @@ export default function GuideRefreshLogsPage() {
       <Paper withBorder style={{ overflow: "hidden" }}>
         <ScrollArea h="calc(100vh - 240px)" viewportRef={scrollViewportRef} onScrollPositionChange={handleScrollPositionChange}>
           <Text component="pre" size="xs" ff="monospace" p="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", margin: 0 }}>
-            {data?.lines?.length ? data.lines.join("\n") : "No guide refresh activity logged yet."}
+            {data?.lines?.length
+              ? data.lines.map((l) => `${formatLocalTimestamp(l.ts)} | ${l.line}`).join("\n")
+              : "No guide refresh activity logged yet."}
           </Text>
         </ScrollArea>
       </Paper>
