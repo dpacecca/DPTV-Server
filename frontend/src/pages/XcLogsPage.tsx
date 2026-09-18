@@ -4,8 +4,14 @@ import { notifications } from "@mantine/notifications";
 import { IconRefresh } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { formatLocalTimestamp } from "../utils/formatTimestamp";
 
 const LINE_OPTIONS = ["50", "100", "200", "500", "1000"];
+
+interface LogLine {
+  ts: string;
+  line: string;
+}
 
 export default function XcLogsPage() {
   const [lines, setLines] = useState("100");
@@ -15,7 +21,7 @@ export default function XcLogsPage() {
   // live-updating page would keep yanking them away from whatever older line they scrolled up to read.
   const wasAtBottomRef = useRef(true);
 
-  const { data, isFetching, isError, refetch } = useQuery<{ lines: string[] }>({
+  const { data, isFetching, isError, refetch } = useQuery<{ lines: LogLine[] }>({
     queryKey: ["xc-logs", lines],
     queryFn: () => api.get("/api/logs/xc", { params: { lines: Number(lines) } }).then((r) => r.data),
     refetchInterval: live ? 2000 : false,
@@ -87,7 +93,9 @@ export default function XcLogsPage() {
       <Paper withBorder style={{ overflow: "hidden" }}>
         <ScrollArea h="calc(100vh - 240px)" viewportRef={scrollViewportRef} onScrollPositionChange={handleScrollPositionChange}>
           <Text component="pre" size="xs" ff="monospace" p="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", margin: 0 }}>
-            {data?.lines?.length ? data.lines.join("\n") : "No XC-protocol requests logged yet."}
+            {data?.lines?.length
+              ? data.lines.map((l) => `${formatLocalTimestamp(l.ts)} | ${l.line}`).join("\n")
+              : "No XC-protocol requests logged yet."}
           </Text>
         </ScrollArea>
       </Paper>
