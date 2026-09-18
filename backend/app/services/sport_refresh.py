@@ -38,7 +38,7 @@ async def _matching_channels_for_fixture(
     matched: dict[int, PlaylistChannel] = {}
 
     epg_result = await db.execute(
-        select(PlaylistChannel)
+        select(PlaylistChannel, EpgProgram.title)
         .join(EpgProgram, EpgProgram.epg_channel_id == PlaylistChannel.epg_channel_id)
         .join(PlaylistCategory, PlaylistCategory.id == PlaylistChannel.playlist_category_id)
         .where(
@@ -49,8 +49,13 @@ async def _matching_channels_for_fixture(
             EpgProgram.stop >= fixture.kickoff - _EPG_MATCH_BEFORE,
         )
     )
-    for pc in epg_result.scalars().all():
-        matched[pc.id] = pc
+    # The time window alone only narrows down "airing around kickoff" - on a database with
+    # thousands of EPG-mapped channels that's still nearly everything on air at that hour, so the
+    # program's own title has to actually name both teams before its channel counts as a match.
+    for pc, title in epg_result.all():
+        norm_title = normalize_name(title)
+        if home_norm in norm_title and away_norm in norm_title:
+            matched[pc.id] = pc
 
     name_result = await db.execute(
         select(PlaylistChannel)
