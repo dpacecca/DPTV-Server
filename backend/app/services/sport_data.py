@@ -19,9 +19,10 @@ SPORT_LABELS: dict[SportType, str] = {
 @dataclass(frozen=True)
 class Fixture:
     """One match, in whatever shape the provider returned it, normalized to what the matcher
-    (see sport_match.py) actually needs - which team names to search for, and whether the match
-    is live right now. Provider-specific fields (scores, venue, ids) stay provider-specific;
-    nothing downstream of fetch_fixtures() needs to know which sport or API produced this."""
+    (see sport_refresh.py) actually needs - which team names to search for, and whether the
+    match is currently live or already finished (neither means it hasn't kicked off yet).
+    Provider-specific fields (scores, venue, ids) stay provider-specific; nothing downstream of
+    fetch_fixtures() needs to know which sport or API produced this."""
 
     id: str
     competition: str
@@ -29,6 +30,7 @@ class Fixture:
     home: str
     away: str
     is_live: bool
+    is_finished: bool
     home_score: int | None = None
     away_score: int | None = None
 
@@ -46,9 +48,14 @@ _RUGBY_NOT_STARTED = {"fixture", "not started", "team in"}
 _RUGBY_FINISHED_OR_DEAD = {"result", "postponed", "abandoned", "cancelled"}
 
 
-def rugby_is_live(status: str) -> bool:
+def _classify_rugby_status(status: str) -> tuple[bool, bool]:
+    """Returns (is_live, is_finished) - neither true means the fixture hasn't kicked off yet."""
     s = status.strip().lower()
-    return s not in _RUGBY_NOT_STARTED and s not in _RUGBY_FINISHED_OR_DEAD
+    if s in _RUGBY_NOT_STARTED:
+        return False, False
+    if s in _RUGBY_FINISHED_OR_DEAD:
+        return False, True
+    return True, False
 
 
 async def fetch_rugby_fixtures(target_date: date) -> list[Fixture]:
@@ -67,7 +74,7 @@ async def fetch_rugby_fixtures(target_date: date) -> list[Fixture]:
     for row in data.get("results", []):
         try:
             kickoff = datetime.fromisoformat(row["date"])
-            status = row.get("status", "")
+            is_live, is_finished = _classify_rugby_status(row.get("status", ""))
             fixtures.append(
                 Fixture(
                     id=str(row["id"]),
@@ -75,7 +82,8 @@ async def fetch_rugby_fixtures(target_date: date) -> list[Fixture]:
                     kickoff=kickoff,
                     home=row["home"],
                     away=row["away"],
-                    is_live=rugby_is_live(status),
+                    is_live=is_live,
+                    is_finished=is_finished,
                     home_score=row.get("home_score"),
                     away_score=row.get("away_score"),
                 )
