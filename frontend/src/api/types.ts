@@ -96,8 +96,9 @@ export interface PlaylistCategory {
   name: string;
   channel_type: ChannelType;
   sort_order: number;
-  dummy_epg_for_unassigned: boolean;
+  dummy_epg_mode: DummyEpgMode;
   dummy_epg_program_minutes: number;
+  dummy_epg_rule_id: number | null;
   channel_count: number;
   sport_type: SportType | null;
   sport_last_refreshed_at: string | null;

@@ -81,8 +81,9 @@ def _serialize_category_summary(cat: PlaylistCategory, channel_count: int) -> di
         "name": cat.name,
         "channel_type": cat.channel_type,
         "sort_order": cat.sort_order,
-        "dummy_epg_for_unassigned": cat.dummy_epg_for_unassigned,
+        "dummy_epg_mode": cat.dummy_epg_mode,
         "dummy_epg_program_minutes": cat.dummy_epg_program_minutes,
+        "dummy_epg_rule_id": cat.dummy_epg_rule_id,
         "channel_count": channel_count,
         "sport_type": cat.sport_type,
         "sport_last_refreshed_at": cat.sport_last_refreshed_at,
@@ -337,8 +338,14 @@ class CategoryIn(BaseModel):
 class CategoryUpdate(BaseModel):
     name: str | None = None
     sort_order: int | None = None
-    dummy_epg_for_unassigned: bool | None = None
+    dummy_epg_mode: DummyEpgMode | None = None
+    """Default dummy EPG for any channel in this category left on "Inherit" - never INHERIT
+    itself. Setting this to EVENT alongside dummy_epg_rule_id is what makes a channel added to
+    this category later (by sync, import, or by hand) pick up correct EPG automatically."""
     dummy_epg_program_minutes: int | None = None
+    dummy_epg_rule_id: int | None = None
+    """Which rule to pin EVENT mode to for inheriting channels. Sent explicitly as null to
+    clear it back to "try every enabled rule"; omitted, it's left untouched."""
 
 
 @router.post("/{playlist_id}/categories")

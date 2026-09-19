@@ -68,8 +68,19 @@ class PlaylistCategory(Base, TimestampMixin):
     channel_type: Mapped[ChannelType] = mapped_column(enum_column(ChannelType))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
-    dummy_epg_for_unassigned: Mapped[bool] = mapped_column(Boolean, default=False)
+    dummy_epg_mode: Mapped[DummyEpgMode] = mapped_column(enum_column(DummyEpgMode), default=DummyEpgMode.OFF)
+    """Default dummy EPG behavior for any channel in this category left on "Inherit" (see
+    PlaylistChannel.dummy_epg_mode) - never itself INHERIT, since a category has nothing above it
+    to inherit from. EVENT mode uses dummy_epg_rule_id below."""
     dummy_epg_program_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    dummy_epg_rule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dummy_epg_rules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """Which rule an inheriting channel's EVENT dummy EPG is pinned to when dummy_epg_mode above
+    is EVENT - the point of setting this is so a channel added to this category later (by sync,
+    import, or by hand) gets correct EPG immediately without per-channel setup. None means try
+    every enabled playlist rule, same as a channel with no rule pinned (see
+    PlaylistChannel.dummy_epg_rule_id)."""
 
     sport_type: Mapped[SportType | None] = mapped_column(enum_column(SportType), nullable=True)
     """Marks this as an auto-managed "Live Sport" category (e.g. Live Rugby) rather than an
