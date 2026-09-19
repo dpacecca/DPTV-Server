@@ -27,15 +27,27 @@ def _xmltv_time(dt: datetime) -> str:
 def _resolve_dummy_mode(pc: PlaylistChannel) -> DummyEpgMode:
     if pc.dummy_epg_mode != DummyEpgMode.INHERIT:
         return pc.dummy_epg_mode
-    if pc.category.dummy_epg_for_unassigned:
-        return DummyEpgMode.NAME
-    return DummyEpgMode.OFF
+    return pc.category.dummy_epg_mode
 
 
 def _resolve_program_minutes(pc: PlaylistChannel) -> int:
     if pc.dummy_epg_program_minutes:
         return pc.dummy_epg_program_minutes
     return pc.category.dummy_epg_program_minutes
+
+
+def _resolve_pinned_rule_id(pc: PlaylistChannel) -> int | None:
+    """Which single rule (if any) EVENT mode should be pinned to for this channel - the
+    channel's own pin always wins; otherwise, a channel left on "Inherit" picks up its
+    category's default pin (see PlaylistCategory.dummy_epg_rule_id) so a channel added to a
+    category later gets correct EPG without per-channel setup. A channel with its OWN mode
+    explicitly set to EVENT (not inheriting) but no rule of its own isn't pinned by the
+    category - that's an explicit per-channel choice to try every enabled rule."""
+    if pc.dummy_epg_rule_id:
+        return pc.dummy_epg_rule_id
+    if pc.dummy_epg_mode == DummyEpgMode.INHERIT:
+        return pc.category.dummy_epg_rule_id
+    return None
 
 
 async def _load_event_rules(
@@ -124,13 +136,14 @@ async def compute_channel_programs(
             continue
         minutes = _resolve_program_minutes(pc)
         if mode == DummyEpgMode.EVENT:
-            # A channel pinned to one specific rule (see PlaylistChannel.dummy_epg_rule_id) only
-            # ever tries that rule, not every enabled playlist rule - if the pinned rule was since
-            # disabled/deleted, this falls through to just the built-in parser, same as a channel
-            # with no custom rules configured at all, rather than silently trying rules the admin
-            # never selected for it.
-            pinned = event_rules_by_id.get(pc.dummy_epg_rule_id) if pc.dummy_epg_rule_id else None
-            channel_rules = [pinned] if pinned else ([] if pc.dummy_epg_rule_id else event_rules)
+            # A channel pinned to one specific rule (its own, or inherited from its category -
+            # see _resolve_pinned_rule_id) only ever tries that rule, not every enabled playlist
+            # rule - if the pinned rule was since disabled/deleted, this falls through to just
+            # the built-in parser, same as a channel with no custom rules configured at all,
+            # rather than silently trying rules the admin never selected for it.
+            rule_id = _resolve_pinned_rule_id(pc)
+            pinned = event_rules_by_id.get(rule_id) if rule_id else None
+            channel_rules = [pinned] if pinned else ([] if rule_id else event_rules)
             dummies = dummy_epg.generate_event_dummy(pc.name, now, window_hours, minutes, custom_patterns=channel_rules)
         else:
             dummies = dummy_epg.generate_name_dummy(pc.name, now, window_hours, minutes)

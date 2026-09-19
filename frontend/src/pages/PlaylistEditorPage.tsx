@@ -39,6 +39,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconSettings,
   IconTrash,
   IconTrophy,
   IconVideo,
@@ -170,6 +171,7 @@ export default function PlaylistEditorPage() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newSportCategoryOpen, setNewSportCategoryOpen] = useState(false);
   const [selectedSport, setSelectedSport] = useState<SportType | null>(null);
+  const [categorySettingsTarget, setCategorySettingsTarget] = useState<PlaylistCategory | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [moveMode, setMoveMode] = useState<"move" | "copy" | null>(null);
   const [detailChannel, setDetailChannel] = useState<PlaylistChannel | null>(null);
@@ -380,6 +382,7 @@ export default function PlaylistEditorPage() {
                           categorySelectionAnchorRef,
                         )
                       }
+                      onOpenSettings={() => setCategorySettingsTarget(c)}
                       onDelete={() => {
                         if (confirm(`Delete category "${c.name}"?`)) deleteCategoryMutation.mutate(c.id);
                       }}
@@ -660,6 +663,15 @@ export default function PlaylistEditorPage() {
         />
       )}
 
+      {playlistId && categorySettingsTarget && (
+        <CategorySettingsModal
+          playlistId={playlistId}
+          category={categorySettingsTarget}
+          onClose={() => setCategorySettingsTarget(null)}
+          onChanged={invalidate}
+        />
+      )}
+
       {playlistId && activeCategory && (
         <ManualChannelModal
           opened={manualChannelOpen}
@@ -735,6 +747,7 @@ function SortableCategoryRow({
   multiSelected,
   onSelect,
   onToggleMultiSelect,
+  onOpenSettings,
   onDelete,
 }: {
   category: PlaylistCategory;
@@ -742,6 +755,7 @@ function SortableCategoryRow({
   multiSelected: boolean;
   onSelect: () => void;
   onToggleMultiSelect: (shiftKey: boolean) => void;
+  onOpenSettings: () => void;
   onDelete: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: category.id });
@@ -792,17 +806,29 @@ function SortableCategoryRow({
           </Text>
         </Box>
       </Group>
-      <ActionIcon
-        variant="subtle"
-        color="red"
-        size="sm"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <IconTrash size={14} />
-      </ActionIcon>
+      <Group gap={0} wrap="nowrap">
+        <ActionIcon
+          variant="subtle"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenSettings();
+          }}
+        >
+          <IconSettings size={14} />
+        </ActionIcon>
+        <ActionIcon
+          variant="subtle"
+          color="red"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <IconTrash size={14} />
+        </ActionIcon>
+      </Group>
     </Group>
   );
 }
@@ -1123,6 +1149,15 @@ function ChannelDetailModal({
   const channelId = channel.id;
   const [name, setName] = useState(channel.name);
   const [search, setSearch] = useState("");
+  // Local, optimistically-updated mirrors of the dummy EPG fields rather than reading `channel.*`
+  // directly - `channel` is a snapshot taken when this modal was opened (see `detailChannel` in
+  // the parent) and is never refreshed after a mutation, so a Select/NumberInput bound straight
+  // to the prop would visually snap back to its old value right after being changed, and the
+  // Rule picker (gated on dummyMode === "event") would never appear even though the save itself
+  // succeeded.
+  const [dummyMode, setDummyMode] = useState<DummyEpgMode>(channel.dummy_epg_mode);
+  const [dummyMinutes, setDummyMinutes] = useState<number | null>(channel.dummy_epg_program_minutes);
+  const [dummyRuleId, setDummyRuleId] = useState<number | null>(channel.dummy_epg_rule_id);
   const [epgSourceIds, setEpgSourceIds] = useEpgSourceSelection();
   const epgSourceSelectionAnchorRef = useRef<number | null>(null);
   const epgSourceShiftKeyRef = useRef(false);
@@ -1328,17 +1363,25 @@ function ChannelDetailModal({
                   { value: "name", label: "Channel name as program" },
                   { value: "event", label: "Parse event date/time from name" },
                 ]}
-                value={channel.dummy_epg_mode}
-                onChange={(v) => updateMutation.mutate({ dummy_epg_mode: (v as DummyEpgMode) ?? "inherit" })}
+                value={dummyMode}
+                onChange={(v) => {
+                  const mode = (v as DummyEpgMode) ?? "inherit";
+                  setDummyMode(mode);
+                  updateMutation.mutate({ dummy_epg_mode: mode });
+                }}
               />
               <NumberInput
                 label="Program length (minutes)"
-                value={channel.dummy_epg_program_minutes ?? ""}
-                onChange={(v) => updateMutation.mutate({ dummy_epg_program_minutes: v === "" ? null : Number(v) })}
+                value={dummyMinutes ?? ""}
+                onChange={(v) => {
+                  const minutes = v === "" ? null : Number(v);
+                  setDummyMinutes(minutes);
+                  updateMutation.mutate({ dummy_epg_program_minutes: minutes });
+                }}
                 min={5}
               />
             </Group>
-            {channel.dummy_epg_mode === "event" && (
+            {dummyMode === "event" && (
               <Stack gap={4}>
                 <Text size="xs" c="dimmed">
                   Looks for a date/time in the channel name (e.g. "Team A vs Team B 08/25 9:00PM") and schedules a single
@@ -1355,8 +1398,12 @@ function ChannelDetailModal({
                       label: r.enabled ? r.name : `${r.name} (disabled)`,
                     })),
                   ]}
-                  value={channel.dummy_epg_rule_id ? String(channel.dummy_epg_rule_id) : ""}
-                  onChange={(v) => updateMutation.mutate({ dummy_epg_rule_id: v ? Number(v) : null })}
+                  value={dummyRuleId ? String(dummyRuleId) : ""}
+                  onChange={(v) => {
+                    const ruleId = v ? Number(v) : null;
+                    setDummyRuleId(ruleId);
+                    updateMutation.mutate({ dummy_epg_rule_id: ruleId });
+                  }}
                 />
                 <Button size="xs" variant="light" onClick={() => setSuggestRulesOpen(true)} style={{ alignSelf: "flex-start" }}>
                   Suggest Rule from This Name...
@@ -1373,6 +1420,109 @@ function ChannelDetailModal({
         playlistId={playlistId}
         initialSampleName={suggestRulesOpen ? name : undefined}
       />
+    </Modal>
+  );
+}
+
+function CategorySettingsModal({
+  playlistId,
+  category,
+  onClose,
+  onChanged,
+}: {
+  playlistId: string;
+  category: PlaylistCategory;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState(category.name);
+  // Local, optimistically-updated mirrors of the dummy EPG fields rather than reading
+  // `category.*` directly - `category` is a snapshot taken when this modal was opened (see
+  // `categorySettingsTarget` in the parent) and is never refreshed after a mutation, so a
+  // Select/NumberInput bound straight to the prop would visually snap back to its old value
+  // right after being changed, and the Rule picker (gated on dummyMode === "event") would never
+  // appear even though the save itself succeeded.
+  const [dummyMode, setDummyMode] = useState<DummyEpgMode>(
+    category.dummy_epg_mode === "inherit" ? "off" : category.dummy_epg_mode,
+  );
+  const [dummyMinutes, setDummyMinutes] = useState(category.dummy_epg_program_minutes);
+  const [dummyRuleId, setDummyRuleId] = useState<number | null>(category.dummy_epg_rule_id);
+
+  const { data: dummyEpgRules } = useQuery<DummyEpgRule[]>({
+    queryKey: ["dummy-epg-rules", playlistId],
+    queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (payload: Partial<PlaylistCategory>) =>
+      api.patch(`/api/playlists/${playlistId}/categories/${category.id}`, payload),
+    onSuccess: onChanged,
+  });
+
+  return (
+    <Modal opened onClose={onClose} title="Category Settings" size="md">
+      <Stack>
+        <Group align="flex-end">
+          <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} style={{ flex: 1 }} />
+          <Button variant="light" onClick={() => updateMutation.mutate({ name })}>
+            Save
+          </Button>
+        </Group>
+
+        <Text fw={600} size="sm" mt="sm">
+          Default Dummy EPG for New Channels
+        </Text>
+        <Text size="xs" c="dimmed">
+          Applies to any channel added to this category (by sync, import, or by hand) that's left
+          on "Inherit" - so a newly-added channel gets correct EPG right away instead of needing
+          per-channel setup. A channel with its own mode set explicitly overrides this.
+        </Text>
+        <Group grow>
+          <Select
+            label="Mode"
+            data={[
+              { value: "off", label: "Off" },
+              { value: "name", label: "Channel name as program" },
+              { value: "event", label: "Parse event date/time from name" },
+            ]}
+            value={dummyMode}
+            onChange={(v) => {
+              const mode = (v as DummyEpgMode) ?? "off";
+              setDummyMode(mode);
+              updateMutation.mutate({ dummy_epg_mode: mode });
+            }}
+          />
+          <NumberInput
+            label="Program length (minutes)"
+            value={dummyMinutes}
+            onChange={(v) => {
+              const minutes = typeof v === "number" ? v : 60;
+              setDummyMinutes(minutes);
+              updateMutation.mutate({ dummy_epg_program_minutes: minutes });
+            }}
+            min={5}
+          />
+        </Group>
+        {dummyMode === "event" && (
+          <Select
+            label="Rule"
+            description="Which custom rule newly-added channels are pinned to - leave on the default to try every enabled rule in order."
+            data={[
+              { value: "", label: "Any enabled rule (default)" },
+              ...(dummyEpgRules ?? []).map((r) => ({
+                value: String(r.id),
+                label: r.enabled ? r.name : `${r.name} (disabled)`,
+              })),
+            ]}
+            value={dummyRuleId ? String(dummyRuleId) : ""}
+            onChange={(v) => {
+              const ruleId = v ? Number(v) : null;
+              setDummyRuleId(ruleId);
+              updateMutation.mutate({ dummy_epg_rule_id: ruleId });
+            }}
+          />
+        )}
+      </Stack>
     </Modal>
   );
 }
