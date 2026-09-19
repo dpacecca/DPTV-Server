@@ -73,6 +73,66 @@ const CHANNEL_PAGE_SIZE = 200;
 // ship) but we warn before firing - a 50k-row UPDATE/DELETE is a lot to ask of one request.
 const LARGE_SELECTION_WARNING = 5000;
 
+const EPG_SOURCE_SELECTION_STORAGE_KEY = "dptv:epgSourceSelection";
+
+function loadStoredEpgSourceSelection(): Set<number> | null {
+  try {
+    const raw = sessionStorage.getItem(EPG_SOURCE_SELECTION_STORAGE_KEY);
+    return raw === null ? null : new Set(JSON.parse(raw) as number[]);
+  } catch {
+    return null;
+  }
+}
+
+// Same-tab writes never fire the native `storage` event (browsers only raise that for OTHER
+// tabs/windows sharing the storage), and the single-channel modal (unmounted/remounted fresh on
+// every open) sits alongside the bulk modal (mounted once for the page's lifetime, only its
+// `opened` prop toggles) - so without this, picking sources in one and then opening the other
+// within the same page load would show the bulk modal's stale first-mount state instead of what
+// was just picked. Dispatching our own event lets every live hook instance re-sync immediately,
+// regardless of which one mounted first or how long it's stayed mounted.
+const EPG_SOURCE_SELECTION_EVENT = "dptv:epgSourceSelectionChanged";
+
+function saveEpgSourceSelection(ids: Set<number>) {
+  try {
+    sessionStorage.setItem(EPG_SOURCE_SELECTION_STORAGE_KEY, JSON.stringify([...ids]));
+    // Deferred rather than dispatched inline: this runs from inside a setState updater (see
+    // setAndPersist below), and dispatching synchronously there lets the listener call setState
+    // on a *different* component while React is still processing this one's update - which React
+    // rejects ("Cannot update a component while rendering a different component"). Queuing it as
+    // a microtask lets the current update finish committing first.
+    queueMicrotask(() => window.dispatchEvent(new Event(EPG_SOURCE_SELECTION_EVENT)));
+  } catch {
+    // sessionStorage unavailable (private browsing, etc.) - selection just won't persist.
+  }
+}
+
+// Which EPG sources to search when mapping, shared by the single-channel and bulk "Map EPG..."
+// flows. Starts empty (search nothing until the admin actually picks sources) rather than
+// defaulting to "all", since silently fuzzy-matching against every guide - including ones from
+// completely different regions/providers - produces confident-looking wrong matches. Persisted
+// to sessionStorage (not localStorage) so the choice carries over between the two modals and
+// across page navigation for the rest of this browser tab's session, but doesn't linger forever
+// once the tab closes.
+function useEpgSourceSelection(): [Set<number>, Dispatch<SetStateAction<Set<number>>>] {
+  const [ids, setIds] = useState<Set<number>>(() => loadStoredEpgSourceSelection() ?? new Set());
+
+  useEffect(() => {
+    const resync = () => setIds(loadStoredEpgSourceSelection() ?? new Set());
+    window.addEventListener(EPG_SOURCE_SELECTION_EVENT, resync);
+    return () => window.removeEventListener(EPG_SOURCE_SELECTION_EVENT, resync);
+  }, []);
+
+  const setAndPersist: Dispatch<SetStateAction<Set<number>>> = (action) => {
+    setIds((prev) => {
+      const next = typeof action === "function" ? (action as (p: Set<number>) => Set<number>)(prev) : action;
+      saveEpgSourceSelection(next);
+      return next;
+    });
+  };
+  return [ids, setAndPersist];
+}
+
 // Shared drag-and-drop reorder logic for both the category sidebar and the channel table: moves
 // either just the dragged item, or - when the dragged item is part of a larger multi-selection -
 // every selected item as one contiguous block, to just before whatever it was dropped on.
@@ -1063,10 +1123,9 @@ function ChannelDetailModal({
   const channelId = channel.id;
   const [name, setName] = useState(channel.name);
   const [search, setSearch] = useState("");
-  const [epgSourceIds, setEpgSourceIds] = useState<Set<number>>(new Set());
+  const [epgSourceIds, setEpgSourceIds] = useEpgSourceSelection();
   const epgSourceSelectionAnchorRef = useRef<number | null>(null);
   const epgSourceShiftKeyRef = useRef(false);
-  const [epgSourcesInitialized, setEpgSourcesInitialized] = useState(false);
   const [suggestRulesOpen, setSuggestRulesOpen] = useState(false);
   // Which source this channel's EPG mapping section is currently showing - mirrors the bulk
   // "Map EPG..." modal's source picker (EPG source / Dummy EPG), mutually exclusive, so there's
@@ -1090,13 +1149,6 @@ function ChannelDetailModal({
     queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
     enabled: channelMapSource === "dummy",
   });
-
-  useEffect(() => {
-    if (epgSources && !epgSourcesInitialized) {
-      setEpgSourceIds(new Set(epgSources.map((s) => s.id)));
-      setEpgSourcesInitialized(true);
-    }
-  }, [epgSources, epgSourcesInitialized]);
 
   const activeEpgSourceIds = epgSources && epgSourceIds.size === epgSources.length ? undefined : [...epgSourceIds];
 
@@ -1135,6 +1187,10 @@ function ChannelDetailModal({
           params: { q: search || undefined, epg_source_ids: activeEpgSourceIds },
         })
         .then((r) => r.data),
+    // An empty epg_source_ids list means "unrestricted" server-side, not "search nothing" - so
+    // with zero sources picked this has to not fire at all, rather than quietly searching every
+    // guide anyway.
+    enabled: epgSourceIds.size > 0,
   });
 
   const assignEpgMutation = useMutation({
@@ -1211,7 +1267,13 @@ function ChannelDetailModal({
         {channelMapSource === "epg" && (
           <>
             <Group>
-              <Button size="xs" leftSection={<IconWand size={14} />} variant="light" onClick={() => autoEpgMutation.mutate()}>
+              <Button
+                size="xs"
+                leftSection={<IconWand size={14} />}
+                variant="light"
+                onClick={() => autoEpgMutation.mutate()}
+                disabled={epgSourceIds.size === 0}
+              >
                 Auto-map
               </Button>
               {channel.epg_channel_id && (
@@ -1220,27 +1282,35 @@ function ChannelDetailModal({
                 </Button>
               )}
             </Group>
-            <TextInput placeholder="Search EPG channels..." value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
-            <Stack gap={4} mah={180} style={{ overflowY: "auto" }}>
-              {searchResults?.map((r: { epg_channel_id: number; display_name: string; epg_id: string; score: number }) => (
-                <Group
-                  key={r.epg_channel_id}
-                  justify="space-between"
-                  p={6}
-                  style={{
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    background: channel.epg_channel_id === r.epg_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
-                  }}
-                  onClick={() => assignEpgMutation.mutate(r.epg_channel_id)}
-                >
-                  <Text size="sm">{r.display_name}</Text>
-                  <Badge size="xs" variant="light">
-                    {(r.score * 100).toFixed(0)}%
-                  </Badge>
-                </Group>
-              ))}
-            </Stack>
+            {epgSourceIds.size === 0 ? (
+              <Text size="xs" c="dimmed">
+                Select at least one EPG source above to search or auto-map.
+              </Text>
+            ) : (
+              <>
+                <TextInput placeholder="Search EPG channels..." value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+                <Stack gap={4} mah={180} style={{ overflowY: "auto" }}>
+                  {searchResults?.map((r: { epg_channel_id: number; display_name: string; epg_id: string; score: number }) => (
+                    <Group
+                      key={r.epg_channel_id}
+                      justify="space-between"
+                      p={6}
+                      style={{
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        background: channel.epg_channel_id === r.epg_channel_id ? "var(--mantine-color-indigo-light)" : undefined,
+                      }}
+                      onClick={() => assignEpgMutation.mutate(r.epg_channel_id)}
+                    >
+                      <Text size="sm">{r.display_name}</Text>
+                      <Badge size="xs" variant="light">
+                        {(r.score * 100).toFixed(0)}%
+                      </Badge>
+                    </Group>
+                  ))}
+                </Stack>
+              </>
+            )}
           </>
         )}
 
@@ -1462,7 +1532,7 @@ function MapEpgModal({
   channelIds: number[];
   onChanged: () => void;
 }) {
-  const [selectedEpgSourceIds, setSelectedEpgSourceIds] = useState<Set<number>>(new Set());
+  const [selectedEpgSourceIds, setSelectedEpgSourceIds] = useEpgSourceSelection();
   const epgSourceSelectionAnchorRef = useRef<number | null>(null);
   const epgSourceShiftKeyRef = useRef(false);
   const [sensitivity, setSensitivity] = useState(0.9);
@@ -1477,14 +1547,6 @@ function MapEpgModal({
     queryFn: () => api.get("/api/epg-sources").then((r) => r.data),
     enabled: opened,
   });
-
-  // Default to "search everything" the first time sources load for this modal session.
-  useEffect(() => {
-    if (opened && epgSources && selectedEpgSourceIds.size === 0 && preview === null) {
-      setSelectedEpgSourceIds(new Set(epgSources.map((s) => s.id)));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened, epgSources]);
 
   const activeEpgSourceIds = epgSources && selectedEpgSourceIds.size === epgSources.length ? null : [...selectedEpgSourceIds];
 
@@ -1618,13 +1680,20 @@ function MapEpgModal({
         />
 
         {!preview && (
-          <Button
-            onClick={() => previewMutation.mutate()}
-            loading={previewMutation.isPending}
-            disabled={selectedEpgSourceIds.size === 0}
-          >
-            Preview matches for {channelIds.length} channel(s)
-          </Button>
+          <Stack gap={4}>
+            <Button
+              onClick={() => previewMutation.mutate()}
+              loading={previewMutation.isPending}
+              disabled={selectedEpgSourceIds.size === 0}
+            >
+              Preview matches for {channelIds.length} channel(s)
+            </Button>
+            {selectedEpgSourceIds.size === 0 && (
+              <Text size="xs" c="dimmed">
+                Select at least one EPG source above first.
+              </Text>
+            )}
+          </Stack>
         )}
 
         {preview && (
