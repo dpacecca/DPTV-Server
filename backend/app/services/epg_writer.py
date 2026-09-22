@@ -18,6 +18,20 @@ logger = logging.getLogger("dptv.epg_writer")
 DEFAULT_WINDOW_HOURS = 24 * 3
 
 
+def xmltv_channel_id(pc: PlaylistChannel) -> str:
+    """The `<channel id>` this channel's guide data is filed under in build_xmltv() below -
+    always this synthetic id, never the provider's own raw EPG channel id string, so it stays
+    stable and always present even for a channel with no real EPG mapping (dummy EPG still needs
+    *some* id to file its generated programmes under). Every other place that tells a player
+    which EPG channel a stream corresponds to (the M3U's tvg-id, the XC API's epg_channel_id
+    field) has to emit this exact same value - a player matches a stream to its guide entirely
+    by this id, so any divergence between "the id we handed out" and "the id xmltv.php actually
+    uses" silently produces a channel with no guide, however correct the underlying program data
+    is (this bit developers before - the XC API and M3U used to hand out the provider's raw
+    epg_channel_id instead, which never appeared anywhere in xmltv.php's own channel ids)."""
+    return f"pc{pc.id}"
+
+
 def _xmltv_time(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -165,7 +179,7 @@ async def build_xmltv(db: AsyncSession, playlist: Playlist, window_hours: int = 
     programme_xml: list[str] = []
     for cp in channel_programs:
         pc = cp.channel
-        cid = f"pc{pc.id}"
+        cid = xmltv_channel_id(pc)
         icon = resolve_channel_logo(pc)
         icon_tag = f'<icon src="{escape(icon)}"/>' if icon else ""
         channel_xml.append(f'<channel id="{cid}"><display-name>{escape(pc.name)}</display-name>{icon_tag}</channel>')

@@ -3,6 +3,7 @@ from app.models.base import ChannelType
 from app.models.playlist import Playlist
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
+from app.services.epg_writer import xmltv_channel_id
 
 settings = get_settings()
 
@@ -23,7 +24,11 @@ def build_m3u(playlist: Playlist, xc_user: XcUser) -> str:
         for pc in category.channels:
             if not pc.enabled:
                 continue
-            tvg_id = pc.epg_channel.epg_channel_id if pc.epg_channel_id and pc.epg_channel else ""
+            # Must match the `<channel id>` build_xmltv() files this channel's guide data under -
+            # never the provider's own raw EPG channel id string, which never appears in the
+            # XMLTV output at all (see xmltv_channel_id's docstring for why that broke every
+            # player's guide, not just newly-added channels).
+            tvg_id = xmltv_channel_id(pc)
             logo = resolve_channel_logo(pc) or ""
             ext = "ts" if category.channel_type == ChannelType.LIVE else "mp4"
             url = playlist_channel_stream_url(xc_user, category.channel_type, pc.id, ext)
