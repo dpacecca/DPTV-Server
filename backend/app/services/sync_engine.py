@@ -4,12 +4,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import ChannelType, EpgMatchType, SyncStatus, SyncTrigger
+from app.models.base import ChannelType, SyncStatus, SyncTrigger
 from app.models.epg import EpgChannel, EpgSource
 from app.models.playlist import PlaylistCategorySourceLink, PlaylistChannel
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun
-from app.services import epg_mapper
 from app.services.epg_parser import parse_xmltv
 from app.services.xtream_client import ChannelData, XtreamClient, fetch_m3u_categories_and_channels
 from app.models.base import SourceType
@@ -265,26 +264,6 @@ async def apply_auto_clear(db: AsyncSession) -> int:
     return removed_count
 
 
-async def auto_map_epg_for_unmapped_channels(db: AsyncSession, sensitivity: float = 0.9) -> int:
-    epg_channels_result = await db.execute(select(EpgChannel))
-    all_epg_channels = epg_channels_result.scalars().all()
-    if not all_epg_channels:
-        return 0
-    name_by_id = {c.id: c.display_name for c in all_epg_channels}
-
-    unmapped_result = await db.execute(
-        select(PlaylistChannel).where(PlaylistChannel.epg_match_type == EpgMatchType.NONE)
-    )
-    matched = 0
-    for pc in unmapped_result.scalars().all():
-        best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
-        if best is not None:
-            pc.epg_channel_id = best[0]
-            pc.epg_match_type = EpgMatchType.AUTO
-            matched += 1
-    await db.flush()
-    return matched
-
 
 async def sync_all_sources(db: AsyncSession) -> dict:
     """Syncs every enabled Source. One bad provider shouldn't stop the rest - each failure is
@@ -321,16 +300,18 @@ async def sync_all_epg_sources(db: AsyncSession) -> dict:
 async def run_full_sync(
     db: AsyncSession,
     trigger: SyncTrigger,
-    epg_sensitivity: float = 0.9,
     sync_sources: bool = True,
     sync_epg: bool = True,
 ) -> SyncRun:
     """sync_sources/sync_epg let a caller run just one half (see SyncSchedule.sync_sources/
     sync_epg - a schedule can be set to only refresh video sources, only EPG sources, or both).
-    apply_auto_clear/auto_map_epg_for_unmapped_channels always run regardless of which halves
-    ran - they're cheap, idempotent passes over whatever's currently in the DB (e.g. a
-    sources-only run can still auto-map newly-appeared channels against already-synced EPG
-    data), not something that depends on a sync having just happened."""
+    apply_auto_clear always runs regardless of which halves ran - it's a cheap, idempotent pass
+    over whatever's currently in the DB, not something that depends on a sync having just
+    happened. Deliberately does NOT also auto-map unmapped channels to an EPG source - leaving a
+    channel unmapped (e.g. one deliberately left off real EPG in favor of dummy, or one an admin
+    hasn't gotten to yet) is a choice sync must never silently override; auto-mapping only ever
+    happens when an admin explicitly asks for it, via a channel's own "Auto-map" or the bulk "Map
+    EPG..." wizard."""
     run = SyncRun(started_at=datetime.now(timezone.utc), trigger=trigger, status=SyncStatus.RUNNING, summary={})
     db.add(run)
     await db.flush()
@@ -348,7 +329,6 @@ async def run_full_sync(
             summary["errors"].extend(epg_summary["errors"])
 
         summary["auto_cleared_channels"] = await apply_auto_clear(db)
-        summary["auto_mapped_channels"] = await auto_map_epg_for_unmapped_channels(db, sensitivity=epg_sensitivity)
 
         run.status = SyncStatus.PARTIAL if summary["errors"] else SyncStatus.SUCCESS
     except Exception as exc:  # noqa: BLE001

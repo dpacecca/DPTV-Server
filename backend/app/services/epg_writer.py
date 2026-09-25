@@ -38,7 +38,11 @@ def _xmltv_time(dt: datetime) -> str:
     return dt.strftime("%Y%m%d%H%M%S %z")
 
 
-def _resolve_dummy_mode(pc: PlaylistChannel) -> DummyEpgMode:
+def resolve_dummy_mode(pc: PlaylistChannel) -> DummyEpgMode:
+    """The dummy EPG mode this channel actually uses once "Inherit" is resolved against its
+    category's default - exported (not module-private) because sync_engine's auto-mapper needs
+    it too, to avoid silently real-EPG-mapping a channel an admin has deliberately configured (at
+    either level) to use dummy EPG instead."""
     if pc.dummy_epg_mode != DummyEpgMode.INHERIT:
         return pc.dummy_epg_mode
     return pc.category.dummy_epg_mode
@@ -144,7 +148,7 @@ async def compute_channel_programs(
             )
             continue
 
-        mode = _resolve_dummy_mode(pc)
+        mode = resolve_dummy_mode(pc)
         if mode == DummyEpgMode.OFF:
             results.append(ChannelPrograms(channel=pc))
             continue
