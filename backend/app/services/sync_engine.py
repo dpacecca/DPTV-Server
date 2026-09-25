@@ -3,14 +3,16 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models.base import ChannelType, EpgMatchType, SyncStatus, SyncTrigger
+from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SyncStatus, SyncTrigger
 from app.models.epg import EpgChannel, EpgSource
 from app.models.playlist import PlaylistCategorySourceLink, PlaylistChannel
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun
 from app.services import epg_mapper
 from app.services.epg_parser import parse_xmltv
+from app.services.epg_writer import resolve_dummy_mode
 from app.services.xtream_client import ChannelData, XtreamClient, fetch_m3u_categories_and_channels
 from app.models.base import SourceType
 
@@ -273,10 +275,21 @@ async def auto_map_epg_for_unmapped_channels(db: AsyncSession, sensitivity: floa
     name_by_id = {c.id: c.display_name for c in all_epg_channels}
 
     unmapped_result = await db.execute(
-        select(PlaylistChannel).where(PlaylistChannel.epg_match_type == EpgMatchType.NONE)
+        select(PlaylistChannel)
+        .where(PlaylistChannel.epg_match_type == EpgMatchType.NONE)
+        .options(selectinload(PlaylistChannel.category))
     )
     matched = 0
     for pc in unmapped_result.scalars().all():
+        if resolve_dummy_mode(pc) != DummyEpgMode.OFF:
+            # A channel (or its category, on "Inherit") deliberately configured for dummy EPG -
+            # e.g. a rotating PPV/event category parsing kickoff times out of the channel name -
+            # must never get silently real-mapped just because some EPG source happens to have a
+            # similarly-named channel. Real EPG always wins over dummy once epg_channel_id is
+            # set (see compute_channel_programs), so an auto-match here would quietly throw away
+            # the event-specific guide the admin configured, on every sync that adds new channels
+            # to that category, replacing it with whatever unrelated guide fuzzy-matched best.
+            continue
         best = epg_mapper.auto_match(pc.name, name_by_id, sensitivity=sensitivity)
         if best is not None:
             pc.epg_channel_id = best[0]
