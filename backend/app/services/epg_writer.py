@@ -8,9 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.base import DummyEpgMode
+from app.models.base import DummyEpgMode, SportType
 from app.models.epg import EpgProgram
-from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
+from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel, SportFixtureCache
 from app.services import dummy_epg
 from app.services.channel_logo import resolve_channel_logo
 
@@ -69,30 +69,42 @@ def _resolve_pinned_rule_id(pc: PlaylistChannel) -> int | None:
     return None
 
 
-async def _load_event_rules(
-    db: AsyncSession, playlist_id: int
-) -> tuple[list[tuple[re.Pattern, str | None]], dict[int, tuple[re.Pattern, str | None]]]:
+@dataclass
+class _LoadedRule:
+    """A DummyEpgRule as loaded for XMLTV generation - `compiled` is set for a regular regex
+    rule, `sport_type` for a sport rule (see DummyEpgRule for why exactly one is ever set)."""
+
+    id: int
+    sport_type: SportType | None
+    compiled: tuple[re.Pattern, str | None] | None
+
+
+async def _load_event_rules(db: AsyncSession, playlist_id: int) -> tuple[list[_LoadedRule], dict[int, _LoadedRule]]:
     """Returns the enabled rules in sort_order (the "try everything" default for a channel with
-    no rule pinned) alongside the same compiled rules keyed by id (for a channel pinned to one
-    specific rule via PlaylistChannel.dummy_epg_rule_id - see compute_channel_programs below)."""
+    no rule pinned) alongside the same rules keyed by id (for a channel pinned to one specific
+    rule via PlaylistChannel.dummy_epg_rule_id - see compute_channel_programs below)."""
     result = await db.execute(
         select(DummyEpgRule)
         .where(DummyEpgRule.playlist_id == playlist_id, DummyEpgRule.enabled.is_(True))
         .order_by(DummyEpgRule.sort_order)
     )
-    patterns: list[tuple[re.Pattern, str | None]] = []
-    by_id: dict[int, tuple[re.Pattern, str | None]] = {}
+    ordered: list[_LoadedRule] = []
+    by_id: dict[int, _LoadedRule] = {}
     for rule in result.scalars().all():
-        try:
-            compiled = (dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone)
-        except ValueError:
-            # Already validated on save - only reachable if a pattern was edited directly in the
-            # DB. Skip rather than fail the whole XMLTV output over one bad rule.
-            logger.warning("Skipping invalid dummy EPG rule %r (id=%s)", rule.name, rule.id)
-            continue
-        patterns.append(compiled)
-        by_id[rule.id] = compiled
-    return patterns, by_id
+        if rule.sport_type is not None:
+            loaded = _LoadedRule(id=rule.id, sport_type=rule.sport_type, compiled=None)
+        else:
+            try:
+                compiled = (dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone)
+            except (ValueError, TypeError):
+                # Already validated on save - only reachable if a pattern was edited directly in
+                # the DB. Skip rather than fail the whole XMLTV output over one bad rule.
+                logger.warning("Skipping invalid dummy EPG rule %r (id=%s)", rule.name, rule.id)
+                continue
+            loaded = _LoadedRule(id=rule.id, sport_type=None, compiled=compiled)
+        ordered.append(loaded)
+        by_id[rule.id] = loaded
+    return ordered, by_id
 
 
 @dataclass
@@ -121,6 +133,15 @@ async def compute_channel_programs(
     window_end = now + timedelta(hours=window_hours)
     event_rules, event_rules_by_id = await _load_event_rules(db, playlist_id)
     display_tz = dummy_epg.resolve_timezone(get_settings().display_timezone)
+
+    sport_types_needed = {r.sport_type for r in event_rules if r.sport_type is not None}
+    fixtures_by_sport: dict[SportType, list[SportFixtureCache]] = {}
+    if sport_types_needed:
+        fixture_result = await db.execute(
+            select(SportFixtureCache).where(SportFixtureCache.sport_type.in_(sport_types_needed))
+        )
+        for row in fixture_result.scalars().all():
+            fixtures_by_sport.setdefault(row.sport_type, []).append(row)
 
     real_epg_channel_ids = {pc.epg_channel_id for pc in channels if pc.epg_channel_id}
     programs_by_epg_channel: dict[int, list[EpgProgram]] = {}
@@ -194,13 +215,56 @@ async def compute_channel_programs(
             # rather than silently trying rules the admin never selected for it.
             rule_id = _resolve_pinned_rule_id(pc)
             pinned = event_rules_by_id.get(rule_id) if rule_id else None
-            channel_rules = [pinned] if pinned else ([] if rule_id else event_rules)
-            dummies = dummy_epg.generate_event_dummy(pc.name, now, window_hours, minutes, custom_patterns=channel_rules)
+
+            sport_match = None
+            channel_rules: list[tuple[re.Pattern, str | None]] = []
+            if pinned:
+                if pinned.sport_type is not None:
+                    sport_match = dummy_epg.match_fixture_for_channel(
+                        pc.name, fixtures_by_sport.get(pinned.sport_type, []), now
+                    )
+                elif pinned.compiled:
+                    channel_rules = [pinned.compiled]
+            elif not rule_id:
+                # No rule pinned - try every enabled sport rule (in sort_order) for a match
+                # first, since a sport rule can only ever produce a real answer or nothing (no
+                # regex ambiguity to worry about); only once none match does this fall through
+                # to the regex+built-in cascade below using every enabled regex rule, same as
+                # before sport rules existed at all.
+                for rule in event_rules:
+                    if rule.sport_type is not None:
+                        sport_match = dummy_epg.match_fixture_for_channel(
+                            pc.name, fixtures_by_sport.get(rule.sport_type, []), now
+                        )
+                        if sport_match:
+                            break
+                if sport_match is None:
+                    channel_rules = [r.compiled for r in event_rules if r.compiled is not None]
+
+            if sport_match is not None:
+                title = f"{sport_match.competition} - {sport_match.home_display or sport_match.home} vs {sport_match.away_display or sport_match.away}"
+                dummies = dummy_epg.generate_fixture_dummy(
+                    title,
+                    sport_match.kickoff.astimezone(display_tz),
+                    minutes,
+                    now,
+                    window_hours,
+                    venue_name=sport_match.venue_name,
+                    venue_city=sport_match.venue_city,
+                    venue_state=sport_match.venue_state,
+                )
+            else:
+                dummies = dummy_epg.generate_event_dummy(
+                    pc.name, now, window_hours, minutes, custom_patterns=channel_rules
+                )
         else:
             dummies = dummy_epg.generate_name_dummy(pc.name, now, window_hours, minutes)
         results.append(
             ChannelPrograms(
-                channel=pc, programs=[PreviewProgram(start=d.start, stop=d.stop, title=d.title) for d in dummies]
+                channel=pc,
+                programs=[
+                    PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc) for d in dummies
+                ],
             )
         )
     return results

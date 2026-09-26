@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import ChannelType, SyncStatus, SyncTrigger
@@ -98,6 +98,7 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
                 external_stream_id=ch.external_stream_id,
                 name=ch.name,
                 stream_type=ch.stream_type,
+                sort_order=ch.sort_order,
                 tvg_id=ch.tvg_id,
                 logo_url=ch.logo_url,
                 container_extension=ch.container_extension,
@@ -110,6 +111,7 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
             summary["channels_added"] += 1
         else:
             existing.name = ch.name
+            existing.sort_order = ch.sort_order
             existing.tvg_id = ch.tvg_id or existing.tvg_id
             existing.logo_url = ch.logo_url or existing.logo_url
             existing.stream_url = ch.stream_url or existing.stream_url
@@ -148,13 +150,29 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
         for link in link_result.scalars().all():
             links_by_source_cat.setdefault(link.source_category_id, []).append(link.playlist_category_id)
 
-        for row in new_channel_rows:
+        target_category_ids = {pcid for pcids in links_by_source_cat.values() for pcid in pcids}
+        next_sort_order_by_cat: dict[int, int] = {}
+        if target_category_ids:
+            max_result = await db.execute(
+                select(PlaylistChannel.playlist_category_id, func.max(PlaylistChannel.sort_order))
+                .where(PlaylistChannel.playlist_category_id.in_(target_category_ids))
+                .group_by(PlaylistChannel.playlist_category_id)
+            )
+            next_sort_order_by_cat = {cat_id: (max_order or -1) + 1 for cat_id, max_order in max_result.all()}
+
+        # Sorted by the channel's own provider-order position (not new_channel_rows' own
+        # iteration order, which follows the provider's flat multi-category response) so a
+        # landing category's channels come in correctly whatever order they were encountered in.
+        for row in sorted(new_channel_rows, key=lambda r: (r.source_category_id, r.sort_order)):
             for playlist_category_id in links_by_source_cat.get(row.source_category_id, []):
+                next_order = next_sort_order_by_cat.get(playlist_category_id, 0)
+                next_sort_order_by_cat[playlist_category_id] = next_order + 1
                 db.add(
                     PlaylistChannel(
                         playlist_category_id=playlist_category_id,
                         source_channel_id=row.id,
                         name=row.name,
+                        sort_order=next_order,
                         enabled=True,
                     )
                 )

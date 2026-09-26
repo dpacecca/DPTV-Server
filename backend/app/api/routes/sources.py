@@ -210,7 +210,11 @@ async def list_channels(
         query = query.where(SourceChannel.name.ilike(f"%{q}%"))
 
     total = await db.scalar(select(func.count()).select_from(query.subquery()))
-    result = await db.execute(query.order_by(SourceChannel.name).offset(offset).limit(limit))
+    # Provider order when just browsing (matches what actually gets imported); alphabetical only
+    # while actively searching, where finding a specific channel by name matters more.
+    order = SourceChannel.name if q else (SourceChannel.sort_order, SourceChannel.id)
+    order_cols = order if isinstance(order, tuple) else (order,)
+    result = await db.execute(query.order_by(*order_cols).offset(offset).limit(limit))
 
     items = []
     for c in result.scalars().all():

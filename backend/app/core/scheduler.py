@@ -12,7 +12,7 @@ from app.db import SessionLocal
 from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
 from app.services.iptv_org_epg import refresh_logo_cache
-from app.services.sport_refresh import refresh_all_sport_categories
+from app.services.sport_refresh import refresh_all_sport_categories, refresh_all_sport_fixture_caches
 from app.services.sync_engine import run_full_sync
 
 logger = logging.getLogger("dptv.scheduler")
@@ -37,6 +37,13 @@ async def _refresh_sport_categories_job() -> None:
             logger.info("Refreshed %d live sport categor(y/ies)", count)
         except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
             logger.exception("Failed to refresh live sport categories")
+        try:
+            # Sport types a sport-type DummyEpgRule uses but no Live Sport category already
+            # covers - same schedule/quota-budget reasoning as the Live Sport refresh above.
+            count = await refresh_all_sport_fixture_caches(db)
+            logger.info("Refreshed %d sport fixture cache(s) for dummy EPG rules", count)
+        except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
+            logger.exception("Failed to refresh sport fixture caches")
 
 
 async def _run_scheduled_sync(schedule_id: int) -> None:
@@ -74,6 +81,18 @@ async def reload_schedules(db: AsyncSession) -> None:
             replace_existing=True,
         )
     logger.info("Reloaded %d sync schedule(s)", len(scheduler.get_jobs()))
+
+
+def reschedule_sport_refresh(minutes: int) -> None:
+    """Rebuilds the "sport-categories-refresh" job's interval trigger - called after an admin
+    changes sport_refresh_interval_minutes via the Settings page, since the job's own interval
+    is otherwise only ever read once, at start_scheduler() below. A no-op (rather than an error)
+    if the scheduler isn't running yet (e.g. called from a script/test) - there's nothing to
+    reschedule in that case, and start_scheduler() will pick up the new value from settings
+    itself once it does run."""
+    if not scheduler.running:
+        return
+    scheduler.reschedule_job("sport-categories-refresh", trigger=IntervalTrigger(minutes=minutes))
 
 
 async def start_scheduler() -> None:

@@ -76,6 +76,12 @@ class SourceChannel(Base, TimestampMixin):
     external_stream_id: Mapped[str] = mapped_column(String(255), index=True)
     name: Mapped[str] = mapped_column(String(500))
     stream_type: Mapped[ChannelType] = mapped_column(enum_column(ChannelType))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    """Position in the provider's own channel list within this category (0-based), refreshed on
+    every sync - same idea as SourceCategory.sort_order, one level down. Lets an import into a
+    playlist preserve the provider's own channel order instead of whatever order rows happened
+    to sync in (or, previously, no order at all - every imported channel landed on the same
+    default sort_order)."""
     tvg_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     logo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     container_extension: Mapped[str | None] = mapped_column(String(20), nullable=True)

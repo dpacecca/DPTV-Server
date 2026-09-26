@@ -32,6 +32,9 @@ class ChannelData:
     external_stream_id: str
     name: str
     stream_type: ChannelType
+    sort_order: int = 0
+    """Position in the provider's own channel list within its category (0-based), in the order
+    returned/parsed - same idea as CategoryData.sort_order, one level down."""
     tvg_id: str | None = None
     logo_url: str | None = None
     container_extension: str | None = None
@@ -95,15 +98,23 @@ class XtreamClient:
 
             raw_streams = await self._get_json(client, stream_action)
             channels: list[ChannelData] = []
+            # get_live/vod/series_streams returns one flat list spanning every category, not
+            # grouped - so preserving "position within its own category" needs a counter per
+            # category rather than the flat list's own index.
+            next_index_by_category: dict[str, int] = {}
             for s in raw_streams:
                 stream_id = str(s.get("stream_id") or s.get("series_id"))
                 ext = s.get("container_extension") or ("ts" if channel_type == ChannelType.LIVE else "mp4")
+                cat_ext_id = str(s.get("category_id"))
+                index = next_index_by_category.get(cat_ext_id, 0)
+                next_index_by_category[cat_ext_id] = index + 1
                 channels.append(
                     ChannelData(
-                        category_external_id=str(s.get("category_id")),
+                        category_external_id=cat_ext_id,
                         external_stream_id=stream_id,
                         name=s.get("name", "Unknown"),
                         stream_type=channel_type,
+                        sort_order=index,
                         tvg_id=s.get("epg_channel_id") or None,
                         logo_url=s.get("stream_icon") or s.get("cover") or None,
                         container_extension=ext,
@@ -154,6 +165,10 @@ async def fetch_m3u_categories_and_channels(source: Source) -> tuple[list[Catego
     entries = parse_m3u(text)
     categories: dict[tuple[str, ChannelType], CategoryData] = {}
     channels: list[ChannelData] = []
+    # A provider's M3U isn't necessarily grouped by group-title - entries for the same category
+    # can be interleaved throughout the file - so "position within its own category" needs a
+    # counter per category key, not just the entry's position in the file.
+    next_index_by_category: dict[tuple[str, ChannelType], int] = {}
 
     for entry in entries:
         if source.ignore_vod and entry.channel_type == ChannelType.VOD:
@@ -173,12 +188,16 @@ async def fetch_m3u_categories_and_channels(source: Source) -> tuple[list[Catego
         else:
             stream_id = entry.url
 
+        index = next_index_by_category.get(key, 0)
+        next_index_by_category[key] = index + 1
+
         channels.append(
             ChannelData(
                 category_external_id=group,
                 external_stream_id=stream_id,
                 name=entry.name,
                 stream_type=entry.channel_type,
+                sort_order=index,
                 tvg_id=entry.tvg_id,
                 logo_url=entry.tvg_logo,
                 stream_url=entry.url,

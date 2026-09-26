@@ -13,6 +13,7 @@ import {
   Paper,
   Popover,
   ScrollArea,
+  SegmentedControl,
   Select,
   Stack,
   Switch,
@@ -2388,8 +2389,9 @@ function ImportModal({
 interface DummyEpgRule {
   id: number;
   name: string;
-  pattern: string;
+  pattern: string | null;
   timezone: string | null;
+  sport_type: SportType | null;
   enabled: boolean;
   sort_order: number;
 }
@@ -2420,6 +2422,14 @@ function DummyEpgRulesModal({
   const [newName, setNewName] = useState("");
   const [newPattern, setNewPattern] = useState("");
   const [newTimezone, setNewTimezone] = useState<string | null>(null);
+  // "pattern" (default, unchanged behavior) parses a date/time straight out of the channel's own
+  // name via regex; "sport" instead matches the channel's name (by team name) against a
+  // periodically-refreshed cache of real fixtures for the chosen sport - for a naming convention
+  // that never carries a date/time at all (e.g. "NFL | 02 - 1pm Chargers at Bills" - just a week
+  // number, an approximate kickoff, and team names), which no regex could ever parse a real date
+  // out of, but the actual schedule already has exactly.
+  const [newRuleType, setNewRuleType] = useState<"pattern" | "sport">("pattern");
+  const [newSportType, setNewSportType] = useState<SportType | null>(null);
   const [sampleName, setSampleName] = useState("");
   // Ground-truth substrings the admin can copy-paste straight out of the sample name, for a
   // naming convention the auto-detector can't figure out on its own (a written month name, or a
@@ -2433,6 +2443,7 @@ function DummyEpgRulesModal({
   const [editName, setEditName] = useState("");
   const [editPattern, setEditPattern] = useState("");
   const [editTimezone, setEditTimezone] = useState<string | null>(null);
+  const [editSportType, setEditSportType] = useState<SportType | null>(null);
 
   const { data: timezones } = useQuery<string[]>({
     queryKey: ["timezones"],
@@ -2447,22 +2458,31 @@ function DummyEpgRulesModal({
     enabled: opened,
   });
 
+  const { data: supportedSports } = useQuery<SupportedSport[]>({
+    queryKey: ["sports"],
+    queryFn: () => api.get("/api/playlists/sports").then((r) => r.data),
+    enabled: opened,
+    staleTime: Infinity,
+  });
+
   const invalidate = () => qc.invalidateQueries({ queryKey: ["dummy-epg-rules", playlistId] });
   const errorMessage = (err: unknown) =>
     (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Request failed";
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api.post(`/api/playlists/${playlistId}/dummy-epg-rules`, {
-        name: newName,
-        pattern: newPattern,
-        timezone: newTimezone,
-      }),
+      api.post(
+        `/api/playlists/${playlistId}/dummy-epg-rules`,
+        newRuleType === "sport"
+          ? { name: newName, sport_type: newSportType }
+          : { name: newName, pattern: newPattern, timezone: newTimezone },
+      ),
     onSuccess: () => {
       invalidate();
       setNewName("");
       setNewPattern("");
       setNewTimezone(null);
+      setNewSportType(null);
       setTitleHint("");
       setDateHint("");
       setTimeHint("");
@@ -2473,7 +2493,14 @@ function DummyEpgRulesModal({
   });
 
   const updateMutation = useMutation({
-    mutationFn: (payload: { id: number; name?: string; pattern?: string; timezone?: string | null; enabled?: boolean }) => {
+    mutationFn: (payload: {
+      id: number;
+      name?: string;
+      pattern?: string;
+      timezone?: string | null;
+      sport_type?: SportType | null;
+      enabled?: boolean;
+    }) => {
       const { id, ...body } = payload;
       return api.patch(`/api/playlists/${playlistId}/dummy-epg-rules/${id}`, body);
     },
@@ -2589,6 +2616,8 @@ function DummyEpgRulesModal({
     setNewPattern("");
     setNewName("");
     setNewTimezone(null);
+    setNewRuleType("pattern");
+    setNewSportType(null);
     setTitleHint("");
     setDateHint("");
     setTimeHint("");
@@ -2623,27 +2652,43 @@ function DummyEpgRulesModal({
               {editingId === rule.id ? (
                 <Stack gap={6}>
                   <TextInput size="xs" label="Name" value={editName} onChange={(e) => setEditName(e.currentTarget.value)} />
-                  <TextInput
-                    size="xs"
-                    label="Pattern"
-                    value={editPattern}
-                    onChange={(e) => setEditPattern(e.currentTarget.value)}
-                    styles={{ input: { fontFamily: "monospace" } }}
-                  />
-                  <Select
-                    size="xs"
-                    label="Timezone"
-                    description="Zone the pattern's hour/minute is expressed in"
-                    data={timezoneOptions}
-                    value={editTimezone ?? ""}
-                    onChange={(v) => setEditTimezone(v || null)}
-                    searchable
-                  />
+                  {editSportType !== null ? (
+                    <Select
+                      size="xs"
+                      label="Sport"
+                      data={(supportedSports ?? []).map((s) => ({ value: s.value, label: s.label }))}
+                      value={editSportType}
+                      onChange={(v) => setEditSportType((v as SportType) ?? editSportType)}
+                    />
+                  ) : (
+                    <>
+                      <TextInput
+                        size="xs"
+                        label="Pattern"
+                        value={editPattern}
+                        onChange={(e) => setEditPattern(e.currentTarget.value)}
+                        styles={{ input: { fontFamily: "monospace" } }}
+                      />
+                      <Select
+                        size="xs"
+                        label="Timezone"
+                        description="Zone the pattern's hour/minute is expressed in"
+                        data={timezoneOptions}
+                        value={editTimezone ?? ""}
+                        onChange={(v) => setEditTimezone(v || null)}
+                        searchable
+                      />
+                    </>
+                  )}
                   <Group gap="xs">
                     <Button
                       size="xs"
                       onClick={() =>
-                        updateMutation.mutate({ id: rule.id, name: editName, pattern: editPattern, timezone: editTimezone })
+                        updateMutation.mutate(
+                          editSportType !== null
+                            ? { id: rule.id, name: editName, sport_type: editSportType }
+                            : { id: rule.id, name: editName, pattern: editPattern, timezone: editTimezone },
+                        )
                       }
                       loading={updateMutation.isPending}
                     >
@@ -2661,18 +2706,26 @@ function DummyEpgRulesModal({
                       <Text size="sm" fw={600}>
                         {rule.name}
                       </Text>
-                      <Badge size="xs" variant="light">
-                        {rule.timezone || "UTC"}
-                      </Badge>
+                      {rule.sport_type ? (
+                        <Badge size="xs" variant="light" color="teal">
+                          Sport: {supportedSports?.find((s) => s.value === rule.sport_type)?.label ?? rule.sport_type}
+                        </Badge>
+                      ) : (
+                        <Badge size="xs" variant="light">
+                          {rule.timezone || "UTC"}
+                        </Badge>
+                      )}
                       {!rule.enabled && (
                         <Badge size="xs" color="gray">
                           Disabled
                         </Badge>
                       )}
                     </Group>
-                    <Text size="xs" c="dimmed" ff="monospace" style={{ wordBreak: "break-all" }}>
-                      {rule.pattern}
-                    </Text>
+                    {!rule.sport_type && (
+                      <Text size="xs" c="dimmed" ff="monospace" style={{ wordBreak: "break-all" }}>
+                        {rule.pattern}
+                      </Text>
+                    )}
                   </Box>
                   <Group gap={4} wrap="nowrap">
                     <ActionIcon variant="subtle" size="sm" disabled={i === 0} onClick={() => moveRule(i, -1)}>
@@ -2697,8 +2750,9 @@ function DummyEpgRulesModal({
                       onClick={() => {
                         setEditingId(rule.id);
                         setEditName(rule.name);
-                        setEditPattern(rule.pattern);
+                        setEditPattern(rule.pattern ?? "");
                         setEditTimezone(rule.timezone);
+                        setEditSportType(rule.sport_type);
                       }}
                     >
                       <IconEdit size={14} />
@@ -2728,109 +2782,143 @@ function DummyEpgRulesModal({
         <Text size="sm" fw={600} mt="sm">
           Add a rule
         </Text>
+        <SegmentedControl
+          size="xs"
+          value={newRuleType}
+          onChange={(v) => setNewRuleType(v as "pattern" | "sport")}
+          data={[
+            { label: "Pattern", value: "pattern" },
+            { label: "Sport", value: "sport" },
+          ]}
+        />
         <TextInput
           size="xs"
           label="Name"
-          placeholder="e.g. DD-MM sports format"
+          placeholder={newRuleType === "sport" ? "e.g. NFL Fixtures" : "e.g. DD-MM sports format"}
           value={newName}
           onChange={(e) => setNewName(e.currentTarget.value)}
         />
-        <TextInput
-          size="xs"
-          label="Pattern"
-          placeholder="(?P<title>.+?)\s+(?P<day>\d{1,2})-(?P<month>\d{1,2})\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})"
-          value={newPattern}
-          onChange={(e) => setNewPattern(e.currentTarget.value)}
-          styles={{ input: { fontFamily: "monospace" } }}
-        />
 
-        <Text size="xs" c="dimmed" mt="xs">
-          After hitting Suggest below, these fill in with exactly what the pattern was built
-          from - edit any that are wrong (a written-out month like "Sep", or a title sitting
-          between unrelated noise can trip up auto-detection) and hit Suggest again to rebuild
-          the pattern from your correction instead of the original guess.
-        </Text>
-        <Group grow>
-          <TextInput
-            size="xs"
-            label="Title"
-            value={titleHint}
-            onChange={(e) => {
-              setTitleHint(e.currentTarget.value);
-              debouncedResuggestFromHints();
-            }}
-          />
-          <TextInput
-            size="xs"
-            label="Date"
-            value={dateHint}
-            onChange={(e) => {
-              setDateHint(e.currentTarget.value);
-              debouncedResuggestFromHints();
-            }}
-          />
-          <TextInput
-            size="xs"
-            label="Time"
-            value={timeHint}
-            onChange={(e) => {
-              setTimeHint(e.currentTarget.value);
-              debouncedResuggestFromHints();
-            }}
-          />
-        </Group>
-
-        <Select
-          size="xs"
-          label="Timezone"
-          description="Zone the pattern's hour/minute is expressed in - channel names never say, so this is how the parser knows"
-          data={timezoneOptions}
-          value={newTimezone ?? ""}
-          onChange={(v) => setNewTimezone(v || null)}
-          searchable
-        />
-
-        <Group align="flex-end" gap="xs">
-          <TextInput
-            size="xs"
-            label="Test against a sample channel name"
-            placeholder="Real Madrid vs Barcelona 25-08 21:00"
-            value={sampleName}
-            onChange={(e) => setSampleName(e.currentTarget.value)}
-            style={{ flex: 1 }}
-          />
-          <Button
-            size="xs"
-            variant="light"
-            onClick={() => suggestMutation.mutate(sampleName)}
-            loading={suggestMutation.isPending}
-            disabled={!sampleName}
-          >
-            Suggest
-          </Button>
-          <Button
-            size="xs"
-            variant="light"
-            onClick={() => testMutation.mutate()}
-            loading={testMutation.isPending}
-            disabled={!newPattern || !sampleName}
-          >
-            Test
-          </Button>
-        </Group>
-        {testResult &&
-          (testResult.matched ? (
-            <Text size="xs" c="green">
-              Matched — title: "{testResult.title}", start:{" "}
-              {testResult.start ? new Date(testResult.start).toLocaleString() : "?"}
+        {newRuleType === "sport" ? (
+          <>
+            <Select
+              size="xs"
+              label="Sport"
+              description="Matches a channel's name (by team name) against real fixtures for this sport - for a naming convention that never carries a date/time at all (e.g. a week number and approximate kickoff instead), which no pattern could parse a real date out of."
+              data={(supportedSports ?? []).map((s) => ({ value: s.value, label: s.label }))}
+              value={newSportType}
+              onChange={(v) => setNewSportType(v as SportType | null)}
+              placeholder="Choose a sport"
+            />
+            <Text size="xs" c="dimmed">
+              Fixtures refresh on the same schedule as a Live Sport category (see Settings) -
+              no Live Sport category is required for this to work.
             </Text>
-          ) : (
-            <Text size="xs" c={testResult.error ? "red" : "orange"}>
-              {testResult.error ?? "No match against this sample name."}
-            </Text>
-          ))}
+          </>
+        ) : (
+          <>
+            <TextInput
+              size="xs"
+              label="Pattern"
+              placeholder="(?P<title>.+?)\s+(?P<day>\d{1,2})-(?P<month>\d{1,2})\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+              value={newPattern}
+              onChange={(e) => setNewPattern(e.currentTarget.value)}
+              styles={{ input: { fontFamily: "monospace" } }}
+            />
 
-        <Button onClick={() => createMutation.mutate()} loading={createMutation.isPending} disabled={!newName || !newPattern}>
+            <Text size="xs" c="dimmed" mt="xs">
+              After hitting Suggest below, these fill in with exactly what the pattern was built
+              from - edit any that are wrong (a written-out month like "Sep", or a title sitting
+              between unrelated noise can trip up auto-detection) and hit Suggest again to rebuild
+              the pattern from your correction instead of the original guess.
+            </Text>
+            <Group grow>
+              <TextInput
+                size="xs"
+                label="Title"
+                value={titleHint}
+                onChange={(e) => {
+                  setTitleHint(e.currentTarget.value);
+                  debouncedResuggestFromHints();
+                }}
+              />
+              <TextInput
+                size="xs"
+                label="Date"
+                value={dateHint}
+                onChange={(e) => {
+                  setDateHint(e.currentTarget.value);
+                  debouncedResuggestFromHints();
+                }}
+              />
+              <TextInput
+                size="xs"
+                label="Time"
+                value={timeHint}
+                onChange={(e) => {
+                  setTimeHint(e.currentTarget.value);
+                  debouncedResuggestFromHints();
+                }}
+              />
+            </Group>
+
+            <Select
+              size="xs"
+              label="Timezone"
+              description="Zone the pattern's hour/minute is expressed in - channel names never say, so this is how the parser knows"
+              data={timezoneOptions}
+              value={newTimezone ?? ""}
+              onChange={(v) => setNewTimezone(v || null)}
+              searchable
+            />
+
+            <Group align="flex-end" gap="xs">
+              <TextInput
+                size="xs"
+                label="Test against a sample channel name"
+                placeholder="Real Madrid vs Barcelona 25-08 21:00"
+                value={sampleName}
+                onChange={(e) => setSampleName(e.currentTarget.value)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => suggestMutation.mutate(sampleName)}
+                loading={suggestMutation.isPending}
+                disabled={!sampleName}
+              >
+                Suggest
+              </Button>
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => testMutation.mutate()}
+                loading={testMutation.isPending}
+                disabled={!newPattern || !sampleName}
+              >
+                Test
+              </Button>
+            </Group>
+            {testResult &&
+              (testResult.matched ? (
+                <Text size="xs" c="green">
+                  Matched — title: "{testResult.title}", start:{" "}
+                  {testResult.start ? new Date(testResult.start).toLocaleString() : "?"}
+                </Text>
+              ) : (
+                <Text size="xs" c={testResult.error ? "red" : "orange"}>
+                  {testResult.error ?? "No match against this sample name."}
+                </Text>
+              ))}
+          </>
+        )}
+
+        <Button
+          onClick={() => createMutation.mutate()}
+          loading={createMutation.isPending}
+          disabled={!newName || (newRuleType === "sport" ? !newSportType : !newPattern)}
+        >
           Add Rule
         </Button>
       </Stack>
