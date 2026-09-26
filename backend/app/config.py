@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     "Refresh Now" clicks. Halving this to 6h roughly doubles that to ~360/month, over a 250 cap -
     do the same multiplication against your own provider's limit before lowering it."""
 
+    display_timezone: str = "UTC"
+    """IANA zone name used wherever server-generated text needs to bake in a fixed local time -
+    e.g. the "Kick off HH:MM" line in a Live Sport category's generated event description. Unlike
+    a programme's own <start> timestamp (which every XMLTV player already localizes to the
+    viewer's own device from its UTC offset), a description is plain text baked in once at
+    generation time - it can't adjust per viewer, so this is the one zone every viewer sees it
+    in. Falls back to UTC if unset or invalid."""
+
 
 @lru_cache
 def get_settings() -> Settings:
