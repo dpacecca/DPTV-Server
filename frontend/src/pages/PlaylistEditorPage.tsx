@@ -2404,6 +2404,13 @@ function DummyEpgRulesModal({
   const [newPattern, setNewPattern] = useState("");
   const [newTimezone, setNewTimezone] = useState<string | null>(null);
   const [sampleName, setSampleName] = useState("");
+  // Ground-truth substrings the admin can copy-paste straight out of the sample name, for a
+  // naming convention the auto-detector can't figure out on its own (a written month name, or a
+  // title sandwiched between unrelated noise on both sides). Optional - Suggest still works
+  // without them, same as before, for names simple enough to auto-detect.
+  const [titleHint, setTitleHint] = useState("");
+  const [dateHint, setDateHint] = useState("");
+  const [timeHint, setTimeHint] = useState("");
   const [testResult, setTestResult] = useState<DummyEpgRuleTestResult | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
@@ -2439,6 +2446,9 @@ function DummyEpgRulesModal({
       setNewName("");
       setNewPattern("");
       setNewTimezone(null);
+      setTitleHint("");
+      setDateHint("");
+      setTimeHint("");
       setTestResult(null);
       notifications.show({ message: "Rule added", color: "green" });
     },
@@ -2483,11 +2493,23 @@ function DummyEpgRulesModal({
   const suggestMutation = useMutation({
     mutationFn: (name: string) =>
       api
-        .post(`/api/playlists/${playlistId}/dummy-epg-rules/suggest`, { sample_name: name })
+        .post(`/api/playlists/${playlistId}/dummy-epg-rules/suggest`, {
+          sample_name: name,
+          title_hint: titleHint || undefined,
+          date_hint: dateHint || undefined,
+          time_hint: timeHint || undefined,
+          timezone: newTimezone,
+        })
         .then((r) => r.data as { suggested: boolean; pattern?: string; start?: string; title?: string }),
     onSuccess: (data) => {
       if (!data.suggested || !data.pattern) {
-        setTestResult({ matched: false, error: "Couldn't find a date/time in that name to build a rule from." });
+        setTestResult({
+          matched: false,
+          error:
+            dateHint || timeHint
+              ? "Couldn't find that title/date/time text in the sample name - check it's copied exactly."
+              : "Couldn't find a date/time in that name to build a rule from.",
+        });
         return;
       }
       setNewPattern(data.pattern);
@@ -2500,6 +2522,9 @@ function DummyEpgRulesModal({
   useEffect(() => {
     if (opened && initialSampleName) {
       setSampleName(initialSampleName);
+      setTitleHint("");
+      setDateHint("");
+      setTimeHint("");
       suggestMutation.mutate(initialSampleName);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2521,6 +2546,9 @@ function DummyEpgRulesModal({
     setNewPattern("");
     setNewName("");
     setNewTimezone(null);
+    setTitleHint("");
+    setDateHint("");
+    setTimeHint("");
     onClose();
   }
 
@@ -2672,6 +2700,37 @@ function DummyEpgRulesModal({
           onChange={(e) => setNewPattern(e.currentTarget.value)}
           styles={{ input: { fontFamily: "monospace" } }}
         />
+
+        <Text size="xs" c="dimmed" mt="xs">
+          Struggling to get an accurate Suggest result (a written-out month like "Sep", or a
+          title sitting between unrelated noise)? Copy-paste the exact title/date/time text out
+          of the sample name below, then hit Suggest again - the pattern (and Test preview) will
+          be built from exactly what you specify instead of guessed.
+        </Text>
+        <Group grow>
+          <TextInput
+            size="xs"
+            label="Title"
+            placeholder="PAKISTAN VS. THAILAND"
+            value={titleHint}
+            onChange={(e) => setTitleHint(e.currentTarget.value)}
+          />
+          <TextInput
+            size="xs"
+            label="Date"
+            placeholder="Sat 26 Sep"
+            value={dateHint}
+            onChange={(e) => setDateHint(e.currentTarget.value)}
+          />
+          <TextInput
+            size="xs"
+            label="Time"
+            placeholder="05:00"
+            value={timeHint}
+            onChange={(e) => setTimeHint(e.currentTarget.value)}
+          />
+        </Group>
+
         <Select
           size="xs"
           label="Timezone"
