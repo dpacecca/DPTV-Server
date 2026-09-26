@@ -6,7 +6,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from app.api.routes import auth, epg_sources, logs, playlists, scheduler as scheduler_routes, sources, xc_server, xc_users
+from app.api.routes import (
+    auth,
+    epg_sources,
+    logs,
+    playlists,
+    scheduler as scheduler_routes,
+    settings as settings_routes,
+    sources,
+    xc_server,
+    xc_users,
+)
 from app.config import get_settings
 from app.core.scheduler import start_scheduler
 from app.core.security import hash_password
@@ -71,6 +81,7 @@ app.include_router(epg_sources.router)
 app.include_router(playlists.router)
 app.include_router(xc_users.router)
 app.include_router(scheduler_routes.router)
+app.include_router(settings_routes.router)
 app.include_router(xc_server.router)
 app.include_router(logs.router)
 
