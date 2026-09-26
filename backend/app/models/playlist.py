@@ -35,28 +35,76 @@ class Playlist(Base, TimestampMixin):
 
 
 class DummyEpgRule(Base, TimestampMixin):
-    """A custom regex tried against a channel's name when its dummy EPG mode is "event", before
-    falling back to the built-in date/time parser. Playlist-wide (not per-category) - which
-    channels use "event" mode at all is already controlled by dummy_epg_mode, so this is just
-    "how" event mode parses, tried in sort_order with the first match winning."""
+    """Either a custom regex OR a sport type, tried against a channel's name when its dummy EPG
+    mode is "event", before falling back to the built-in date/time parser. Playlist-wide (not
+    per-category) - which channels use "event" mode at all is already controlled by
+    dummy_epg_mode, so this is just "how" event mode parses, tried in sort_order with the first
+    match winning.
+
+    Exactly one of pattern/sport_type is set (enforced at the API layer, not the DB) - a regex
+    rule parses the date/time straight out of the channel's own name; a sport rule instead
+    matches the channel's name (by team name) against a periodically-refreshed cache of real
+    fixtures (see sport_refresh.refresh_all_sport_fixture_caches), for a naming convention that
+    doesn't carry a date/time at all (e.g. "NFL | 02 - 1pm Chargers at Bills" - just a week
+    number, an approximate kickoff, and team names) - no regex could ever recover a real date
+    from that, but the actual schedule already has it exactly. Deliberately reuses this same
+    rule/pin mechanism (see PlaylistCategory/PlaylistChannel.dummy_epg_rule_id) rather than a
+    separate one, so an admin already pinning a rule to a category doesn't need a second,
+    parallel place to configure this."""
 
     __tablename__ = "dummy_epg_rules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     playlist_id: Mapped[int] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(255))
-    pattern: Mapped[str] = mapped_column(Text)
+    pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
     """Python regex. Must define named groups (?P<hour>..) and (?P<minute>..); optionally
     (?P<ampm>..), (?P<month>..), (?P<day>..), (?P<year>..), and (?P<title>..) (the cleaned
-    program title - if omitted, the matched portion is stripped out of the name instead)."""
+    program title - if omitted, the matched portion is stripped out of the name instead). None
+    when sport_type is set instead."""
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     """IANA zone name the parsed hour/minute is expressed in (e.g. "America/New_York") - channel
     names never carry their own zone marker, so this is how the admin tells the parser which one
     to assume. None means UTC (unchanged legacy behavior). The resulting event datetime keeps
     this zone's offset all the way through to XMLTV output, where every player already localizes
-    a timezone-aware programme time to the viewer's own device - no separate conversion step."""
+    a timezone-aware programme time to the viewer's own device - no separate conversion step.
+    Ignored for a sport rule - a real fixture's kickoff is already an unambiguous UTC instant,
+    with nothing for the admin to tell the parser."""
+    sport_type: Mapped[SportType | None] = mapped_column(enum_column(SportType), nullable=True)
+    """None for a regular regex rule. Set instead of pattern for a sport rule."""
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SportFixtureCache(Base, TimestampMixin):
+    """A periodically-refreshed cache of real fixtures (see
+    sport_refresh.refresh_all_sport_fixture_caches) for a sport type used by a sport-type
+    DummyEpgRule, independent of whether any Live Sport category exists for that sport - a
+    channel using a sport rule matches straight against this table at XMLTV-generation time
+    (no live provider API call per request; that's exactly what this cache is for). Wiped and
+    fully repopulated per sport_type on every refresh, same "safe to do unconditionally" reasoning
+    as a Live Sport category's own channel list - every row exists only because the last refresh
+    put it there."""
+
+    __tablename__ = "sport_fixture_cache"
+    __table_args__ = (UniqueConstraint("sport_type", "external_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sport_type: Mapped[SportType] = mapped_column(enum_column(SportType), index=True)
+    external_id: Mapped[str] = mapped_column(String(64))
+    competition: Mapped[str] = mapped_column(String(255))
+    kickoff: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    home: Mapped[str] = mapped_column(String(255))
+    away: Mapped[str] = mapped_column(String(255))
+    """Short/mascot form used for matching against a channel's own name - see Fixture.home/away
+    in sport_data.py."""
+    home_display: Mapped[str] = mapped_column(String(255))
+    away_display: Mapped[str] = mapped_column(String(255))
+    """Fuller form used for the generated programme's own title - see
+    Fixture.home_display/away_display."""
+    venue_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    venue_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    venue_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 
 class PlaylistCategory(Base, TimestampMixin):

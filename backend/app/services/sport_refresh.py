@@ -5,8 +5,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.models.base import SportType
 from app.models.epg import EpgProgram
-from app.models.playlist import PlaylistCategory, PlaylistChannel
+from app.models.playlist import DummyEpgRule, PlaylistCategory, PlaylistChannel, SportFixtureCache
 from app.services import sport_data
 from app.services.name_normalize import normalize_name
 from app.services.sport_data import Fixture
@@ -98,6 +99,37 @@ def _format_event_title(fixture: Fixture) -> str:
     return f"{fixture.competition} - {home} vs {away}"
 
 
+async def _cache_fixtures(db: AsyncSession, sport_type: SportType, fixtures: list[Fixture]) -> None:
+    """Wipe-and-repopulate SportFixtureCache for one sport type - used by any sport-type
+    DummyEpgRule to match a channel's name against real fixtures at XMLTV-generation time,
+    independent of whether a Live Sport category for this sport exists at all. Same
+    "safe to do unconditionally" reasoning as a Live Sport category's own channel list.
+
+    `fixtures` comes from fetching several separate days (see sport_lookahead_days) concatenated
+    together - deduped by fixture id here (last one wins) rather than trusting each day's fetch
+    to be disjoint, since the same fixture can plausibly appear in two adjacent days' results
+    (e.g. a provider's date-boundary handling near midnight in its own timezone), which would
+    otherwise violate this table's (sport_type, external_id) uniqueness."""
+    await db.execute(delete(SportFixtureCache).where(SportFixtureCache.sport_type == sport_type))
+    deduped = {fixture.id: fixture for fixture in fixtures}
+    for fixture in deduped.values():
+        db.add(
+            SportFixtureCache(
+                sport_type=sport_type,
+                external_id=fixture.id,
+                competition=fixture.competition,
+                kickoff=fixture.kickoff,
+                home=fixture.home,
+                away=fixture.away,
+                home_display=fixture.home_display or fixture.home,
+                away_display=fixture.away_display or fixture.away,
+                venue_name=fixture.venue_name,
+                venue_city=fixture.venue_city,
+                venue_state=fixture.venue_state,
+            )
+        )
+
+
 async def refresh_sport_category(db: AsyncSession, category: PlaylistCategory) -> None:
     """Wipe-and-repopulate one Live Sport category's channels from the next few days of
     fixtures (see config.sport_lookahead_days) - live matches and ones still to come, not just
@@ -129,6 +161,11 @@ async def refresh_sport_category(db: AsyncSession, category: PlaylistCategory) -
         category.sport_last_refresh_status = "failed"
         category.sport_last_refresh_error = str(exc)
         return
+
+    # Same fetch already paid for the category's own refresh below - also feeds the fixture
+    # cache a sport-type DummyEpgRule matches against, so a sport already covered by a Live
+    # Sport category doesn't get fetched a second time by refresh_all_sport_fixture_caches.
+    await _cache_fixtures(db, category.sport_type, fixtures)
 
     await db.execute(delete(PlaylistChannel).where(PlaylistChannel.playlist_category_id == category.id))
     for sort_order, (fixture, pc) in enumerate(matched.values()):
@@ -167,3 +204,36 @@ async def refresh_all_sport_categories(db: AsyncSession) -> int:
         await refresh_sport_category(db, category)
         await db.commit()
     return len(categories)
+
+
+async def refresh_all_sport_fixture_caches(db: AsyncSession) -> int:
+    """Refreshes SportFixtureCache for every sport type a sport-type DummyEpgRule actually uses,
+    skipping any sport type a Live Sport category already refreshes (refresh_all_sport_categories
+    above already caches those as a side effect of its own fetch - fetching the same sport's
+    fixtures a second time here would just double the provider API calls for no reason). This is
+    what lets a sport-type rule work on a channel's own, hand-managed category without requiring
+    a Live Sport category to exist at all. Failures are isolated per sport type, same reasoning
+    as refresh_all_sport_categories. Returns how many sport types were (re)fetched here."""
+    rule_result = await db.execute(
+        select(DummyEpgRule.sport_type).where(DummyEpgRule.sport_type.is_not(None)).distinct()
+    )
+    rule_sport_types = {row[0] for row in rule_result.all()}
+
+    category_result = await db.execute(select(PlaylistCategory.sport_type).where(PlaylistCategory.sport_type.is_not(None)).distinct())
+    already_covered = {row[0] for row in category_result.all()}
+
+    settings = get_settings()
+    refreshed = 0
+    for sport_type in rule_sport_types - already_covered:
+        try:
+            today = datetime.now(timezone.utc).date()
+            fixtures: list[Fixture] = []
+            for offset in range(settings.sport_lookahead_days):
+                fixtures.extend(await sport_data.fetch_fixtures(sport_type, today + timedelta(days=offset)))
+            await _cache_fixtures(db, sport_type, fixtures)
+            await db.commit()
+            refreshed += 1
+        except Exception:  # noqa: BLE001 - one provider outage must not stop the rest
+            logger.exception("Failed to refresh sport fixture cache for %s", sport_type)
+            await db.rollback()
+    return refreshed

@@ -1306,6 +1306,7 @@ def _serialize_dummy_epg_rule(rule: DummyEpgRule) -> dict:
         "name": rule.name,
         "pattern": rule.pattern,
         "timezone": rule.timezone,
+        "sport_type": rule.sport_type.value if rule.sport_type else None,
         "enabled": rule.enabled,
         "sort_order": rule.sort_order,
     }
@@ -1320,10 +1321,22 @@ def _validate_pattern_or_400(pattern: str) -> None:
 
 class DummyEpgRuleIn(BaseModel):
     name: str
-    pattern: str
+    pattern: str | None = None
     timezone: str | None = None
-    """IANA zone (e.g. "America/New_York") the pattern's hour/minute is expressed in. None = UTC."""
+    """IANA zone (e.g. "America/New_York") the pattern's hour/minute is expressed in. None = UTC.
+    Ignored for a sport rule - a fixture's kickoff is already an unambiguous UTC instant."""
+    sport_type: SportType | None = None
+    """Set instead of pattern for a sport rule - matches a channel's name against real fixtures
+    for this sport (see app/services/sport_data.py) rather than parsing a date out of it.
+    Exactly one of pattern/sport_type must be given."""
     enabled: bool = True
+
+
+def _validate_pattern_xor_sport(pattern: str | None, sport_type: SportType | None) -> None:
+    if (pattern is None) == (sport_type is None):
+        raise HTTPException(400, "Exactly one of pattern or sport_type is required")
+    if pattern is not None:
+        _validate_pattern_or_400(pattern)
 
 
 @router.get("/{playlist_id}/dummy-epg-rules")
@@ -1336,7 +1349,7 @@ async def list_dummy_epg_rules(playlist_id: int, db: DbSession, _admin: AdminUse
 
 @router.post("/{playlist_id}/dummy-epg-rules")
 async def create_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleIn, db: DbSession, _admin: AdminUser) -> dict:
-    _validate_pattern_or_400(payload.pattern)
+    _validate_pattern_xor_sport(payload.pattern, payload.sport_type)
     count = await db.scalar(
         select(func.count()).select_from(DummyEpgRule).where(DummyEpgRule.playlist_id == playlist_id)
     )
@@ -1350,6 +1363,7 @@ class DummyEpgRuleUpdate(BaseModel):
     name: str | None = None
     pattern: str | None = None
     timezone: str | None = None
+    sport_type: SportType | None = None
     enabled: bool | None = None
 
 
@@ -1361,8 +1375,16 @@ async def update_dummy_epg_rule(
     if rule is None or rule.playlist_id != playlist_id:
         raise HTTPException(404, "Rule not found")
     updates = payload.model_dump(exclude_unset=True)
-    if "pattern" in updates:
-        _validate_pattern_or_400(updates["pattern"])
+    if "pattern" in updates or "sport_type" in updates:
+        # Validate the *merged* result, not just whichever of the two was actually sent - e.g.
+        # sending only sport_type on a rule that already has a pattern needs pattern cleared too.
+        new_pattern = updates.get("pattern", rule.pattern)
+        new_sport_type = updates.get("sport_type", rule.sport_type)
+        _validate_pattern_xor_sport(new_pattern, new_sport_type)
+        if new_sport_type is not None:
+            updates["pattern"] = None
+        else:
+            updates["sport_type"] = None
     for key, value in updates.items():
         setattr(rule, key, value)
     await db.commit()

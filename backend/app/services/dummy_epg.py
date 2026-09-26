@@ -1,7 +1,11 @@
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo as tzinfo_type
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo, available_timezones
+
+from app.services.name_normalize import normalize_name
 
 DATE_RE = re.compile(r"\b(?P<month>\d{1,2})[/\-](?P<day>\d{1,2})(?:[/\-](?P<year>\d{2,4}))?\b")
 TIME_RE = re.compile(r"\b(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp]\.?[Mm]\.?)?\b")
@@ -582,6 +586,46 @@ def generate_event_dummy(
     after = _tile(event_stop, window_end, FINISHED_TITLE)
 
     return before + [DummyProgram(start=event_start, stop=event_stop, title=display_title)] + after
+
+
+class _FixtureLike(Protocol):
+    """Structural shape matching both sport_data.Fixture and the SportFixtureCache ORM row -
+    match_fixture_for_channel below works with either, so the caller doesn't need to convert one
+    into the other just to reuse this matcher."""
+
+    competition: str
+    kickoff: datetime
+    home: str
+    away: str
+    home_display: str | None
+    away_display: str | None
+    venue_name: str | None
+    venue_city: str | None
+    venue_state: str | None
+
+
+def match_fixture_for_channel(channel_name: str, fixtures: Sequence[Any], now: datetime) -> _FixtureLike | None:
+    """Finds which of `fixtures` this channel's own name is showing, for a sport-type
+    DummyEpgRule (see epg_writer.py) - by checking whether BOTH team names appear as substrings
+    of the channel's name, the same matching sport_refresh.py's Live Sport category clone already
+    uses to find channels showing a given fixture, just run in the opposite direction (channel's
+    own name -> fixture, instead of fixture -> candidate channels to rename).
+
+    If more than one fixture's teams both appear (rare - a channel name reused week over week
+    before its provider updates it, or an unlikely team-name collision), picks whichever kickoff
+    is closest to `now`: the most temporally relevant match is almost always the intended one.
+    Returns None if no fixture's team names both appear in the name at all."""
+    norm = normalize_name(channel_name)
+    candidates: list[_FixtureLike] = []
+    for fixture in fixtures:
+        home_norm, away_norm = normalize_name(fixture.home), normalize_name(fixture.away)
+        if not home_norm or not away_norm:
+            continue
+        if home_norm in norm and away_norm in norm:
+            candidates.append(fixture)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda f: abs((f.kickoff - now).total_seconds()))
 
 
 def _format_fixture_description(
