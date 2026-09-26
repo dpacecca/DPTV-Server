@@ -51,7 +51,7 @@ import { DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSe
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useNavigate, useParams } from "react-router-dom";
-import { useDebounce } from "use-debounce";
+import { useDebounce, useDebouncedCallback } from "use-debounce";
 import { api, refreshSportCategory } from "../api/client";
 import type {
   ChannelType,
@@ -2552,6 +2552,14 @@ function DummyEpgRulesModal({
     },
   });
 
+  // Editing a hint field only actually takes effect once Suggest re-runs - Test alone re-checks
+  // whatever's already in the Pattern box and has no idea the hints changed. Debounced so it
+  // doesn't fire on every keystroke, this makes a hint edit take effect automatically instead of
+  // silently doing nothing until the admin remembers to click Suggest again themselves.
+  const debouncedResuggestFromHints = useDebouncedCallback(() => {
+    if (sampleName) suggestMutation.mutate(sampleName);
+  }, 500);
+
   // Opened from a channel's "Suggest Rule..." button: pre-fill the sample name and suggest
   // immediately, so the admin lands straight on a candidate pattern for that exact channel.
   useEffect(() => {
@@ -2747,19 +2755,28 @@ function DummyEpgRulesModal({
             size="xs"
             label="Title"
             value={titleHint}
-            onChange={(e) => setTitleHint(e.currentTarget.value)}
+            onChange={(e) => {
+              setTitleHint(e.currentTarget.value);
+              debouncedResuggestFromHints();
+            }}
           />
           <TextInput
             size="xs"
             label="Date"
             value={dateHint}
-            onChange={(e) => setDateHint(e.currentTarget.value)}
+            onChange={(e) => {
+              setDateHint(e.currentTarget.value);
+              debouncedResuggestFromHints();
+            }}
           />
           <TextInput
             size="xs"
             label="Time"
             value={timeHint}
-            onChange={(e) => setTimeHint(e.currentTarget.value)}
+            onChange={(e) => {
+              setTimeHint(e.currentTarget.value);
+              debouncedResuggestFromHints();
+            }}
           />
         </Group>
 

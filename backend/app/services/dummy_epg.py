@@ -373,6 +373,40 @@ def _generalize_date_hint(date_hint: str) -> str | None:
     return "".join(parts)
 
 
+def _generalize_gap(text: str) -> str:
+    """Turns an arbitrary noise substring sitting between two known anchors (the very start of
+    the name and the title, the title and the date/time, or vice versa) into a bounded-length
+    regex fragment matching that same shape - e.g. "ON NOW | " becomes
+    [A-Za-z]{2}\\s+[A-Za-z]{3}\\s+\\|\\s+ - so it also matches a sibling name whose corresponding
+    gap holds different (or no) text of the same shape, the same idea _generalize_date_hint above
+    already uses for a weekday/month token.
+
+    Deliberately NOT an open-ended `.*?` wildcard skip: that reads as safe (re.search "skips
+    what it doesn't need"), but it's not - a lazy `.+?` title group sitting next to a lazy/
+    optional `.*?` skip is genuinely ambiguous whenever the title itself also contains a
+    boundary character (almost every multi-word title does, via its own spaces). The engine is
+    free to satisfy the pattern by making the skip swallow part of the *title* instead of the
+    intended noise - handing back a truncated title - since both readings are equally valid
+    matches and it isn't told which one is "right". A bounded shape like [A-Za-z]{2} can only
+    ever consume exactly that many characters, so it can't accidentally eat into the title
+    alongside it - removing the ambiguity instead of hoping backtracking resolves it correctly.
+    Returns "" for an empty gap (nothing to skip)."""
+    if not text:
+        return ""
+    tokens = re.findall(r"[A-Za-z]+|\d+|\s+|[^\sA-Za-z\d]+", text)
+    parts: list[str] = []
+    for tok in tokens:
+        if tok.isspace():
+            parts.append(r"\s+")
+        elif tok.isalpha():
+            parts.append(rf"[A-Za-z]{{{len(tok)}}}")
+        elif tok.isdigit():
+            parts.append(rf"\d{{{len(tok)}}}")
+        else:
+            parts.append(re.escape(tok))
+    return "".join(parts)
+
+
 def _generalize_time_hint(time_hint: str) -> str | None:
     """Same idea as _generalize_date_hint, for a ground-truth time substring (e.g. "05:00") -
     reuses TIME_RE (the same shape the built-in parser and suggest_rule_pattern above already
@@ -398,10 +432,13 @@ def suggest_rule_from_hints(
     title/date/time instead of guessing - for names auto-detection can't handle at all (a
     written month name, or a title that sits in the middle of the string surrounded by unrelated
     noise on both sides, e.g. "NEXT | Team A vs Team B | Sat 26 Sep 05:00 EDT (US) | 8K EXCLUSIVE
-    | US: Channel PPV 11"). Only the span from the start of the title (or date/time, if no title
-    hint given) to the end of the date/time actually needs to be matched - re.search() already
-    skips over anything before or after on its own, so unrelated prefix/suffix noise like "NEXT |"
-    or "| 8K EXCLUSIVE | ..." never needs to be accounted for in the generated pattern.
+    | US: Channel PPV 11"). The date/time fragments are specific enough patterns that re.search()
+    naturally skips over anything before or after them on its own - but the title group is just a
+    `.+`/`.+?` wildcard, which does *not* skip anything by itself: left alone it happily swallows
+    noise like "NEXT |" or "| 8K EXCLUSIVE" right into the title, ignoring where title_hint
+    actually said the title starts/ends. So when the hint reveals there's noise on the title's own
+    open side (nothing between it and the very start/end of the name), that noise is explicitly
+    made skippable in the pattern too, not left for the wildcard to "figure out" - it can't.
 
     Requires date_hint and time_hint to each be an exact substring of sample_name (copy-pasted,
     not retyped) - title_hint is optional, same as the plain auto-detect suggester. Returns None
@@ -432,9 +469,23 @@ def suggest_rule_from_hints(
     if title_start != -1:
         title_span = (title_start, title_start + len(title_hint))
         if title_span[1] <= dt_start:
-            pattern = rf"(?P<title>.+?){_BOUNDARY}{dt_fragment}"
+            # Title before the date/time. Any noise between the very start of the name and the
+            # title (a provider tag like "NEXT | ") or between the title and the date/time (e.g.
+            # "| all |") has to be explicitly made skippable via _generalize_gap - not an
+            # open-ended `.*?`, which is genuinely ambiguous whenever the title itself contains a
+            # boundary character too (nearly every multi-word title does) and can end up eating
+            # part of the title instead of the noise around it (see _generalize_gap's docstring).
+            prefix_gap = _generalize_gap(sample_name[: title_span[0]])
+            middle_gap = _generalize_gap(sample_name[title_span[1] : dt_start]) or _BOUNDARY
+            pattern = rf"{prefix_gap}(?P<title>.+?){middle_gap}{dt_fragment}"
         elif title_span[0] >= dt_end:
-            pattern = rf"{dt_fragment}{_BOUNDARY}(?P<title>.+)"
+            # Mirrored for the date/time-then-title layout: noise between the date/time and the
+            # title, and after the title to the end of the name, get the same bounded treatment.
+            leading_gap = _generalize_gap(sample_name[dt_end : title_span[0]]) or _BOUNDARY
+            suffix_gap = _generalize_gap(sample_name[title_span[1] :])
+            title_group = r"(?P<title>.+?)" if suffix_gap else r"(?P<title>.+)"
+            anchor = "$" if suffix_gap else ""
+            pattern = rf"{dt_fragment}{leading_gap}{title_group}{suffix_gap}{anchor}"
         else:
             # Title hint overlaps the date/time span - not a sane layout to build a boundary
             # from, so fall back to letting the parser strip the matched date/time out of
