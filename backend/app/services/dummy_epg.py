@@ -219,6 +219,14 @@ class RuleSuggestion:
     pattern: str
     start: datetime
     title: str
+    # Exact substrings of the sample name this suggestion was built from - either what
+    # auto-detection found (suggest_rule_pattern) or the hints the admin supplied
+    # (suggest_rule_from_hints, echoed straight back). The API hands these back to the frontend
+    # so it can populate the Title/Date/Time hint fields after every Suggest click, letting the
+    # admin see and edit exactly what the pattern was built from instead of typing it blind.
+    title_hint: str | None = None
+    date_hint: str | None = None
+    time_hint: str | None = None
 
 
 def suggest_rule_pattern(sample_name: str, now: datetime | None = None, tz: tzinfo_type = timezone.utc) -> RuleSuggestion | None:
@@ -303,7 +311,17 @@ def suggest_rule_pattern(sample_name: str, now: datetime | None = None, tz: tzin
     if parsed is None:
         return None
     start, title = parsed
-    return RuleSuggestion(pattern=pattern, start=start, title=title)
+    return RuleSuggestion(
+        pattern=pattern,
+        start=start,
+        title=title,
+        title_hint=prefix or suffix or None,
+        date_hint=sample_name[date_match.start() : date_match.end()].strip() if date_match else None,
+        # TIME_RE's trailing \s* (there to let its optional ampm group follow a space) means the
+        # raw match can carry a trailing space when there's no am/pm - trimmed here since this is
+        # just for display/re-use as a hint, not the boundary math above that needs the raw span.
+        time_hint=sample_name[time_match.start() : time_match.end()].strip(),
+    )
 
 
 _WEEKDAY_PREFIXES = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
@@ -433,7 +451,9 @@ def suggest_rule_from_hints(
     if parsed is None:
         return None
     start, title = parsed
-    return RuleSuggestion(pattern=pattern, start=start, title=title)
+    return RuleSuggestion(
+        pattern=pattern, start=start, title=title, title_hint=title_hint, date_hint=date_hint, time_hint=time_hint
+    )
 
 
 def generate_name_dummy(

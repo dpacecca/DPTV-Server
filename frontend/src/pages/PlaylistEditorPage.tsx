@@ -2500,7 +2500,18 @@ function DummyEpgRulesModal({
           time_hint: timeHint || undefined,
           timezone: newTimezone,
         })
-        .then((r) => r.data as { suggested: boolean; pattern?: string; start?: string; title?: string }),
+        .then(
+          (r) =>
+            r.data as {
+              suggested: boolean;
+              pattern?: string;
+              start?: string;
+              title?: string;
+              title_hint?: string | null;
+              date_hint?: string | null;
+              time_hint?: string | null;
+            },
+        ),
     onSuccess: (data) => {
       if (!data.suggested || !data.pattern) {
         setTestResult({
@@ -2513,6 +2524,13 @@ function DummyEpgRulesModal({
         return;
       }
       setNewPattern(data.pattern);
+      // Fill in exactly what the pattern was built from - either what auto-detection found, or
+      // the hints just submitted, echoed straight back - so the admin can see and edit them
+      // (e.g. correct a misdetected title span) and hit Suggest again, rather than typing hints
+      // in blind from scratch.
+      setTitleHint(data.title_hint ?? "");
+      setDateHint(data.date_hint ?? "");
+      setTimeHint(data.time_hint ?? "");
       setTestResult({ matched: true, error: null, start: data.start, title: data.title });
     },
   });
@@ -2702,30 +2720,27 @@ function DummyEpgRulesModal({
         />
 
         <Text size="xs" c="dimmed" mt="xs">
-          Struggling to get an accurate Suggest result (a written-out month like "Sep", or a
-          title sitting between unrelated noise)? Copy-paste the exact title/date/time text out
-          of the sample name below, then hit Suggest again - the pattern (and Test preview) will
-          be built from exactly what you specify instead of guessed.
+          After hitting Suggest below, these fill in with exactly what the pattern was built
+          from - edit any that are wrong (a written-out month like "Sep", or a title sitting
+          between unrelated noise can trip up auto-detection) and hit Suggest again to rebuild
+          the pattern from your correction instead of the original guess.
         </Text>
         <Group grow>
           <TextInput
             size="xs"
             label="Title"
-            placeholder="PAKISTAN VS. THAILAND"
             value={titleHint}
             onChange={(e) => setTitleHint(e.currentTarget.value)}
           />
           <TextInput
             size="xs"
             label="Date"
-            placeholder="Sat 26 Sep"
             value={dateHint}
             onChange={(e) => setDateHint(e.currentTarget.value)}
           />
           <TextInput
             size="xs"
             label="Time"
-            placeholder="05:00"
             value={timeHint}
             onChange={(e) => setTimeHint(e.currentTarget.value)}
           />
