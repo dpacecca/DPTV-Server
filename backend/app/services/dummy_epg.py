@@ -6,6 +6,29 @@ from zoneinfo import ZoneInfo, available_timezones
 DATE_RE = re.compile(r"\b(?P<month>\d{1,2})[/\-](?P<day>\d{1,2})(?:[/\-](?P<year>\d{2,4}))?\b")
 TIME_RE = re.compile(r"\b(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp]\.?[Mm]\.?)?\b")
 
+_MONTH_NUMBERS = {
+    name[:3]: i
+    for i, name in enumerate(
+        [
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december",
+        ],
+        start=1,
+    )
+}
+
+
+def _parse_month(month_str: str) -> int | None:
+    """A rule built from a written-month hint (see suggest_rule_from_hints below) captures the
+    month as text ("Sep", "September") rather than a number, since that's what actually appears
+    in the channel name - so this has to accept either shape. Matches on the first 3 letters
+    case-insensitively, which covers both abbreviated and full month names."""
+    if month_str.isdigit():
+        m = int(month_str)
+        return m if 1 <= m <= 12 else None
+    return _MONTH_NUMBERS.get(month_str.strip().lower()[:3])
+
+
 
 def list_timezones() -> list[str]:
     """IANA zone names for the rule editor's timezone dropdown - proper Continent/City names
@@ -93,7 +116,10 @@ def _build_event_datetime(
         return None
 
     if month_str and day_str:
-        month, day = int(month_str), int(day_str)
+        month = _parse_month(month_str)
+        day = int(day_str)
+        if month is None:
+            return None
         if year_str:
             year = int(year_str)
             if year < 100:
@@ -182,6 +208,11 @@ def parse_event_datetime(
 _ISO_DATE_RE = re.compile(r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})")
 _SUGGEST_DATE_RE = re.compile(r"(?P<num1>\d{1,2})(?P<sep>[/\-])(?P<num2>\d{1,2})(?:(?P=sep)(?P<year>\d{2,4}))?")
 
+# Shared "something's between these fields" boundary for every suggested pattern below - a plain
+# \s+ isn't enough since providers commonly pipe/dash/colon/paren-delimit fields instead of (or
+# as well as) spacing them ("18-09-2026 | 05:00 (GMT)", "NEXT | Team A vs Team B | ...").
+_BOUNDARY = r"[\s\-:|()]+"
+
 
 @dataclass
 class RuleSuggestion:
@@ -190,7 +221,7 @@ class RuleSuggestion:
     title: str
 
 
-def suggest_rule_pattern(sample_name: str, now: datetime | None = None) -> RuleSuggestion | None:
+def suggest_rule_pattern(sample_name: str, now: datetime | None = None, tz: tzinfo_type = timezone.utc) -> RuleSuggestion | None:
     """Reverse-engineers a candidate custom dummy-EPG rule pattern from one real channel name, so
     an admin doesn't have to hand-write regex - just point it at a channel and review/tweak/save
     the suggestion.
@@ -250,17 +281,17 @@ def suggest_rule_pattern(sample_name: str, now: datetime | None = None) -> RuleS
     # Same permissive boundary as the title separator below - providers commonly pipe/dash-
     # delimit fields ("18-09-2026 | 05:00 (GMT)"), not just space them, so a plain \s+ here
     # would fail to match the very sample name this rule is being built from.
-    joined = r"[\s\-:|()]+".join(fragments)
+    joined = _BOUNDARY.join(fragments)
 
     prefix = sample_name[:match_start].strip(" -|:()")
     suffix = sample_name[match_end:].strip(" -|:()")
     if prefix:
-        # A permissive [\s\-:|()]+ boundary (not just \s+) so a connective dash/colon/pipe/paren
-        # right before the date/time - "UFC 300 - 15-09-2026...", "Title 2026 (2026-08-30
+        # A permissive boundary (not just \s+) so a connective dash/colon/pipe/paren right
+        # before the date/time - "UFC 300 - 15-09-2026...", "Title 2026 (2026-08-30
         # 20:50:29)" - separates from the title instead of being swallowed into it.
-        pattern = rf"(?P<title>.+?)[\s\-:|()]+{joined}"
+        pattern = rf"(?P<title>.+?){_BOUNDARY}{joined}"
     elif suffix:
-        pattern = rf"{joined}[\s\-:|()]+(?P<title>.+)"
+        pattern = rf"{joined}{_BOUNDARY}(?P<title>.+)"
     else:
         pattern = joined
 
@@ -268,7 +299,137 @@ def suggest_rule_pattern(sample_name: str, now: datetime | None = None) -> RuleS
         compiled = validate_rule_pattern(pattern)
     except ValueError:
         return None
-    parsed = _apply_custom_rule(sample_name, compiled, now)
+    parsed = _apply_custom_rule(sample_name, compiled, now, tz)
+    if parsed is None:
+        return None
+    start, title = parsed
+    return RuleSuggestion(pattern=pattern, start=start, title=title)
+
+
+_WEEKDAY_PREFIXES = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+
+def _generalize_date_hint(date_hint: str) -> str | None:
+    """Turns a ground-truth example of a date substring (e.g. "Sat 26 Sep", copy-pasted by the
+    admin straight out of a real channel name) into a general regex fragment matching that same
+    shape - not a literal copy of this one date, so it also matches sibling channels with
+    different weekdays/days/months. The built-in DATE_RE/_SUGGEST_DATE_RE above only understand
+    numeric dates ("26/09"); this handles written weekday/month names too, which providers
+    commonly use and which auto-detection alone has no way to recognize as a date at all.
+    Requires day and month to both be present in the hint (year is optional) - anything less
+    isn't enough to compute an actual date, so this returns None."""
+    tokens = re.findall(r"[A-Za-z]+|\d+|\s+|[^\sA-Za-z\d]+", date_hint)
+    parts: list[str] = []
+    have_day = have_month = have_year = False
+    for tok in tokens:
+        if tok.isspace():
+            parts.append(r"\s+")
+        elif tok.isalpha():
+            low3 = tok.lower()[:3]
+            if low3 in _WEEKDAY_PREFIXES:
+                parts.append(rf"[A-Za-z]{{{len(tok)}}}")
+            elif low3 in _MONTH_NUMBERS and not have_month:
+                parts.append(rf"(?P<month>[A-Za-z]{{{len(tok)}}})")
+                have_month = True
+            else:
+                parts.append(re.escape(tok))
+        elif tok.isdigit():
+            if len(tok) == 4 and not have_year:
+                parts.append(r"(?P<year>\d{4})")
+                have_year = True
+            elif not have_day:
+                parts.append(r"(?P<day>\d{1,2})")
+                have_day = True
+            elif not have_month:
+                parts.append(r"(?P<month>\d{1,2})")
+                have_month = True
+            elif not have_year:
+                parts.append(r"(?P<year>\d{2,4})")
+                have_year = True
+            else:
+                parts.append(re.escape(tok))
+        else:
+            parts.append(re.escape(tok))
+    if not (have_day and have_month):
+        return None
+    return "".join(parts)
+
+
+def _generalize_time_hint(time_hint: str) -> str | None:
+    """Same idea as _generalize_date_hint, for a ground-truth time substring (e.g. "05:00") -
+    reuses TIME_RE (the same shape the built-in parser and suggest_rule_pattern above already
+    understand) rather than reinventing time detection."""
+    m = TIME_RE.search(time_hint)
+    if not m:
+        return None
+    fragment = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+    if m.group("ampm"):
+        fragment += r"\s*(?P<ampm>[AaPp]\.?[Mm]\.?)"
+    return fragment
+
+
+def suggest_rule_from_hints(
+    sample_name: str,
+    title_hint: str | None,
+    date_hint: str | None,
+    time_hint: str | None,
+    now: datetime | None = None,
+    tz: tzinfo_type = timezone.utc,
+) -> RuleSuggestion | None:
+    """Like suggest_rule_pattern, but told exactly which substrings of `sample_name` are the
+    title/date/time instead of guessing - for names auto-detection can't handle at all (a
+    written month name, or a title that sits in the middle of the string surrounded by unrelated
+    noise on both sides, e.g. "NEXT | Team A vs Team B | Sat 26 Sep 05:00 EDT (US) | 8K EXCLUSIVE
+    | US: Channel PPV 11"). Only the span from the start of the title (or date/time, if no title
+    hint given) to the end of the date/time actually needs to be matched - re.search() already
+    skips over anything before or after on its own, so unrelated prefix/suffix noise like "NEXT |"
+    or "| 8K EXCLUSIVE | ..." never needs to be accounted for in the generated pattern.
+
+    Requires date_hint and time_hint to each be an exact substring of sample_name (copy-pasted,
+    not retyped) - title_hint is optional, same as the plain auto-detect suggester. Returns None
+    if a hint can't be found in the name or can't be generalized into a date/time shape."""
+    now = now or datetime.now(timezone.utc)
+    if not date_hint or not time_hint:
+        return None
+
+    date_start = sample_name.find(date_hint)
+    time_start = sample_name.find(time_hint)
+    if date_start == -1 or time_start == -1:
+        return None
+    date_span = (date_start, date_start + len(date_hint))
+    time_span = (time_start, time_start + len(time_hint))
+
+    date_fragment = _generalize_date_hint(date_hint)
+    time_fragment = _generalize_time_hint(time_hint)
+    if date_fragment is None or time_fragment is None:
+        return None
+
+    if date_span[0] <= time_span[0]:
+        dt_fragment = date_fragment + _BOUNDARY + time_fragment
+    else:
+        dt_fragment = time_fragment + _BOUNDARY + date_fragment
+    dt_start, dt_end = min(date_span[0], time_span[0]), max(date_span[1], time_span[1])
+
+    title_start = sample_name.find(title_hint) if title_hint else -1
+    if title_start != -1:
+        title_span = (title_start, title_start + len(title_hint))
+        if title_span[1] <= dt_start:
+            pattern = rf"(?P<title>.+?){_BOUNDARY}{dt_fragment}"
+        elif title_span[0] >= dt_end:
+            pattern = rf"{dt_fragment}{_BOUNDARY}(?P<title>.+)"
+        else:
+            # Title hint overlaps the date/time span - not a sane layout to build a boundary
+            # from, so fall back to letting the parser strip the matched date/time out of
+            # whatever's left, same as when no title hint is given at all.
+            pattern = dt_fragment
+    else:
+        pattern = dt_fragment
+
+    try:
+        compiled = validate_rule_pattern(pattern)
+    except ValueError:
+        return None
+    parsed = _apply_custom_rule(sample_name, compiled, now, tz)
     if parsed is None:
         return None
     start, title = parsed

@@ -1393,13 +1393,30 @@ async def test_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleTestIn, _ad
 
 class DummyEpgRuleSuggestIn(BaseModel):
     sample_name: str
+    title_hint: str | None = None
+    date_hint: str | None = None
+    time_hint: str | None = None
+    """Ground-truth substrings of sample_name the admin has identified by hand, for a naming
+    convention auto-detection alone can't handle (a written month name, or a title that sits
+    between unrelated noise rather than immediately before/after the date/time). When
+    date_hint and time_hint are both given, the pattern is built from their exact shape and
+    position instead of guessed - see dummy_epg.suggest_rule_from_hints."""
+    timezone: str | None = None
+    """Which zone to preview the parsed start time in - purely for the returned `start` preview,
+    same as DummyEpgRuleTestIn.timezone; doesn't affect what pattern gets suggested."""
 
 
 @router.post("/{playlist_id}/dummy-epg-rules/suggest")
 async def suggest_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleSuggestIn, _admin: AdminUser) -> dict:
     """Reverse-engineers a candidate rule pattern from one real channel name, so an admin doesn't
     have to hand-write regex - just point it at a channel and review/tweak/save the suggestion."""
-    suggestion = dummy_epg.suggest_rule_pattern(payload.sample_name)
+    tz = dummy_epg.resolve_timezone(payload.timezone)
+    if payload.date_hint and payload.time_hint:
+        suggestion = dummy_epg.suggest_rule_from_hints(
+            payload.sample_name, payload.title_hint, payload.date_hint, payload.time_hint, tz=tz
+        )
+    else:
+        suggestion = dummy_epg.suggest_rule_pattern(payload.sample_name, tz=tz)
     if suggestion is None:
         return {"suggested": False}
     return {
