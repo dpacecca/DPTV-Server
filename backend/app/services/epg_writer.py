@@ -7,6 +7,7 @@ from xml.sax.saxutils import escape
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.base import DummyEpgMode
 from app.models.epg import EpgProgram
 from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
@@ -119,6 +120,7 @@ async def compute_channel_programs(
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(hours=window_hours)
     event_rules, event_rules_by_id = await _load_event_rules(db, playlist_id)
+    display_tz = dummy_epg.resolve_timezone(get_settings().display_timezone)
 
     real_epg_channel_ids = {pc.epg_channel_id for pc in channels if pc.epg_channel_id}
     programs_by_epg_channel: dict[int, list[EpgProgram]] = {}
@@ -143,6 +145,37 @@ async def compute_channel_programs(
                     programs=[
                         PreviewProgram(start=p.start, stop=p.stop, title=p.title, description=p.description)
                         for p in real_programs
+                    ],
+                )
+            )
+            continue
+
+        if pc.sport_event_title and pc.sport_event_start:
+            # A Live Sport category clone (see sport_refresh.py) - title/start/venue already
+            # known exactly from the fetched fixture, so this bypasses dummy_epg_mode's
+            # regex-based guessing entirely rather than trying to parse a date back out of the
+            # channel's own auto-generated display name. Converted to the operator's configured
+            # display timezone here (not stored that way) so the "Kick off HH:MM" text and the
+            # "Up Next" countdown always reflect the *current* display_timezone setting, even if
+            # it's changed after this channel was last refreshed.
+            minutes = _resolve_program_minutes(pc)
+            event_start_local = pc.sport_event_start.astimezone(display_tz)
+            dummies = dummy_epg.generate_fixture_dummy(
+                pc.sport_event_title,
+                event_start_local,
+                minutes,
+                now,
+                window_hours,
+                venue_name=pc.sport_event_venue_name,
+                venue_city=pc.sport_event_venue_city,
+                venue_state=pc.sport_event_venue_state,
+            )
+            results.append(
+                ChannelPrograms(
+                    channel=pc,
+                    programs=[
+                        PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc)
+                        for d in dummies
                     ],
                 )
             )

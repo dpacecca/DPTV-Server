@@ -87,6 +87,17 @@ def _format_match_name(base_name: str, fixture: Fixture) -> str:
     return f"{fixture.home} v {fixture.away} ({when}) - {base_name}"
 
 
+def _format_event_title(fixture: Fixture) -> str:
+    """The actual EPG programme title for a matched fixture - distinct from the channel's own
+    display name above (which stays in that "at a glance in the channel list" format), this is
+    what shows up in the guide/program-info view. Uses the fuller team name where the provider
+    distinguishes one (see Fixture.home_display/away_display) since this isn't constrained by
+    needing to literally appear inside a channel name the way matching is."""
+    home = fixture.home_display or fixture.home
+    away = fixture.away_display or fixture.away
+    return f"{fixture.competition} - {home} vs {away}"
+
+
 async def refresh_sport_category(db: AsyncSession, category: PlaylistCategory) -> None:
     """Wipe-and-repopulate one Live Sport category's channels from the next few days of
     fixtures (see config.sport_lookahead_days) - live matches and ones still to come, not just
@@ -133,6 +144,11 @@ async def refresh_sport_category(db: AsyncSession, category: PlaylistCategory) -
                 sort_order=sort_order,
                 epg_channel_id=pc.epg_channel_id,
                 epg_match_type=pc.epg_match_type,
+                sport_event_title=_format_event_title(fixture),
+                sport_event_start=fixture.kickoff,
+                sport_event_venue_name=fixture.venue_name,
+                sport_event_venue_city=fixture.venue_city,
+                sport_event_venue_state=fixture.venue_state,
             )
         )
 

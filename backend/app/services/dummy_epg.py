@@ -54,6 +54,7 @@ class DummyProgram:
     start: datetime
     stop: datetime
     title: str
+    desc: str | None = None
 
 
 def _strip_matches(text: str, *matches: re.Match) -> str:
@@ -581,3 +582,48 @@ def generate_event_dummy(
     after = _tile(event_stop, window_end, FINISHED_TITLE)
 
     return before + [DummyProgram(start=event_start, stop=event_stop, title=display_title)] + after
+
+
+def _format_fixture_description(
+    event_start: datetime, venue_name: str | None, venue_city: str | None, venue_state: str | None
+) -> str:
+    parts = [f"Kick off {_format_local_time(event_start)}"]
+    if venue_name:
+        parts.append(venue_name)
+    location = ", ".join(p for p in (venue_city, venue_state) if p)
+    if location:
+        parts.append(location)
+    return ", ".join(parts)
+
+
+def generate_fixture_dummy(
+    title: str,
+    event_start: datetime,
+    event_minutes: int,
+    window_start: datetime,
+    window_hours: int,
+    venue_name: str | None = None,
+    venue_city: str | None = None,
+    venue_state: str | None = None,
+) -> list[DummyProgram]:
+    """Like generate_event_dummy, but for a channel whose event title/start time is already
+    known exactly from a fetched sport fixture (see sport_refresh.py) rather than scanned for out
+    of the channel's own name - there's no regex guessing involved, and no channel-name parsing
+    to fall back to if it fails, since the caller already has the real data in hand. Same "Up
+    Next" lead-in and post-event filler shape as generate_event_dummy (via the shared _tile
+    helper), so a Live Sport category channel's guide reads the same as any other event channel's
+    - the differences are that the event's own tile carries a description (kickoff time, in
+    whichever zone `event_start` itself is already expressed in - see PlaylistChannel's
+    sport_event_* handling in epg_writer.py - plus venue), and that there's no name-dummy
+    fallback path here at all: with real fixture data already in hand there's nothing to fall
+    back to."""
+    event_stop = event_start + timedelta(minutes=max(event_minutes, 15))
+    filler_start = window_start.replace(minute=0, second=0, microsecond=0)
+    window_end = window_start + timedelta(hours=window_hours)
+
+    up_next_title = f"Up Next: {title} starts {_format_local_time(event_start)} on {_format_local_date(event_start)}"
+    before = _tile(filler_start, min(event_start, window_end), up_next_title)
+    after = _tile(event_stop, window_end, FINISHED_TITLE)
+
+    description = _format_fixture_description(event_start, venue_name, venue_city, venue_state)
+    return before + [DummyProgram(start=event_start, stop=event_stop, title=title, desc=description)] + after

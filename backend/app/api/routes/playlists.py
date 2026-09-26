@@ -23,7 +23,7 @@ from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs, sp
 from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
-from app.services.sport_data import SPORT_LABELS
+from app.services.sport_data import SPORT_EVENT_MINUTES, SPORT_LABELS
 
 router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
@@ -355,6 +355,7 @@ async def create_category(playlist_id: int, payload: CategoryIn, db: DbSession, 
     data = payload.model_dump()
     if payload.sport_type is not None:
         data["name"] = SPORT_LABELS[payload.sport_type]
+        data["dummy_epg_program_minutes"] = SPORT_EVENT_MINUTES.get(payload.sport_type, 60)
     cat = PlaylistCategory(playlist_id=playlist_id, **data)
     db.add(cat)
     await db.commit()

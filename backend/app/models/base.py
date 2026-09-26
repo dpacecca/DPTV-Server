@@ -74,7 +74,9 @@ class ProbeStatus(str, enum.Enum):
 
 class SportType(str, enum.Enum):
     """Which live-sport data provider a "Live Sport" PlaylistCategory is backed by - see
-    app/services/sport_data.py. Only rugby today; adding another sport means adding a value here
-    plus a matching fetcher, nothing else needs to know the difference."""
+    app/services/sport_data.py. Adding another sport means adding a value here plus a matching
+    fetcher, nothing else needs to know the difference. VARCHAR-backed (see enum_column above),
+    not a native Postgres enum, so adding a value here needs no migration."""
 
     RUGBY = "rugby"
+    NFL = "nfl"

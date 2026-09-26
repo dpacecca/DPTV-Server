@@ -2,7 +2,7 @@ export type ChannelType = "live" | "vod" | "series";
 export type SourceType = "xtream" | "m3u";
 export type EpgMatchType = "none" | "auto" | "manual";
 export type DummyEpgMode = "inherit" | "off" | "name" | "event";
-export type SportType = "rugby";
+export type SportType = "rugby" | "nfl";
 
 export interface SupportedSport {
   value: SportType;

@@ -151,6 +151,17 @@ class PlaylistChannel(Base, TimestampMixin):
     doesn't match), instead of the default of trying every enabled playlist rule in sort_order.
     Ignored for any other dummy_epg_mode. None if the rule was deleted or never set."""
 
+    sport_event_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    """Set only on a channel cloned by a Live Sport category refresh (see sport_refresh.py) -
+    title/start/venue already known exactly from the fetched fixture, so EPG generation for this
+    channel bypasses dummy EPG's regex-based title/date guessing entirely (see
+    epg_writer.compute_channel_programs and dummy_epg.generate_fixture_dummy). None for every
+    ordinary channel, and re-set from scratch on every sport category refresh - never hand-edited."""
+    sport_event_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sport_event_venue_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sport_event_venue_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sport_event_venue_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
     detected_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detected_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detected_fps: Mapped[float | None] = mapped_column(Float, nullable=True)
