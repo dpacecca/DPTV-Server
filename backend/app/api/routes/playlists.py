@@ -1424,6 +1424,9 @@ async def suggest_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleSuggestI
         "pattern": suggestion.pattern,
         "start": suggestion.start.isoformat(),
         "title": suggestion.title,
+        "title_hint": suggestion.title_hint,
+        "date_hint": suggestion.date_hint,
+        "time_hint": suggestion.time_hint,
     }
 
 
