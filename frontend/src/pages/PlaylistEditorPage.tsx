@@ -1453,18 +1453,35 @@ function CategorySettingsModal({
     queryFn: () => api.get(`/api/playlists/${playlistId}/dummy-epg-rules`).then((r) => r.data),
   });
 
+  const errorMessage = (err: unknown) =>
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Save failed";
+
   const updateMutation = useMutation({
     mutationFn: (payload: Partial<PlaylistCategory>) =>
       api.patch(`/api/playlists/${playlistId}/categories/${category.id}`, payload),
     onSuccess: onChanged,
+    onError: (err) => notifications.show({ message: errorMessage(err), color: "red" }),
   });
+
+  // The Mode/Program length/Rule controls below already save themselves the instant they
+  // change (same as everywhere else in this modal), so by the time this is clicked they're
+  // already persisted - this only still has its own name save to do (if the name field was
+  // touched), then closes the modal either way, since "Save" is the admin's one signal that
+  // they're done with this dialog.
+  function saveAndClose() {
+    if (name !== category.name) {
+      updateMutation.mutate({ name }, { onSuccess: onClose });
+    } else {
+      onClose();
+    }
+  }
 
   return (
     <Modal opened onClose={onClose} title="Category Settings" size="md">
       <Stack>
         <Group align="flex-end">
           <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} style={{ flex: 1 }} />
-          <Button variant="light" onClick={() => updateMutation.mutate({ name })}>
+          <Button variant="light" onClick={saveAndClose} loading={updateMutation.isPending}>
             Save
           </Button>
         </Group>
