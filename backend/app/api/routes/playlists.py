@@ -518,6 +518,9 @@ async def _import_source_channels_into(
     skip_duplicates: bool,
     link_for_new_channels: bool,
 ) -> int:
+    """`source_channels` is imported in exactly the order given - the caller is responsible for
+    ordering it (see import_channels below), since what "channel order" even means differs by
+    import mode (one source category's own order vs. several merged together)."""
     existing_source_channel_ids: set[int] = set()
     if skip_duplicates:
         existing_result = await db.execute(
@@ -527,6 +530,13 @@ async def _import_source_channels_into(
             )
         )
         existing_source_channel_ids = {row[0] for row in existing_result.all()}
+
+    next_sort_order = (
+        await db.scalar(
+            select(func.max(PlaylistChannel.sort_order)).where(PlaylistChannel.playlist_category_id == target_cat.id)
+        )
+        or -1
+    ) + 1
 
     imported = 0
     involved_source_category_ids = set()
@@ -540,8 +550,10 @@ async def _import_source_channels_into(
                 source_channel_id=sc.id,
                 name=sc.name,
                 enabled=True,
+                sort_order=next_sort_order,
             )
         )
+        next_sort_order += 1
         imported += 1
 
     if link_for_new_channels:
@@ -600,9 +612,9 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
                 next_sort_order += 1
 
             channels_result = await db.execute(
-                select(SourceChannel).where(
-                    SourceChannel.source_category_id == source_cat.id, SourceChannel.removed_at.is_(None)
-                )
+                select(SourceChannel)
+                .where(SourceChannel.source_category_id == source_cat.id, SourceChannel.removed_at.is_(None))
+                .order_by(SourceChannel.sort_order, SourceChannel.id)
             )
             imported = await _import_source_channels_into(
                 db, target_cat, channels_result.scalars().all(), payload.skip_duplicates, payload.link_for_new_channels
@@ -645,7 +657,14 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
         raise HTTPException(400, "target_category_id or target_category_name is required")
 
     source_category_ids = set(payload.category_ids or [])
-    channel_query = select(SourceChannel).where(SourceChannel.removed_at.is_(None))
+    # Joined so several source categories merged into one target category still come out grouped
+    # by each one's own provider order (SourceCategory.sort_order) rather than interleaved by id.
+    channel_query = (
+        select(SourceChannel)
+        .join(SourceCategory, SourceChannel.source_category_id == SourceCategory.id)
+        .where(SourceChannel.removed_at.is_(None))
+        .order_by(SourceCategory.sort_order, SourceChannel.sort_order, SourceChannel.id)
+    )
     if payload.channel_ids:
         channel_query = channel_query.where(SourceChannel.id.in_(payload.channel_ids))
     elif source_category_ids:
