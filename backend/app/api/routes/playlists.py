@@ -20,7 +20,7 @@ from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
 from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs, sport_refresh_jobs
-from app.services.epg_writer import build_xmltv, compute_channel_programs
+from app.services.epg_writer import build_xmltv, compute_channel_programs, order_by_event_state
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
 from app.services.sport_data import SPORT_EVENT_MINUTES, SPORT_LABELS
@@ -693,6 +693,7 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
 
 
 MAX_PAGE_SIZE = 500
+EVENT_STATE_SORT_MAX_CHANNELS = 2000
 
 
 def _category_channels_query(category_id: int, q: str | None, enabled: bool | None, unmapped: bool | None = None):
@@ -730,6 +731,21 @@ async def list_category_channels(
 
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     base_query = _category_channels_query(category_id, q, enabled)
+
+    if cat.sort_mode == CategorySortMode.EVENT_STATE:
+        # Sorting by current program state needs every matching channel's programs computed up
+        # front (the live/upcoming/ended order isn't expressible in SQL) - capped the same as the
+        # EPG preview below, since this is meant for event-driven categories (tens to low
+        # hundreds of channels), not a full provider dump. `total` is capped to match so
+        # client-side infinite scroll never asks for a page past what was actually ordered.
+        result = await db.execute(
+            base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
+            .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
+            .limit(EVENT_STATE_SORT_MAX_CHANNELS)
+        )
+        ordered = await order_by_event_state(db, list(result.scalars().all()), playlist_id)
+        items = [_serialize_channel(pc) for pc in ordered[offset : offset + limit]]
+        return {"items": items, "total": len(ordered), "offset": offset, "limit": limit}
 
     total = await db.scalar(select(func.count()).select_from(base_query.subquery()))
     result = await db.execute(

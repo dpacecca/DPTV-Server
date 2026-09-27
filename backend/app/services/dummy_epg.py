@@ -59,6 +59,13 @@ class DummyProgram:
     stop: datetime
     title: str
     desc: str | None = None
+    is_event: bool = True
+    """False only for the synthetic "Up Next"/"Scheduled event finished" filler tiles _tile()
+    builds around a real event (see generate_event_dummy/generate_fixture_dummy) - grid filler,
+    not real programming. True for every other program (a NAME-mode channel's repeating blocks,
+    a matched event's own tile) - see epg_writer.order_by_event_state, which needs to tell a
+    channel's actual live/upcoming/ended state apart from a filler tile that happens to also
+    cover "now"."""
 
 
 def _strip_matches(text: str, *matches: re.Match) -> str:
@@ -544,12 +551,14 @@ def _format_local_date(dt: datetime) -> str:
 
 def _tile(start: datetime, end: datetime, title: str) -> list[DummyProgram]:
     """Fixed UP_NEXT_BLOCK_MINUTES-sized blocks covering [start, end), last one clipped -
-    shared by both the pre-event countdown and the post-event filler below."""
+    shared by both the pre-event countdown and the post-event filler below. Always filler
+    (is_event=False) - the caller appends the one real event tile itself, between this
+    function's two calls."""
     programs: list[DummyProgram] = []
     slot_start = start
     while slot_start < end:
         slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), end)
-        programs.append(DummyProgram(start=slot_start, stop=slot_end, title=title))
+        programs.append(DummyProgram(start=slot_start, stop=slot_end, title=title, is_event=False))
         slot_start = slot_end
     return programs
 
