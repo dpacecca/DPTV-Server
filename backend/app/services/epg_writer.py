@@ -113,6 +113,12 @@ class PreviewProgram:
     stop: datetime
     title: str
     description: str | None = None
+    is_event: bool = True
+    """False only for a dummy EPG "Up Next"/"Scheduled event finished" filler tile - see
+    DummyProgram.is_event. Always True for a real EPG program (every one of those is real
+    programming, never filler) - order_by_event_state below uses this to tell a channel's
+    genuine live/upcoming/ended state apart from a filler tile that also happens to cover
+    "now"."""
 
 
 @dataclass
@@ -195,7 +201,7 @@ async def compute_channel_programs(
                 ChannelPrograms(
                     channel=pc,
                     programs=[
-                        PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc)
+                        PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc, is_event=d.is_event)
                         for d in dummies
                     ],
                 )
@@ -263,7 +269,8 @@ async def compute_channel_programs(
             ChannelPrograms(
                 channel=pc,
                 programs=[
-                    PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc) for d in dummies
+                    PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc, is_event=d.is_event)
+                    for d in dummies
                 ],
             )
         )
@@ -284,10 +291,15 @@ async def order_by_event_state(
     now = datetime.now(timezone.utc)
 
     def sort_key(cp: ChannelPrograms) -> tuple[int, datetime]:
-        live = next((p for p in cp.programs if p.start <= now < p.stop), None)
+        # Only real programs count here, never a dummy EPG "Up Next"/"Scheduled event finished"
+        # filler tile (see PreviewProgram.is_event) - those continuously blanket the whole window
+        # around a real event, so without this every channel's filler would cover "now" and
+        # everything would misclassify as live.
+        event_programs = [p for p in cp.programs if p.is_event]
+        live = next((p for p in event_programs if p.start <= now < p.stop), None)
         if live is not None:
             return (0, live.stop)
-        upcoming = next((p for p in cp.programs if p.start > now), None)
+        upcoming = next((p for p in event_programs if p.start > now), None)
         if upcoming is not None:
             return (1, upcoming.start)
         return (2, datetime.max.replace(tzinfo=timezone.utc))
