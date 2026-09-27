@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.base import (
+    CategorySortMode,
     ChannelType,
     DummyEpgMode,
     EpgMatchType,
@@ -115,6 +116,11 @@ class PlaylistCategory(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255))
     channel_type: Mapped[ChannelType] = mapped_column(enum_column(ChannelType))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    sort_mode: Mapped[CategorySortMode] = mapped_column(enum_column(CategorySortMode), default=CategorySortMode.MANUAL)
+    """MANUAL keeps PlaylistChannel.sort_order (the existing drag order) as-is. EVENT_STATE
+    instead reorders this category's channels in generated M3U/XMLTV output by current program
+    state - see CategorySortMode's docstring and epg_writer.order_by_event_state."""
 
     dummy_epg_mode: Mapped[DummyEpgMode] = mapped_column(enum_column(DummyEpgMode), default=DummyEpgMode.OFF)
     """Default dummy EPG behavior for any channel in this category left on "Inherit" (see

@@ -72,6 +72,19 @@ class ProbeStatus(str, enum.Enum):
     NO_URL = "no_url"
 
 
+class CategorySortMode(str, enum.Enum):
+    """How a PlaylistCategory's channels are ordered in generated M3U/XMLTV output.
+
+    MANUAL is the existing drag-ordered PlaylistChannel.sort_order, unchanged. EVENT_STATE
+    instead orders by each channel's current program state - live now first, then upcoming
+    (soonest start first), then ended/no-schedule last - recomputed fresh on every M3U request
+    (see epg_writer.order_by_event_state) rather than stored, so a channel's position naturally
+    shifts as its program starts/ends with no separate resort step."""
+
+    MANUAL = "manual"
+    EVENT_STATE = "event_state"
+
+
 class SportType(str, enum.Enum):
     """Which live-sport data provider a "Live Sport" PlaylistCategory is backed by - see
     app/services/sport_data.py. Adding another sport means adding a value here plus a matching

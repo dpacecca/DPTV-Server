@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
-from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType, SportType
+from app.models.base import CategorySortMode, ChannelType, DummyEpgMode, EpgMatchType, SourceType, SportType
 from app.models.epg import EpgChannel
 from app.models.playlist import (
     DummyEpgRule,
@@ -81,6 +81,7 @@ def _serialize_category_summary(cat: PlaylistCategory, channel_count: int) -> di
         "name": cat.name,
         "channel_type": cat.channel_type,
         "sort_order": cat.sort_order,
+        "sort_mode": cat.sort_mode,
         "dummy_epg_mode": cat.dummy_epg_mode,
         "dummy_epg_program_minutes": cat.dummy_epg_program_minutes,
         "dummy_epg_rule_id": cat.dummy_epg_rule_id,
@@ -338,6 +339,10 @@ class CategoryIn(BaseModel):
 class CategoryUpdate(BaseModel):
     name: str | None = None
     sort_order: int | None = None
+    sort_mode: CategorySortMode | None = None
+    """MANUAL keeps the existing drag order; EVENT_STATE reorders this category's channels in
+    generated M3U/XMLTV output by current program state (live, then upcoming, then ended) -
+    see CategorySortMode's docstring."""
     dummy_epg_mode: DummyEpgMode | None = None
     """Default dummy EPG for any channel in this category left on "Inherit" - never INHERIT
     itself. Setting this to EVENT alongside dummy_epg_rule_id is what makes a channel added to
@@ -1481,7 +1486,7 @@ async def output_m3u(playlist_id: int, xc_user_id: int, db: DbSession, _admin: A
     xc_user = await db.get(XcUser, xc_user_id)
     if xc_user is None:
         raise HTTPException(404, "XC user not found")
-    text = build_m3u(playlist, xc_user)
+    text = await build_m3u(db, playlist, xc_user)
     return Response(content=text, media_type="application/x-mpegurl")
 
 

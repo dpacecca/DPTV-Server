@@ -270,6 +270,31 @@ async def compute_channel_programs(
     return results
 
 
+async def order_by_event_state(
+    db: AsyncSession, channels: list[PlaylistChannel], playlist_id: int
+) -> list[PlaylistChannel]:
+    """Reorders `channels` for CategorySortMode.EVENT_STATE: currently-live first, then upcoming
+    (soonest start first), then ended/no-schedule last. Recomputed fresh on every call using the
+    exact same program data as the real XMLTV feed - M3U output is already generated on demand
+    per request (see m3u_writer.build_m3u), so a channel's position naturally shifts as its
+    current program starts/ends with no separate resort step or stored order to maintain."""
+    if not channels:
+        return []
+    channel_programs = await compute_channel_programs(db, channels, playlist_id)
+    now = datetime.now(timezone.utc)
+
+    def sort_key(cp: ChannelPrograms) -> tuple[int, datetime]:
+        live = next((p for p in cp.programs if p.start <= now < p.stop), None)
+        if live is not None:
+            return (0, live.stop)
+        upcoming = next((p for p in cp.programs if p.start > now), None)
+        if upcoming is not None:
+            return (1, upcoming.start)
+        return (2, datetime.max.replace(tzinfo=timezone.utc))
+
+    return [cp.channel for cp in sorted(channel_programs, key=sort_key)]
+
+
 async def build_xmltv(db: AsyncSession, playlist: Playlist, window_hours: int = DEFAULT_WINDOW_HOURS) -> bytes:
     all_channels: list[PlaylistChannel] = [
         pc for category in playlist.categories for pc in category.channels if pc.enabled
