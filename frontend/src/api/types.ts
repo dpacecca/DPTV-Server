@@ -3,6 +3,7 @@ export type SourceType = "xtream" | "m3u";
 export type EpgMatchType = "none" | "auto" | "manual";
 export type DummyEpgMode = "inherit" | "off" | "name" | "event";
 export type SportType = "rugby" | "nfl";
+export type CategorySortMode = "manual" | "event_state";
 
 export interface SupportedSport {
   value: SportType;
@@ -96,6 +97,7 @@ export interface PlaylistCategory {
   name: string;
   channel_type: ChannelType;
   sort_order: number;
+  sort_mode: CategorySortMode;
   dummy_epg_mode: DummyEpgMode;
   dummy_epg_program_minutes: number;
   dummy_epg_rule_id: number | null;

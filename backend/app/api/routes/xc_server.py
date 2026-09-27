@@ -265,7 +265,7 @@ async def get_m3u(db: DbSession, username: str | None = None, password: str | No
     playlists = await _enabled_playlists(db, user)
     lines = ["#EXTM3U"]
     for pl in playlists:
-        body = build_m3u(pl, user)
+        body = await build_m3u(db, pl, user)
         lines.extend(body.splitlines()[1:])
     return Response(content="\n".join(lines) + "\n", media_type="application/x-mpegurl")
 

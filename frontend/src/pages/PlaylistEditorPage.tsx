@@ -55,6 +55,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce, useDebouncedCallback } from "use-debounce";
 import { api, refreshSportCategory } from "../api/client";
 import type {
+  CategorySortMode,
   ChannelType,
   DummyEpgMode,
   EpgSource,
@@ -801,6 +802,11 @@ function SortableCategoryRow({
                 Live
               </Badge>
             )}
+            {category.sort_mode === "event_state" && (
+              <Badge size="xs" variant="light" color="teal">
+                Auto-sort
+              </Badge>
+            )}
           </Group>
           <Text size="xs" c="dimmed">
             {category.channel_count} {category.sport_type ? "live now" : "channels"}
@@ -867,8 +873,10 @@ function ChannelTable({
   // every other channel's position relative to it. See reorderMutation below for the rest of
   // the contract this relies on (the loaded window is always the lowest-sort_order prefix). A
   // Live Sport category's channel list is entirely computed by the periodic refresh job, so
-  // there's no manual order to preserve there either.
-  const reorderEnabled = !search && !category.sport_type;
+  // there's no manual order to preserve there either. Same for a category on "Auto-sort" - the
+  // drag order is still stored, but generated output ignores it in favor of current program
+  // state (see CategorySettingsModal), so reordering by hand here would have no visible effect.
+  const reorderEnabled = !search && !category.sport_type && category.sort_mode !== "event_state";
   const channelSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const [draggingChannelId, setDraggingChannelId] = useState<number | null>(null);
   // Shift-click range-select's anchor - only ever meaningful against rows actually loaded into
@@ -940,7 +948,9 @@ function ChannelTable({
     <Stack gap={4} style={{ flex: 1, minHeight: 0 }}>
       {!reorderEnabled && (
         <Text size="xs" c="dimmed">
-          {category.sport_type ? "This category's order is set automatically." : "Clear the search to drag-reorder channels."}
+          {category.sport_type || category.sort_mode === "event_state"
+            ? "This category's order is set automatically."
+            : "Clear the search to drag-reorder channels."}
         </Text>
       )}
       <DndContext
@@ -1448,6 +1458,7 @@ function CategorySettingsModal({
   );
   const [dummyMinutes, setDummyMinutes] = useState(category.dummy_epg_program_minutes);
   const [dummyRuleId, setDummyRuleId] = useState<number | null>(category.dummy_epg_rule_id);
+  const [sortMode, setSortMode] = useState<CategorySortMode>(category.sort_mode);
 
   const { data: dummyEpgRules } = useQuery<DummyEpgRule[]>({
     queryKey: ["dummy-epg-rules", playlistId],
@@ -1486,6 +1497,24 @@ function CategorySettingsModal({
             Save
           </Button>
         </Group>
+
+        <Text fw={600} size="sm" mt="sm">
+          Channel Order
+        </Text>
+        <Select
+          label="Order channels in output by"
+          description="Automatic re-sorts on every request using each channel's current program - live now first, then up next (soonest start), then ended - so the order keeps shifting as programs finish. Only affects generated M3U/output order, not this list."
+          data={[
+            { value: "manual", label: "Manual (drag to reorder)" },
+            { value: "event_state", label: "Automatic (live, then up next, then ended)" },
+          ]}
+          value={sortMode}
+          onChange={(v) => {
+            const mode = (v as CategorySortMode) ?? "manual";
+            setSortMode(mode);
+            updateMutation.mutate({ sort_mode: mode });
+          }}
+        />
 
         <Text fw={600} size="sm" mt="sm">
           Default Dummy EPG for New Channels
