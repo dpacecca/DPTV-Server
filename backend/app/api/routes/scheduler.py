@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.api.deps import AdminUser, DbSession
 from app.models.base import SyncTrigger
 from app.models.sync import SyncRun, SyncSchedule
+from app.services.rugby_digest import send_daily_rugby_digest
 from app.services.sync_engine import run_full_sync
 
 router = APIRouter(prefix="/api", tags=["scheduler"])
@@ -116,3 +117,14 @@ async def trigger_manual_sync(db: DbSession, _admin: AdminUser) -> dict:
     run = await run_full_sync(db, SyncTrigger.MANUAL)
     await db.commit()
     return {"id": run.id, "status": run.status, "summary": run.summary}
+
+
+@router.post("/rugby-digest/run")
+async def trigger_rugby_digest(db: DbSession, _admin: AdminUser) -> dict:
+    """Sends today's rugby digest to Gotify right now, outside its daily schedule - the Settings
+    page's "Send Now" button uses this both to confirm Gotify is reachable and to preview the
+    digest without waiting for rugby_digest_time."""
+    try:
+        return await send_daily_rugby_digest(db)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from None

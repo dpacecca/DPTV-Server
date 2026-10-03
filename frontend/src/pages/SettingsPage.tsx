@@ -41,7 +41,13 @@ interface SettingsResponse {
 }
 
 // Order groups appear in - anything not listed here (shouldn't happen) falls in after.
-const GROUP_ORDER = ["Server", "Security", "Live Sport", "Duplicate Scanning", "Logging"];
+const GROUP_ORDER = ["Server", "Security", "Live Sport", "Notifications", "Duplicate Scanning", "Logging"];
+
+interface RugbyDigestResult {
+  matches: number;
+  channels_matched: number;
+  sent: boolean;
+}
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -70,6 +76,24 @@ export default function SettingsPage() {
     onError: (err) => {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Save failed";
+      notifications.show({ message, color: "red" });
+    },
+  });
+
+  const rugbyDigestMutation = useMutation({
+    mutationFn: () => api.post<RugbyDigestResult>("/api/rugby-digest/run").then((r) => r.data),
+    onSuccess: (result) => {
+      notifications.show({
+        message:
+          result.matches === 0
+            ? "Sent - no matches today in your followed competitions."
+            : `Sent - ${result.matches} match${result.matches === 1 ? "" : "es"}, ${result.channels_matched} matched to a channel.`,
+        color: "green",
+      });
+    },
+    onError: (err) => {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Send failed";
       notifications.show({ message, color: "red" });
     },
   });
@@ -121,6 +145,24 @@ export default function SettingsPage() {
                 onChange={(v) => setField(field.key, v)}
               />
             ))}
+            {group === "Notifications" && (
+              <Group>
+                <Button
+                  size="xs"
+                  variant="light"
+                  onClick={() => rugbyDigestMutation.mutate()}
+                  loading={rugbyDigestMutation.isPending}
+                  disabled={hasChanges}
+                >
+                  Send Rugby Digest Now
+                </Button>
+                {hasChanges && (
+                  <Text size="xs" c="dimmed">
+                    Save your changes above first.
+                  </Text>
+                )}
+              </Group>
+            )}
           </Stack>
         </Paper>
       ))}

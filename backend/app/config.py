@@ -71,11 +71,21 @@ class Settings(BaseSettings):
 
     display_timezone: str = "UTC"
     """IANA zone name used wherever server-generated text needs to bake in a fixed local time -
-    e.g. the "Kick off HH:MM" line in a Live Sport category's generated event description. Unlike
-    a programme's own <start> timestamp (which every XMLTV player already localizes to the
-    viewer's own device from its UTC offset), a description is plain text baked in once at
-    generation time - it can't adjust per viewer, so this is the one zone every viewer sees it
-    in. Falls back to UTC if unset or invalid."""
+    e.g. the "Kick off HH:MM" line in a Live Sport category's generated event description, and
+    the daily rugby digest below. Unlike a programme's own <start> timestamp (which every XMLTV
+    player already localizes to the viewer's own device from its UTC offset), a description is
+    plain text baked in once at generation time - it can't adjust per viewer, so this is the one
+    zone every viewer sees it in. Falls back to UTC if unset or invalid."""
+
+    gotify_url: str | None = None
+    """Base URL of a Gotify server (e.g. "https://gotify.example.com", no trailing path) to send
+    the daily rugby digest to. Required only once rugby_digest_time is in use."""
+    gotify_token: str | None = None
+    """A Gotify application token (created in Gotify's own UI) - required alongside gotify_url."""
+    rugby_digest_time: str = "07:00"
+    """24-hour "HH:MM", interpreted in display_timezone - when the daily rugby digest (today's
+    matches across the followed competitions, and which channel each is on) fires. The job is
+    only scheduled once both gotify_url and gotify_token are set - see services/rugby_digest.py."""
 
 
 @lru_cache

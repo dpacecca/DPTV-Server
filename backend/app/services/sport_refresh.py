@@ -145,7 +145,7 @@ async def refresh_sport_category(db: AsyncSession, category: PlaylistCategory) -
         today = datetime.now(timezone.utc).date()
         fixtures: list[Fixture] = []
         for offset in range(settings.sport_lookahead_days):
-            fixtures.extend(await sport_data.fetch_fixtures(category.sport_type, today + timedelta(days=offset)))
+            fixtures.extend(await sport_data.fetch_fixtures(db, category.sport_type, today + timedelta(days=offset)))
         upcoming = sorted((f for f in fixtures if not f.is_finished), key=lambda f: f.kickoff)
 
         # Keyed by (fixture, channel) rather than just channel id - the same channel can
@@ -229,7 +229,7 @@ async def refresh_all_sport_fixture_caches(db: AsyncSession) -> int:
             today = datetime.now(timezone.utc).date()
             fixtures: list[Fixture] = []
             for offset in range(settings.sport_lookahead_days):
-                fixtures.extend(await sport_data.fetch_fixtures(sport_type, today + timedelta(days=offset)))
+                fixtures.extend(await sport_data.fetch_fixtures(db, sport_type, today + timedelta(days=offset)))
             await _cache_fixtures(db, sport_type, fixtures)
             await db.commit()
             refreshed += 1

@@ -108,6 +108,31 @@ class SportFixtureCache(Base, TimestampMixin):
     venue_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 
+class NflTeamVenue(Base, TimestampMixin):
+    """One NFL team's home stadium, fetched once from AllSportsApi's per-team endpoint and
+    cached indefinitely (a team's home stadium essentially never changes within a season, rarely
+    even across seasons) - see services/allsports_nfl.py. Keyed by AllSportsApi's own team id,
+    not anything of this app's, since nothing else treats an NFL team as a first-class object.
+    Populated lazily (a team's row is fetched the first time one of its games shows up in a
+    fixtures pull, not proactively for all 32 teams up front - AllSportsApi has no "list every
+    team" endpoint this app could use to seed it), so coverage fills in naturally over the first
+    few weeks of a season rather than all at once.
+
+    This is a team's permanent home ground, not a specific game's venue - AllSportsApi's fixtures
+    feed carries no per-game venue at all, so a neutral-site or international game ends up
+    attributed to the home team's usual stadium anyway (wrong for those specific games, right for
+    the overwhelming majority - see allsports_nfl.attach_venues' docstring)."""
+
+    __tablename__ = "nfl_team_venues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    team_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    team_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    venue_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    venue_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    venue_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
+
 class PlaylistCategory(Base, TimestampMixin):
     __tablename__ = "playlist_categories"
 
