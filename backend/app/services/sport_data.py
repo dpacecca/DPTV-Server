@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.base import SportType
@@ -57,6 +58,10 @@ class Fixture:
     venue_name: str | None = None
     venue_city: str | None = None
     venue_state: str | None = None
+    home_id: str | None = None
+    """The provider's own id for the home team, if it has one - currently only set by
+    allsports_nfl.py, which needs it to look up (and lazily cache) that team's home stadium (see
+    allsports_nfl.attach_venues) since AllSportsApi's fixtures feed carries no per-game venue."""
 
 
 _RUGBY_HOST = "rugby-live-data.p.rapidapi.com"
@@ -117,85 +122,17 @@ async def fetch_rugby_fixtures(target_date: date) -> list[Fixture]:
     return fixtures
 
 
-_ESPN_HOST = "espn-api2.p.rapidapi.com"
-
-# ESPN's own status.state convention (this RapidAPI wrapper passes it straight through):
-# "pre" - not started, "in" - live, "post" - finished. Unlike rugby's free-text status field,
-# this is a small closed set of known values, so exact membership is enough - no keyword-drift
-# handling needed here.
-_ESPN_LIVE_STATES = {"in"}
-_ESPN_FINISHED_STATES = {"post"}
+_FETCHERS = {SportType.RUGBY: fetch_rugby_fixtures}
 
 
-def _classify_espn_status(state: str) -> tuple[bool, bool]:
-    """Returns (is_live, is_finished) - neither true means the fixture hasn't kicked off yet."""
-    s = state.strip().lower()
-    if s in _ESPN_LIVE_STATES:
-        return True, False
-    if s in _ESPN_FINISHED_STATES:
-        return False, True
-    return False, False
+async def fetch_fixtures(db: AsyncSession, sport_type: SportType, target_date: date) -> list[Fixture]:
+    """NFL is special-cased rather than living in _FETCHERS like every other sport: unlike a pure
+    fetch, it additionally needs `db` to backfill each game's venue from a per-team cache (see
+    allsports_nfl.attach_venues' docstring for why AllSportsApi can't just hand that over
+    directly)."""
+    if sport_type == SportType.NFL:
+        from app.services import allsports_nfl  # local import - allsports_nfl imports Fixture from here
 
-
-async def fetch_nfl_fixtures(target_date: date) -> list[Fixture]:
-    """One day's NFL games. Unlike rugby's per-fixture endpoint, this scoreboard endpoint takes
-    a single calendar date (YYYYMMDD, no separators) and returns every game kicking off that
-    day - NFL games cluster on a handful of days a week (mostly Thu/Sun/Mon), so most other days
-    in the lookahead window simply come back with an empty `events` list, which is expected, not
-    an error."""
-    settings = get_settings()
-    if not settings.rapidapi_key:
-        raise RuntimeError("DPTV_RAPIDAPI_KEY is not configured")
-
-    url = f"https://{_ESPN_HOST}/api/v1/scoreboard"
-    params = {"date": target_date.strftime("%Y%m%d"), "sport": "football", "league": "nfl", "limit": 100}
-    headers = {"x-rapidapi-host": _ESPN_HOST, "x-rapidapi-key": settings.rapidapi_key}
-    async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
-        resp = await client.get(url, params=params, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-
-    fixtures: list[Fixture] = []
-    for row in data.get("events", []):
-        try:
-            kickoff = datetime.fromisoformat(row["date"])
-            # Keyed by "homeAway" rather than assuming list order or parsing the free-text
-            # `name`/`shortName` fields (which aren't even consistently formatted - e.g. one row
-            # in a real response used "BAL VS DAL" where every other one used "LV @ NO").
-            competitors = {c["homeAway"]: c for c in row["competitors"]}
-            home, away = competitors["home"], competitors["away"]
-            is_live, is_finished = _classify_espn_status(row.get("status", {}).get("state", ""))
-            fixtures.append(
-                Fixture(
-                    id=str(row["id"]),
-                    competition="NFL",
-                    kickoff=kickoff,
-                    # shortDisplayName ("Bills", "Chargers"), not the full "City Mascot" form
-                    # ("Buffalo Bills") - channel names from providers overwhelmingly use just
-                    # the mascot name (e.g. "NFL | 02 - 1pm Chargers at Bills"), and the matcher
-                    # in sport_refresh.py requires the fixture's team name to appear as a literal
-                    # substring, so matching on the full display name would silently match
-                    # nothing on real-world channel names.
-                    home=home["shortDisplayName"],
-                    away=away["shortDisplayName"],
-                    is_live=is_live,
-                    is_finished=is_finished,
-                    home_score=int(home["score"]) if home.get("score") not in (None, "") else None,
-                    away_score=int(away["score"]) if away.get("score") not in (None, "") else None,
-                    home_display=home.get("displayName") or home["shortDisplayName"],
-                    away_display=away.get("displayName") or away["shortDisplayName"],
-                    venue_name=(row.get("venue") or {}).get("name") or None,
-                    venue_city=(row.get("venue") or {}).get("city") or None,
-                    venue_state=(row.get("venue") or {}).get("state") or None,
-                )
-            )
-        except (KeyError, ValueError):
-            logger.warning("Skipping malformed NFL fixture row: %r", row)
-    return fixtures
-
-
-_FETCHERS = {SportType.RUGBY: fetch_rugby_fixtures, SportType.NFL: fetch_nfl_fixtures}
-
-
-async def fetch_fixtures(sport_type: SportType, target_date: date) -> list[Fixture]:
+        fixtures = await allsports_nfl.fetch_nfl_fixtures(target_date)
+        return await allsports_nfl.attach_venues(db, fixtures)
     return await _FETCHERS[sport_type](target_date)
