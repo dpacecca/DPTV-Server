@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from app.api.deps import AdminUser
 from app.config import get_settings
-from app.core.scheduler import reschedule_sport_refresh
+from app.core.scheduler import reschedule_rugby_digest, reschedule_sport_refresh
 from app.services import env_file
 from app.services.dummy_epg import list_timezones
 
@@ -30,7 +30,7 @@ EXCLUDED_FIELDS: dict[str, str] = {
     ),
 }
 
-SECRET_FIELDS = {"secret_key", "rapidapi_key"}
+SECRET_FIELDS = {"secret_key", "rapidapi_key", "gotify_token"}
 
 # (group, type) per included field - hand-maintained (not introspected from the Settings model)
 # since a handful of fields need special handling anyway (secrets masked, display_timezone as a
@@ -52,6 +52,9 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "sport_lookahead_days": ("Live Sport", "int"),
     "sport_refresh_interval_minutes": ("Live Sport", "int"),
     "display_timezone": ("Live Sport", "timezone"),
+    "gotify_url": ("Notifications", "string"),
+    "gotify_token": ("Notifications", "secret"),
+    "rugby_digest_time": ("Notifications", "string"),
 }
 
 FIELD_DESCRIPTIONS: dict[str, str] = {
@@ -74,10 +77,16 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "scan_default_concurrency": "How many streams to probe at once by default during a duplicate scan.",
     "scan_max_concurrency": "Upper limit an admin can raise a scan's concurrency to.",
     "scan_default_timeout_seconds": "Default per-stream timeout (seconds) during a duplicate scan.",
-    "rapidapi_key": "RapidAPI key used for Live Sport fixture providers (Rugby, NFL). Required only once a Live Sport category exists.",
+    "rapidapi_key": "RapidAPI key used for Live Sport fixture providers (Rugby, NFL, AllSportsApi). Required for a Live Sport category, a sport-type Dummy EPG rule, or the rugby digest below.",
     "sport_lookahead_days": "How many days ahead each Live Sport refresh fetches fixtures for. Each day costs one provider API call.",
     "sport_refresh_interval_minutes": "How often Live Sport categories re-fetch fixtures. Lowering this multiplies API call volume - check your provider's monthly quota first.",
-    "display_timezone": "IANA zone used wherever server-generated text bakes in a fixed local time (e.g. a Live Sport event's \"Kick off HH:MM\" description).",
+    "display_timezone": "IANA zone used wherever server-generated text bakes in a fixed local time (e.g. a Live Sport event's \"Kick off HH:MM\" description, or the rugby digest's times below).",
+    "gotify_url": "Base URL of your Gotify server, e.g. https://gotify.example.com (no trailing path).",
+    "gotify_token": "A Gotify application token, created in Gotify's own UI. Required alongside the URL above.",
+    "rugby_digest_time": (
+        "24-hour HH:MM, in the Display Timezone above - when the daily rugby digest fires. Only "
+        "scheduled once both Gotify fields above are set."
+    ),
 }
 
 
@@ -147,6 +156,9 @@ class SettingsUpdate(BaseModel):
     sport_lookahead_days: int | None = None
     sport_refresh_interval_minutes: int | None = None
     display_timezone: str | None = None
+    gotify_url: str | None = None
+    gotify_token: str | None = None
+    rugby_digest_time: str | None = None
 
 
 @router.patch("")
@@ -166,5 +178,8 @@ async def update_settings(payload: SettingsUpdate, _admin: AdminUser) -> dict:
 
     if "sport_refresh_interval_minutes" in changes:
         reschedule_sport_refresh(new_settings.sport_refresh_interval_minutes)
+
+    if {"rugby_digest_time", "display_timezone", "gotify_url", "gotify_token"} & changes.keys():
+        reschedule_rugby_digest()
 
     return {"ok": True}

@@ -11,7 +11,9 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
+from app.services.dummy_epg import resolve_timezone
 from app.services.iptv_org_epg import refresh_logo_cache
+from app.services.rugby_digest import send_daily_rugby_digest
 from app.services.sport_refresh import refresh_all_sport_categories, refresh_all_sport_fixture_caches
 from app.services.sync_engine import run_full_sync
 
@@ -44,6 +46,23 @@ async def _refresh_sport_categories_job() -> None:
             logger.info("Refreshed %d sport fixture cache(s) for dummy EPG rules", count)
         except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
             logger.exception("Failed to refresh sport fixture caches")
+
+
+async def _rugby_digest_job() -> None:
+    async with SessionLocal() as db:
+        try:
+            result = await send_daily_rugby_digest(db)
+            logger.info("Sent daily rugby digest: %s", result)
+        except Exception:  # noqa: BLE001 - best-effort background notification, never worth crashing over
+            logger.exception("Failed to send daily rugby digest")
+
+
+def _rugby_digest_trigger(time_str: str, tz_name: str) -> CronTrigger:
+    """rugby_digest_time is "HH:MM" in display_timezone (not UTC, unlike the scheduler's own
+    default) - a plain hour/minute makes no sense to an admin in UTC, and CronTrigger accepts its
+    own `timezone` override independent of the scheduler-wide one set at construction above."""
+    hour, minute = (int(p) for p in time_str.split(":", 1))
+    return CronTrigger(hour=hour, minute=minute, timezone=resolve_timezone(tz_name))
 
 
 async def _run_scheduled_sync(schedule_id: int) -> None:
@@ -95,6 +114,24 @@ def reschedule_sport_refresh(minutes: int) -> None:
     scheduler.reschedule_job("sport-categories-refresh", trigger=IntervalTrigger(minutes=minutes))
 
 
+def reschedule_rugby_digest() -> None:
+    """Rebuilds (or removes) the "rugby-digest" job - called after an admin edits
+    rugby_digest_time, display_timezone, gotify_url, or gotify_token via the Settings page, since
+    a job's trigger is otherwise only ever read once, at start_scheduler() below. Removes the job
+    entirely (rather than erroring) if Gotify isn't, or is no longer, configured - the digest is
+    only ever scheduled once both gotify_url and gotify_token are set, with no separate on/off
+    toggle to keep in sync."""
+    if not scheduler.running:
+        return
+    settings = get_settings()
+    if not settings.gotify_url or not settings.gotify_token:
+        if scheduler.get_job("rugby-digest"):
+            scheduler.remove_job("rugby-digest")
+        return
+    trigger = _rugby_digest_trigger(settings.rugby_digest_time, settings.display_timezone)
+    scheduler.add_job(_rugby_digest_job, trigger=trigger, id="rugby-digest", replace_existing=True)
+
+
 async def start_scheduler() -> None:
     if not scheduler.running:
         scheduler.start()
@@ -128,3 +165,11 @@ async def start_scheduler() -> None:
         id="sport-categories-refresh-initial",
         replace_existing=True,
     )
+    settings = get_settings()
+    if settings.gotify_url and settings.gotify_token:
+        scheduler.add_job(
+            _rugby_digest_job,
+            trigger=_rugby_digest_trigger(settings.rugby_digest_time, settings.display_timezone),
+            id="rugby-digest",
+            replace_existing=True,
+        )
