@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import ChannelType, SyncStatus, SyncTrigger
+from app.models.base import ChannelType, EpgMatchType, SyncStatus, SyncTrigger
 from app.models.epg import EpgChannel, EpgSource
 from app.models.playlist import PlaylistCategorySourceLink, PlaylistChannel
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun
+from app.services import epg_mapper
 from app.services.epg_parser import parse_xmltv
 from app.services.xtream_client import ChannelData, XtreamClient, fetch_m3u_categories_and_channels
 from app.models.base import SourceType
@@ -160,10 +161,20 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
             )
             next_sort_order_by_cat = {cat_id: (max_order or -1) + 1 for cat_id, max_order in max_result.all()}
 
+        # This source's assigned EPG (see Source.epg_source_id) - fetched once for the whole
+        # batch rather than per channel, same reasoning as next_sort_order_by_cat above. Empty
+        # when the source has no EPG assigned, in which case every new channel below just gets
+        # EpgMatchType.NONE, same as before this existed.
+        epg_candidates: dict[int, str] = {}
+        if source.epg_source_id is not None:
+            epg_result = await db.execute(select(EpgChannel).where(EpgChannel.epg_source_id == source.epg_source_id))
+            epg_candidates = {c.id: c.display_name for c in epg_result.scalars().all()}
+
         # Sorted by the channel's own provider-order position (not new_channel_rows' own
         # iteration order, which follows the provider's flat multi-category response) so a
         # landing category's channels come in correctly whatever order they were encountered in.
         for row in sorted(new_channel_rows, key=lambda r: (r.source_category_id, r.sort_order)):
+            match = epg_mapper.auto_match(row.name, epg_candidates) if epg_candidates else None
             for playlist_category_id in links_by_source_cat.get(row.source_category_id, []):
                 next_order = next_sort_order_by_cat.get(playlist_category_id, 0)
                 next_sort_order_by_cat[playlist_category_id] = next_order + 1
@@ -174,6 +185,8 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
                         name=row.name,
                         sort_order=next_order,
                         enabled=True,
+                        epg_channel_id=match[0] if match else None,
+                        epg_match_type=EpgMatchType.AUTO if match else EpgMatchType.NONE,
                     )
                 )
 

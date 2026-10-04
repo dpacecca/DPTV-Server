@@ -522,10 +522,16 @@ async def _import_source_channels_into(
     source_channels: list[SourceChannel],
     skip_duplicates: bool,
     link_for_new_channels: bool,
+    epg_candidates: dict[int, str] | None = None,
 ) -> int:
     """`source_channels` is imported in exactly the order given - the caller is responsible for
     ordering it (see import_channels below), since what "channel order" even means differs by
-    import mode (one source category's own order vs. several merged together)."""
+    import mode (one source category's own order vs. several merged together).
+
+    `epg_candidates` (id -> display_name) is the source's assigned EpgSource's channels, if it
+    has one (see Source.epg_source_id) - each newly-created channel is auto-matched against it,
+    same as sync_engine.py's New Channel Manager does for channels that arrive later. None/empty
+    leaves every imported channel unmapped, same as before this existed."""
     existing_source_channel_ids: set[int] = set()
     if skip_duplicates:
         existing_result = await db.execute(
@@ -549,6 +555,7 @@ async def _import_source_channels_into(
         involved_source_category_ids.add(sc.source_category_id)
         if skip_duplicates and sc.id in existing_source_channel_ids:
             continue
+        match = epg_mapper.auto_match(sc.name, epg_candidates) if epg_candidates else None
         db.add(
             PlaylistChannel(
                 playlist_category_id=target_cat.id,
@@ -556,6 +563,8 @@ async def _import_source_channels_into(
                 name=sc.name,
                 enabled=True,
                 sort_order=next_sort_order,
+                epg_channel_id=match[0] if match else None,
+                epg_match_type=EpgMatchType.AUTO if match else EpgMatchType.NONE,
             )
         )
         next_sort_order += 1
@@ -576,10 +585,20 @@ async def _import_source_channels_into(
     return imported
 
 
+async def _epg_candidates_for_source(db: DbSession, source_id: int) -> dict[int, str]:
+    source = await db.get(Source, source_id)
+    if source is None or source.epg_source_id is None:
+        return {}
+    result = await db.execute(select(EpgChannel).where(EpgChannel.epg_source_id == source.epg_source_id))
+    return {c.id: c.display_name for c in result.scalars().all()}
+
+
 @router.post("/{playlist_id}/import")
 async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _admin: AdminUser) -> dict:
     if await db.get(Playlist, playlist_id) is None:
         raise HTTPException(404, "Playlist not found")
+
+    epg_candidates = await _epg_candidates_for_source(db, payload.source_id)
 
     if payload.mode == "per_category":
         if not payload.category_ids:
@@ -622,7 +641,12 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
                 .order_by(SourceChannel.sort_order, SourceChannel.id)
             )
             imported = await _import_source_channels_into(
-                db, target_cat, channels_result.scalars().all(), payload.skip_duplicates, payload.link_for_new_channels
+                db,
+                target_cat,
+                channels_result.scalars().all(),
+                payload.skip_duplicates,
+                payload.link_for_new_channels,
+                epg_candidates,
             )
             total_imported += imported
             results.append(
@@ -685,7 +709,12 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
 
     channels_result = await db.execute(channel_query)
     imported = await _import_source_channels_into(
-        db, target_cat, channels_result.scalars().all(), payload.skip_duplicates, payload.link_for_new_channels
+        db,
+        target_cat,
+        channels_result.scalars().all(),
+        payload.skip_duplicates,
+        payload.link_for_new_channels,
+        epg_candidates,
     )
 
     await db.commit()

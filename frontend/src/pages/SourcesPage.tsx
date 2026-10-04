@@ -22,6 +22,12 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { Source, SourceType } from "../api/types";
 import { EmptyState } from "../App";
+import {
+  EpgAssignmentFields,
+  emptyEpgAssignment,
+  epgAssignmentToPayload,
+  type EpgAssignmentValue,
+} from "../components/EpgAssignmentFields";
 
 const emptyForm = {
   name: "",
@@ -42,6 +48,7 @@ export default function SourcesPage() {
   const navigate = useNavigate();
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  const [epgAssignment, setEpgAssignment] = useState<EpgAssignmentValue>(emptyEpgAssignment());
 
   const { data: sources, isLoading } = useQuery<Source[]>({
     queryKey: ["sources"],
@@ -49,11 +56,12 @@ export default function SourcesPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => api.post("/api/sources", form),
+    mutationFn: () => api.post("/api/sources", { ...form, ...epgAssignmentToPayload(epgAssignment) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sources"] });
       setModalOpen(false);
       setForm(emptyForm);
+      setEpgAssignment(emptyEpgAssignment());
       notifications.show({ message: "Source added", color: "green" });
     },
     onError: () => notifications.show({ message: "Failed to add source", color: "red" }),
@@ -193,6 +201,16 @@ export default function SourcesPage() {
           ) : (
             <TextInput label="M3U URL" value={form.m3u_url} onChange={(e) => setForm({ ...form, m3u_url: e.currentTarget.value })} />
           )}
+          <EpgAssignmentFields
+            value={epgAssignment}
+            onChange={setEpgAssignment}
+            sourceName={form.name}
+            sourceType={form.type}
+            baseUrl={form.base_url}
+            username={form.username}
+            password={form.password}
+            m3uUrl={form.m3u_url}
+          />
           <Group grow>
             <Switch
               label="Ignore VOD"

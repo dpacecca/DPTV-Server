@@ -1,12 +1,19 @@
 import { Fragment, useState } from "react";
-import { Badge, Button, Collapse, Group, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
+import { Badge, Button, Collapse, Group, Modal, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
 import { IconChevronDown, IconChevronRight, IconSearch } from "@tabler/icons-react";
+import { notifications } from "@mantine/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce } from "use-debounce";
 import { api } from "../api/client";
 import type { PaginatedSourceChannels, Source, SourceCategory } from "../api/types";
 import { EmptyState } from "../App";
+import {
+  EpgAssignmentFields,
+  epgAssignmentFromSource,
+  epgAssignmentToPayload,
+  type EpgAssignmentValue,
+} from "../components/EpgAssignmentFields";
 
 const PAGE_SIZE = 200;
 
@@ -74,11 +81,53 @@ function CategoryChannels({ categoryId }: { categoryId: number }) {
   );
 }
 
+function EpgSettingsModal({ source, sourceId, onClose }: { source: Source; sourceId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [value, setValue] = useState<EpgAssignmentValue>(() => epgAssignmentFromSource(source));
+
+  const saveMutation = useMutation({
+    mutationFn: () => api.put(`/api/sources/${source.id}`, epgAssignmentToPayload(value)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sources", sourceId] });
+      qc.invalidateQueries({ queryKey: ["sources"] });
+      notifications.show({ message: "EPG settings saved", color: "green" });
+      onClose();
+    },
+    onError: () => notifications.show({ message: "Failed to save EPG settings", color: "red" }),
+  });
+
+  return (
+    <Modal opened onClose={onClose} title="EPG Settings" size="md">
+      <Stack>
+        <Text size="xs" c="dimmed">
+          How channels imported or synced from this source get matched to a guide. Changing this
+          only affects new/newly-synced channels - already-mapped channels keep their existing
+          mapping.
+        </Text>
+        <EpgAssignmentFields
+          value={value}
+          onChange={setValue}
+          sourceName={source.name}
+          sourceType={source.type}
+          baseUrl={source.base_url ?? ""}
+          username={source.username ?? ""}
+          password={source.password ?? ""}
+          m3uUrl={source.m3u_url ?? ""}
+        />
+        <Button onClick={() => saveMutation.mutate()} loading={saveMutation.isPending}>
+          Save
+        </Button>
+      </Stack>
+    </Modal>
+  );
+}
+
 export default function SourceDetailPage() {
   const { sourceId } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [epgModalOpen, setEpgModalOpen] = useState(false);
 
   const { data: source } = useQuery<Source>({
     queryKey: ["sources", sourceId],
@@ -108,7 +157,16 @@ export default function SourceDetailPage() {
             Enable the categories you want available to import into playlists.
           </Text>
         </div>
+        {source && (
+          <Button variant="default" size="xs" onClick={() => setEpgModalOpen(true)}>
+            EPG Settings{source.epg_source_name ? `: ${source.epg_source_name}` : ": None"}
+          </Button>
+        )}
       </Group>
+
+      {source && sourceId && epgModalOpen && (
+        <EpgSettingsModal source={source} sourceId={sourceId} onClose={() => setEpgModalOpen(false)} />
+      )}
 
       <Paper withBorder p="md">
         {!isLoading && categories?.length === 0 && (

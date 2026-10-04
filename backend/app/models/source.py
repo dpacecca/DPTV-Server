@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.base import ChannelType, SourceType, TimestampMixin, enum_column
+from app.models.epg import EpgSource
 
 
 class Source(Base, TimestampMixin):
@@ -37,6 +38,19 @@ class Source(Base, TimestampMixin):
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    epg_source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("epg_sources.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """Which EpgSource this source's channels should be matched against - chosen when the source
+    is added (the provider's own advertised EPG, a freshly-created EpgSource, an existing one, or
+    left unset for manual per-channel mapping) and editable afterward. None means "no automatic
+    EPG matching for channels from this source" - the admin maps them one at a time instead (see
+    epg_mapper.py / the per-channel and bulk EPG endpoints in playlists.py). When set, a new
+    channel created from this source - at initial import (playlists.py's
+    _import_source_channels_into) or later via the New Channel Manager (sync_engine.py) - is
+    auto-matched against this EpgSource's channels the same way a manual "auto-map" action would,
+    so the admin's choice here actually takes effect rather than just being a label."""
+
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -44,6 +58,7 @@ class Source(Base, TimestampMixin):
     categories: Mapped[list["SourceCategory"]] = relationship(
         back_populates="source", cascade="all, delete-orphan"
     )
+    epg_source: Mapped["EpgSource | None"] = relationship()
 
 
 class SourceCategory(Base, TimestampMixin):
