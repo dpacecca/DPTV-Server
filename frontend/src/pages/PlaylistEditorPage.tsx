@@ -2303,15 +2303,32 @@ function ImportModal({
           onChange={(v) => setChannelType((v as ChannelType) ?? "live")}
         />
 
-        <Text size="sm" fw={600}>
-          Categories to import
-          {importMode === "merge" && (
-            <Text component="span" size="xs" c="dimmed" fw={400}>
-              {" "}
-              (leave empty to import all enabled)
-            </Text>
+        <Group justify="space-between">
+          <Text size="sm" fw={600}>
+            Categories to import
+            {importMode === "merge" && (
+              <Text component="span" size="xs" c="dimmed" fw={400}>
+                {" "}
+                (leave empty to import all enabled)
+              </Text>
+            )}
+          </Text>
+          {relevantCategories.length > 0 && (
+            <Button
+              size="xs"
+              variant="subtle"
+              onClick={() =>
+                setSelectedSourceCategories(
+                  selectedSourceCategories.size === relevantCategories.length
+                    ? new Set()
+                    : new Set(relevantCategories.map((c) => c.id)),
+                )
+              }
+            >
+              {selectedSourceCategories.size === relevantCategories.length ? "Select None" : "Select All"}
+            </Button>
           )}
-        </Text>
+        </Group>
         <ScrollArea h={160} style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 6 }} p="xs">
           <Stack gap={4}>
             {relevantCategories.map((c) => (
