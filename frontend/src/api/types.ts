@@ -30,6 +30,8 @@ export interface Source {
   provider_uses_tokens: boolean;
   use_api_for_series: boolean;
   enabled: boolean;
+  epg_source_id: number | null;
+  epg_source_name: string | null;
   last_sync_at: string | null;
   last_sync_status: string | null;
   last_sync_error: string | null;

@@ -6,6 +6,19 @@ from app.models.base import ChannelType
 ATTR_RE = re.compile(r'([a-zA-Z0-9\-]+)="([^"]*)"')
 
 
+def extract_embedded_epg_url(text: str) -> str | None:
+    """A playlist's own advertised EPG (the `#EXTM3U` header's `url-tvg`/`x-tvg-url` attribute,
+    whichever a given provider uses), if it has one - used to offer it as the "source's default
+    EPG" option when adding/editing a source (see services/xtream_client.detect_builtin_epg_url).
+    `parse_m3u` below deliberately never looks at this line (every other `#`-prefixed line is
+    noise to it), so this is kept separate rather than folded into its return shape."""
+    first_line = text.splitlines()[0].strip() if text else ""
+    if not first_line.startswith("#EXTM3U"):
+        return None
+    attrs = dict(ATTR_RE.findall(first_line))
+    return attrs.get("url-tvg") or attrs.get("x-tvg-url") or None
+
+
 @dataclass
 class M3uEntry:
     name: str

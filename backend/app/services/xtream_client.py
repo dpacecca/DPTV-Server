@@ -4,9 +4,9 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
-from app.models.base import ChannelType
+from app.models.base import ChannelType, SourceType
 from app.models.source import Source
-from app.services.m3u_parser import parse_m3u
+from app.services.m3u_parser import extract_embedded_epg_url, parse_m3u
 
 settings = get_settings()
 
@@ -153,6 +153,37 @@ class XtreamClient:
                         )
                     )
             return channels
+
+
+async def detect_builtin_epg_url(
+    source_type: SourceType, base_url: str | None, username: str | None, password: str | None, m3u_url: str | None
+) -> str | None:
+    """A provider's own advertised EPG, if one can be determined - used by the "Add Source"/"Edit
+    Source" EPG picker to offer it as the default option, so an admin doesn't need to already
+    know or go find it themselves. Best-effort: returns None on anything uncertain (missing
+    fields, an unreachable M3U URL) rather than raising - this is a convenience hint, never
+    something an admin is blocked on.
+
+    Xtream panels conventionally serve EPG at a fixed, undocumented-in-the-API path
+    (`xmltv.php?username=...&password=...`) - there's no API field that reports this, it's just
+    derived directly from the same credentials already entered. An M3U playlist instead embeds
+    its own EPG URL (if any) in its `#EXTM3U` header, which requires actually fetching the file
+    to see - see m3u_parser.extract_embedded_epg_url."""
+    if source_type == SourceType.XTREAM:
+        if not (base_url and username and password):
+            return None
+        return f"{base_url.rstrip('/')}/xmltv.php?username={username}&password={password}"
+
+    if not m3u_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=settings.http_timeout_seconds, follow_redirects=True) as client:
+            resp = await client.get(m3u_url)
+            resp.raise_for_status()
+            text = resp.text
+    except httpx.HTTPError:
+        return None
+    return extract_embedded_epg_url(text)
 
 
 async def fetch_m3u_categories_and_channels(source: Source) -> tuple[list[CategoryData], list[ChannelData]]:
