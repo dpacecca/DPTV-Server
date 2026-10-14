@@ -1,11 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.base import CategorySortMode, ChannelType
+from app.models.base import ChannelType
 from app.models.playlist import Playlist
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
-from app.services.epg_writer import order_by_event_state, xmltv_channel_id
+from app.services.epg_writer import xmltv_channel_id
 
 settings = get_settings()
 
@@ -24,8 +24,6 @@ async def build_m3u(db: AsyncSession, playlist: Playlist, xc_user: XcUser) -> st
     lines = ["#EXTM3U"]
     for category in playlist.categories:
         channels = [pc for pc in category.channels if pc.enabled]
-        if category.sort_mode == CategorySortMode.EVENT_STATE:
-            channels = await order_by_event_state(db, channels, playlist.id)
         for pc in channels:
             # Must match the `<channel id>` build_xmltv() files this channel's guide data under -
             # never the provider's own raw EPG channel id string, which never appears in the

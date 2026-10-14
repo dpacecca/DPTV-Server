@@ -7,10 +7,9 @@ from xml.sax.saxutils import escape
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
-from app.models.base import DummyEpgMode, SportType
+from app.models.base import DummyEpgMode
 from app.models.epg import EpgProgram
-from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel, SportFixtureCache
+from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
 from app.services import dummy_epg
 from app.services.channel_logo import resolve_channel_logo
 
@@ -71,12 +70,8 @@ def _resolve_pinned_rule_id(pc: PlaylistChannel) -> int | None:
 
 @dataclass
 class _LoadedRule:
-    """A DummyEpgRule as loaded for XMLTV generation - `compiled` is set for a regular regex
-    rule, `sport_type` for a sport rule (see DummyEpgRule for why exactly one is ever set)."""
-
     id: int
-    sport_type: SportType | None
-    compiled: tuple[re.Pattern, str | None] | None
+    compiled: tuple[re.Pattern, str | None]
 
 
 async def _load_event_rules(db: AsyncSession, playlist_id: int) -> tuple[list[_LoadedRule], dict[int, _LoadedRule]]:
@@ -91,17 +86,14 @@ async def _load_event_rules(db: AsyncSession, playlist_id: int) -> tuple[list[_L
     ordered: list[_LoadedRule] = []
     by_id: dict[int, _LoadedRule] = {}
     for rule in result.scalars().all():
-        if rule.sport_type is not None:
-            loaded = _LoadedRule(id=rule.id, sport_type=rule.sport_type, compiled=None)
-        else:
-            try:
-                compiled = (dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone)
-            except (ValueError, TypeError):
-                # Already validated on save - only reachable if a pattern was edited directly in
-                # the DB. Skip rather than fail the whole XMLTV output over one bad rule.
-                logger.warning("Skipping invalid dummy EPG rule %r (id=%s)", rule.name, rule.id)
-                continue
-            loaded = _LoadedRule(id=rule.id, sport_type=None, compiled=compiled)
+        try:
+            compiled = (dummy_epg.validate_rule_pattern(rule.pattern), rule.timezone)
+        except (ValueError, TypeError):
+            # Already validated on save - only reachable if a pattern was edited directly in
+            # the DB. Skip rather than fail the whole XMLTV output over one bad rule.
+            logger.warning("Skipping invalid dummy EPG rule %r (id=%s)", rule.name, rule.id)
+            continue
+        loaded = _LoadedRule(id=rule.id, compiled=compiled)
         ordered.append(loaded)
         by_id[rule.id] = loaded
     return ordered, by_id
@@ -113,12 +105,6 @@ class PreviewProgram:
     stop: datetime
     title: str
     description: str | None = None
-    is_event: bool = True
-    """False only for a dummy EPG "Up Next"/"Scheduled event finished" filler tile - see
-    DummyProgram.is_event. Always True for a real EPG program (every one of those is real
-    programming, never filler) - order_by_event_state below uses this to tell a channel's
-    genuine live/upcoming/ended state apart from a filler tile that also happens to cover
-    "now"."""
 
 
 @dataclass
@@ -138,16 +124,6 @@ async def compute_channel_programs(
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(hours=window_hours)
     event_rules, event_rules_by_id = await _load_event_rules(db, playlist_id)
-    display_tz = dummy_epg.resolve_timezone(get_settings().display_timezone)
-
-    sport_types_needed = {r.sport_type for r in event_rules if r.sport_type is not None}
-    fixtures_by_sport: dict[SportType, list[SportFixtureCache]] = {}
-    if sport_types_needed:
-        fixture_result = await db.execute(
-            select(SportFixtureCache).where(SportFixtureCache.sport_type.in_(sport_types_needed))
-        )
-        for row in fixture_result.scalars().all():
-            fixtures_by_sport.setdefault(row.sport_type, []).append(row)
 
     real_epg_channel_ids = {pc.epg_channel_id for pc in channels if pc.epg_channel_id}
     programs_by_epg_channel: dict[int, list[EpgProgram]] = {}
@@ -177,37 +153,6 @@ async def compute_channel_programs(
             )
             continue
 
-        if pc.sport_event_title and pc.sport_event_start:
-            # A Live Sport category clone (see sport_refresh.py) - title/start/venue already
-            # known exactly from the fetched fixture, so this bypasses dummy_epg_mode's
-            # regex-based guessing entirely rather than trying to parse a date back out of the
-            # channel's own auto-generated display name. Converted to the operator's configured
-            # display timezone here (not stored that way) so the "Kick off HH:MM" text and the
-            # "Up Next" countdown always reflect the *current* display_timezone setting, even if
-            # it's changed after this channel was last refreshed.
-            minutes = _resolve_program_minutes(pc)
-            event_start_local = pc.sport_event_start.astimezone(display_tz)
-            dummies = dummy_epg.generate_fixture_dummy(
-                pc.sport_event_title,
-                event_start_local,
-                minutes,
-                now,
-                window_hours,
-                venue_name=pc.sport_event_venue_name,
-                venue_city=pc.sport_event_venue_city,
-                venue_state=pc.sport_event_venue_state,
-            )
-            results.append(
-                ChannelPrograms(
-                    channel=pc,
-                    programs=[
-                        PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc, is_event=d.is_event)
-                        for d in dummies
-                    ],
-                )
-            )
-            continue
-
         mode = resolve_dummy_mode(pc)
         if mode == DummyEpgMode.OFF:
             results.append(ChannelPrograms(channel=pc))
@@ -222,89 +167,27 @@ async def compute_channel_programs(
             rule_id = _resolve_pinned_rule_id(pc)
             pinned = event_rules_by_id.get(rule_id) if rule_id else None
 
-            sport_match = None
             channel_rules: list[tuple[re.Pattern, str | None]] = []
             if pinned:
-                if pinned.sport_type is not None:
-                    sport_match = dummy_epg.match_fixture_for_channel(
-                        pc.name, fixtures_by_sport.get(pinned.sport_type, []), now
-                    )
-                elif pinned.compiled:
-                    channel_rules = [pinned.compiled]
+                channel_rules = [pinned.compiled]
             elif not rule_id:
-                # No rule pinned - try every enabled sport rule (in sort_order) for a match
-                # first, since a sport rule can only ever produce a real answer or nothing (no
-                # regex ambiguity to worry about); only once none match does this fall through
-                # to the regex+built-in cascade below using every enabled regex rule, same as
-                # before sport rules existed at all.
-                for rule in event_rules:
-                    if rule.sport_type is not None:
-                        sport_match = dummy_epg.match_fixture_for_channel(
-                            pc.name, fixtures_by_sport.get(rule.sport_type, []), now
-                        )
-                        if sport_match:
-                            break
-                if sport_match is None:
-                    channel_rules = [r.compiled for r in event_rules if r.compiled is not None]
+                channel_rules = [r.compiled for r in event_rules]
 
-            if sport_match is not None:
-                title = f"{sport_match.competition} - {sport_match.home_display or sport_match.home} vs {sport_match.away_display or sport_match.away}"
-                dummies = dummy_epg.generate_fixture_dummy(
-                    title,
-                    sport_match.kickoff.astimezone(display_tz),
-                    minutes,
-                    now,
-                    window_hours,
-                    venue_name=sport_match.venue_name,
-                    venue_city=sport_match.venue_city,
-                    venue_state=sport_match.venue_state,
-                )
-            else:
-                dummies = dummy_epg.generate_event_dummy(
-                    pc.name, now, window_hours, minutes, custom_patterns=channel_rules
-                )
+            dummies = dummy_epg.generate_event_dummy(
+                pc.name, now, window_hours, minutes, custom_patterns=channel_rules
+            )
         else:
             dummies = dummy_epg.generate_name_dummy(pc.name, now, window_hours, minutes)
         results.append(
             ChannelPrograms(
                 channel=pc,
                 programs=[
-                    PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc, is_event=d.is_event)
+                    PreviewProgram(start=d.start, stop=d.stop, title=d.title, description=d.desc)
                     for d in dummies
                 ],
             )
         )
     return results
-
-
-async def order_by_event_state(
-    db: AsyncSession, channels: list[PlaylistChannel], playlist_id: int
-) -> list[PlaylistChannel]:
-    """Reorders `channels` for CategorySortMode.EVENT_STATE: currently-live first, then upcoming
-    (soonest start first), then ended/no-schedule last. Recomputed fresh on every call using the
-    exact same program data as the real XMLTV feed - M3U output is already generated on demand
-    per request (see m3u_writer.build_m3u), so a channel's position naturally shifts as its
-    current program starts/ends with no separate resort step or stored order to maintain."""
-    if not channels:
-        return []
-    channel_programs = await compute_channel_programs(db, channels, playlist_id)
-    now = datetime.now(timezone.utc)
-
-    def sort_key(cp: ChannelPrograms) -> tuple[int, datetime]:
-        # Only real programs count here, never a dummy EPG "Up Next"/"Scheduled event finished"
-        # filler tile (see PreviewProgram.is_event) - those continuously blanket the whole window
-        # around a real event, so without this every channel's filler would cover "now" and
-        # everything would misclassify as live.
-        event_programs = [p for p in cp.programs if p.is_event]
-        live = next((p for p in event_programs if p.start <= now < p.stop), None)
-        if live is not None:
-            return (0, live.stop)
-        upcoming = next((p for p in event_programs if p.start > now), None)
-        if upcoming is not None:
-            return (1, upcoming.start)
-        return (2, datetime.max.replace(tzinfo=timezone.utc))
-
-    return [cp.channel for cp in sorted(channel_programs, key=sort_key)]
 
 
 async def build_xmltv(db: AsyncSession, playlist: Playlist, window_hours: int = DEFAULT_WINDOW_HOURS) -> bytes:

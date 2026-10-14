@@ -7,7 +7,6 @@ import {
   NumberInput,
   Paper,
   PasswordInput,
-  Select,
   Stack,
   Text,
   TextInput,
@@ -22,7 +21,7 @@ import { api } from "../api/client";
 interface SettingField {
   key: string;
   group: string;
-  type: "string" | "int" | "float" | "secret" | "timezone";
+  type: "string" | "int" | "float" | "secret";
   label: string;
   description: string;
   value: string | number | boolean | null;
@@ -41,13 +40,7 @@ interface SettingsResponse {
 }
 
 // Order groups appear in - anything not listed here (shouldn't happen) falls in after.
-const GROUP_ORDER = ["Server", "Security", "Live Sport", "Notifications", "Duplicate Scanning", "Logging"];
-
-interface RugbyDigestResult {
-  matches: number;
-  channels_matched: number;
-  sent: boolean;
-}
+const GROUP_ORDER = ["Server", "Security", "Duplicate Scanning", "Logging"];
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -60,12 +53,6 @@ export default function SettingsPage() {
     queryFn: () => api.get("/api/settings").then((r) => r.data),
   });
 
-  const { data: timezones } = useQuery<string[]>({
-    queryKey: ["timezones"],
-    queryFn: () => api.get("/api/settings/timezones").then((r) => r.data),
-    staleTime: Infinity,
-  });
-
   const saveMutation = useMutation({
     mutationFn: () => api.patch("/api/settings", pending),
     onSuccess: () => {
@@ -76,24 +63,6 @@ export default function SettingsPage() {
     onError: (err) => {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Save failed";
-      notifications.show({ message, color: "red" });
-    },
-  });
-
-  const rugbyDigestMutation = useMutation({
-    mutationFn: () => api.post<RugbyDigestResult>("/api/rugby-digest/run").then((r) => r.data),
-    onSuccess: (result) => {
-      notifications.show({
-        message:
-          result.matches === 0
-            ? "Sent - no matches today in your followed competitions."
-            : `Sent - ${result.matches} match${result.matches === 1 ? "" : "es"}, ${result.channels_matched} matched to a channel.`,
-        color: "green",
-      });
-    },
-    onError: (err) => {
-      const message =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Send failed";
       notifications.show({ message, color: "red" });
     },
   });
@@ -141,28 +110,9 @@ export default function SettingsPage() {
                 key={field.key}
                 field={field}
                 pendingValue={pending[field.key]}
-                timezones={timezones}
                 onChange={(v) => setField(field.key, v)}
               />
             ))}
-            {group === "Notifications" && (
-              <Group>
-                <Button
-                  size="xs"
-                  variant="light"
-                  onClick={() => rugbyDigestMutation.mutate()}
-                  loading={rugbyDigestMutation.isPending}
-                  disabled={hasChanges}
-                >
-                  Send Rugby Digest Now
-                </Button>
-                {hasChanges && (
-                  <Text size="xs" c="dimmed">
-                    Save your changes above first.
-                  </Text>
-                )}
-              </Group>
-            )}
           </Stack>
         </Paper>
       ))}
@@ -193,12 +143,10 @@ export default function SettingsPage() {
 function SettingFieldInput({
   field,
   pendingValue,
-  timezones,
   onChange,
 }: {
   field: SettingField;
   pendingValue: string | number | undefined;
-  timezones: string[] | undefined;
   onChange: (v: string | number) => void;
 }) {
   const currentValue = pendingValue ?? (field.type === "secret" ? "" : (field.value as string | number));
@@ -233,24 +181,6 @@ function SettingFieldInput({
           placeholder={field.value ? "Already set - leave blank to keep it" : "Not set"}
           value={(currentValue as string) ?? ""}
           onChange={(e) => onChange(e.currentTarget.value)}
-        />
-        <Text size="xs" c="dimmed">
-          {field.description}
-        </Text>
-      </Stack>
-    );
-  }
-
-  if (field.type === "timezone") {
-    return (
-      <Stack gap={2}>
-        {labelRow}
-        <Select
-          size="xs"
-          searchable
-          data={timezones ?? []}
-          value={(currentValue as string) ?? "UTC"}
-          onChange={(v) => onChange(v ?? "UTC")}
         />
         <Text size="xs" c="dimmed">
           {field.description}

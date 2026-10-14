@@ -1,11 +1,7 @@
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo as tzinfo_type
-from typing import Any, Protocol
 from zoneinfo import ZoneInfo, available_timezones
-
-from app.services.name_normalize import normalize_name
 
 DATE_RE = re.compile(r"\b(?P<month>\d{1,2})[/\-](?P<day>\d{1,2})(?:[/\-](?P<year>\d{2,4}))?\b")
 TIME_RE = re.compile(r"\b(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp]\.?[Mm]\.?)?\b")
@@ -59,13 +55,6 @@ class DummyProgram:
     stop: datetime
     title: str
     desc: str | None = None
-    is_event: bool = True
-    """False only for the synthetic "Up Next"/"Scheduled event finished" filler tiles _tile()
-    builds around a real event (see generate_event_dummy/generate_fixture_dummy) - grid filler,
-    not real programming. True for every other program (a NAME-mode channel's repeating blocks,
-    a matched event's own tile) - see epg_writer.order_by_event_state, which needs to tell a
-    channel's actual live/upcoming/ended state apart from a filler tile that happens to also
-    cover "now"."""
 
 
 def _strip_matches(text: str, *matches: re.Match) -> str:
@@ -551,14 +540,13 @@ def _format_local_date(dt: datetime) -> str:
 
 def _tile(start: datetime, end: datetime, title: str) -> list[DummyProgram]:
     """Fixed UP_NEXT_BLOCK_MINUTES-sized blocks covering [start, end), last one clipped -
-    shared by both the pre-event countdown and the post-event filler below. Always filler
-    (is_event=False) - the caller appends the one real event tile itself, between this
-    function's two calls."""
+    shared by both the pre-event countdown and the post-event filler below. The caller appends
+    the one real event tile itself, between this function's two calls."""
     programs: list[DummyProgram] = []
     slot_start = start
     while slot_start < end:
         slot_end = min(slot_start + timedelta(minutes=UP_NEXT_BLOCK_MINUTES), end)
-        programs.append(DummyProgram(start=slot_start, stop=slot_end, title=title, is_event=False))
+        programs.append(DummyProgram(start=slot_start, stop=slot_end, title=title))
         slot_start = slot_end
     return programs
 
@@ -595,88 +583,3 @@ def generate_event_dummy(
     after = _tile(event_stop, window_end, FINISHED_TITLE)
 
     return before + [DummyProgram(start=event_start, stop=event_stop, title=display_title)] + after
-
-
-class _FixtureLike(Protocol):
-    """Structural shape matching both sport_data.Fixture and the SportFixtureCache ORM row -
-    match_fixture_for_channel below works with either, so the caller doesn't need to convert one
-    into the other just to reuse this matcher."""
-
-    competition: str
-    kickoff: datetime
-    home: str
-    away: str
-    home_display: str | None
-    away_display: str | None
-    venue_name: str | None
-    venue_city: str | None
-    venue_state: str | None
-
-
-def match_fixture_for_channel(channel_name: str, fixtures: Sequence[Any], now: datetime) -> _FixtureLike | None:
-    """Finds which of `fixtures` this channel's own name is showing, for a sport-type
-    DummyEpgRule (see epg_writer.py) - by checking whether BOTH team names appear as substrings
-    of the channel's name, the same matching sport_refresh.py's Live Sport category clone already
-    uses to find channels showing a given fixture, just run in the opposite direction (channel's
-    own name -> fixture, instead of fixture -> candidate channels to rename).
-
-    If more than one fixture's teams both appear (rare - a channel name reused week over week
-    before its provider updates it, or an unlikely team-name collision), picks whichever kickoff
-    is closest to `now`: the most temporally relevant match is almost always the intended one.
-    Returns None if no fixture's team names both appear in the name at all."""
-    norm = normalize_name(channel_name)
-    candidates: list[_FixtureLike] = []
-    for fixture in fixtures:
-        home_norm, away_norm = normalize_name(fixture.home), normalize_name(fixture.away)
-        if not home_norm or not away_norm:
-            continue
-        if home_norm in norm and away_norm in norm:
-            candidates.append(fixture)
-    if not candidates:
-        return None
-    return min(candidates, key=lambda f: abs((f.kickoff - now).total_seconds()))
-
-
-def _format_fixture_description(
-    event_start: datetime, venue_name: str | None, venue_city: str | None, venue_state: str | None
-) -> str:
-    parts = [f"Kick off {_format_local_time(event_start)}"]
-    if venue_name:
-        parts.append(venue_name)
-    location = ", ".join(p for p in (venue_city, venue_state) if p)
-    if location:
-        parts.append(location)
-    return ", ".join(parts)
-
-
-def generate_fixture_dummy(
-    title: str,
-    event_start: datetime,
-    event_minutes: int,
-    window_start: datetime,
-    window_hours: int,
-    venue_name: str | None = None,
-    venue_city: str | None = None,
-    venue_state: str | None = None,
-) -> list[DummyProgram]:
-    """Like generate_event_dummy, but for a channel whose event title/start time is already
-    known exactly from a fetched sport fixture (see sport_refresh.py) rather than scanned for out
-    of the channel's own name - there's no regex guessing involved, and no channel-name parsing
-    to fall back to if it fails, since the caller already has the real data in hand. Same "Up
-    Next" lead-in and post-event filler shape as generate_event_dummy (via the shared _tile
-    helper), so a Live Sport category channel's guide reads the same as any other event channel's
-    - the differences are that the event's own tile carries a description (kickoff time, in
-    whichever zone `event_start` itself is already expressed in - see PlaylistChannel's
-    sport_event_* handling in epg_writer.py - plus venue), and that there's no name-dummy
-    fallback path here at all: with real fixture data already in hand there's nothing to fall
-    back to."""
-    event_stop = event_start + timedelta(minutes=max(event_minutes, 15))
-    filler_start = window_start.replace(minute=0, second=0, microsecond=0)
-    window_end = window_start + timedelta(hours=window_hours)
-
-    up_next_title = f"Up Next: {title} starts {_format_local_time(event_start)} on {_format_local_date(event_start)}"
-    before = _tile(filler_start, min(event_start, window_end), up_next_title)
-    after = _tile(event_stop, window_end, FINISHED_TITLE)
-
-    description = _format_fixture_description(event_start, venue_name, venue_city, venue_state)
-    return before + [DummyProgram(start=event_start, stop=event_stop, title=title, desc=description)] + after
