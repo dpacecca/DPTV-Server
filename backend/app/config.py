@@ -48,45 +48,6 @@ class Settings(BaseSettings):
     scan_max_concurrency: int = 8
     scan_default_timeout_seconds: float = 8.0
 
-    rapidapi_key: str | None = None
-    """RapidAPI key used for live-sport fixture providers (e.g. Rugby Live Data) behind a Live
-    Sport category (see app/services/sport_data.py). Required only once a Live Sport category
-    exists - without it, that category's refresh fails with a clear error recorded on the
-    category, the same way an EPG source records a fetch failure."""
-    sport_lookahead_days: int = 3
-    """How many days ahead (today plus this many) each Live Sport refresh fetches fixtures for,
-    so a category shows what's on today and coming up, not just what's live this exact minute.
-    Each day costs one provider API call, so this multiplies request volume right alongside
-    sport_refresh_interval_minutes - see its docstring for the two together against a provider's
-    monthly call budget."""
-    sport_refresh_interval_minutes: int = 720
-    """How often the scheduler re-fetches fixtures (sport_lookahead_days days' worth) and
-    recomputes which channels are showing a live or upcoming match, for every Live Sport category
-    across every playlist. Defaults to 12 hours because free-tier sports data APIs (e.g. RapidAPI
-    plans around 250 calls/month) burn through their quota fast once you account for
-    sport_lookahead_days: at the 3-day default, every refresh costs 3 calls, so 12h (2/day) is
-    about 3 * 2 * 31 = 186 calls/month - safe headroom under a 250/month cap even after manual
-    "Refresh Now" clicks. Halving this to 6h roughly doubles that to ~360/month, over a 250 cap -
-    do the same multiplication against your own provider's limit before lowering it."""
-
-    display_timezone: str = "UTC"
-    """IANA zone name used wherever server-generated text needs to bake in a fixed local time -
-    e.g. the "Kick off HH:MM" line in a Live Sport category's generated event description, and
-    the daily rugby digest below. Unlike a programme's own <start> timestamp (which every XMLTV
-    player already localizes to the viewer's own device from its UTC offset), a description is
-    plain text baked in once at generation time - it can't adjust per viewer, so this is the one
-    zone every viewer sees it in. Falls back to UTC if unset or invalid."""
-
-    gotify_url: str | None = None
-    """Base URL of a Gotify server (e.g. "https://gotify.example.com", no trailing path) to send
-    the daily rugby digest to. Required only once rugby_digest_time is in use."""
-    gotify_token: str | None = None
-    """A Gotify application token (created in Gotify's own UI) - required alongside gotify_url."""
-    rugby_digest_time: str = "07:00"
-    """24-hour "HH:MM", interpreted in display_timezone - when the daily rugby digest (today's
-    matches across the followed competitions, and which channel each is on) fires. The job is
-    only scheduled once both gotify_url and gotify_token are set - see services/rugby_digest.py."""
-
 
 @lru_cache
 def get_settings() -> Settings:

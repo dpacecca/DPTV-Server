@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
-from app.models.base import CategorySortMode, ChannelType, DummyEpgMode, EpgMatchType, SourceType, SportType
+from app.models.base import ChannelType, DummyEpgMode, EpgMatchType, SourceType
 from app.models.epg import EpgChannel
 from app.models.playlist import (
     DummyEpgRule,
@@ -19,11 +19,10 @@ from app.models.playlist import (
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
-from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs, sport_refresh_jobs
-from app.services.epg_writer import build_xmltv, compute_channel_programs, order_by_event_state
+from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
+from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
-from app.services.sport_data import SPORT_EVENT_MINUTES, SPORT_LABELS
 
 router = APIRouter(prefix="/api/playlists", tags=["playlists"])
 
@@ -81,25 +80,11 @@ def _serialize_category_summary(cat: PlaylistCategory, channel_count: int) -> di
         "name": cat.name,
         "channel_type": cat.channel_type,
         "sort_order": cat.sort_order,
-        "sort_mode": cat.sort_mode,
         "dummy_epg_mode": cat.dummy_epg_mode,
         "dummy_epg_program_minutes": cat.dummy_epg_program_minutes,
         "dummy_epg_rule_id": cat.dummy_epg_rule_id,
         "channel_count": channel_count,
-        "sport_type": cat.sport_type,
-        "sport_last_refreshed_at": cat.sport_last_refreshed_at,
-        "sport_last_refresh_status": cat.sport_last_refresh_status,
-        "sport_last_refresh_error": cat.sport_last_refresh_error,
     }
-
-
-def _ensure_not_sport_managed(cat: PlaylistCategory) -> None:
-    """A "Live Sport" category's channel list is entirely computed by the periodic refresh job
-    (see services/sport_refresh.py) - any manual add/move/copy/import/reorder into or within it
-    would just be wiped out by the next refresh, so reject it outright instead of silently
-    losing the admin's change a few minutes later."""
-    if cat.sport_type is not None:
-        raise HTTPException(400, "This category is automatically managed and can't be edited manually")
 
 
 async def _category_channel_counts(db: DbSession, category_ids: list[int]) -> dict[int, int]:
@@ -290,13 +275,6 @@ async def list_timezones(_admin: AdminUser) -> list[str]:
     return dummy_epg.list_timezones()
 
 
-@router.get("/sports")
-async def list_supported_sports(_admin: AdminUser) -> list[dict]:
-    """Backs the sport picker in "Create Live Sport Category" - only rugby today. Same literal-
-    path-before-{playlist_id} reasoning as /timezones above."""
-    return [{"value": sport.value, "label": label} for sport, label in SPORT_LABELS.items()]
-
-
 @router.get("/{playlist_id}")
 async def get_playlist(playlist_id: int, db: DbSession, _admin: AdminUser) -> dict:
     return await _get_playlist_with_category_summaries(db, playlist_id)
@@ -330,19 +308,11 @@ class CategoryIn(BaseModel):
     name: str
     channel_type: ChannelType = ChannelType.LIVE
     sort_order: int = 0
-    sport_type: SportType | None = None
-    """Creates a "Live Sport" category instead of an ordinary one - `name` is ignored in favor
-    of the sport's own display name (e.g. "Live Rugby"), and its channel list is populated by an
-    initial background refresh right away (see GET /sports for the supported list)."""
 
 
 class CategoryUpdate(BaseModel):
     name: str | None = None
     sort_order: int | None = None
-    sort_mode: CategorySortMode | None = None
-    """MANUAL keeps the existing drag order; EVENT_STATE reorders this category's channels in
-    generated M3U/XMLTV output by current program state (live, then upcoming, then ended) -
-    see CategorySortMode's docstring."""
     dummy_epg_mode: DummyEpgMode | None = None
     """Default dummy EPG for any channel in this category left on "Inherit" - never INHERIT
     itself. Setting this to EVENT alongside dummy_epg_rule_id is what makes a channel added to
@@ -357,16 +327,10 @@ class CategoryUpdate(BaseModel):
 async def create_category(playlist_id: int, payload: CategoryIn, db: DbSession, _admin: AdminUser) -> dict:
     if await db.get(Playlist, playlist_id) is None:
         raise HTTPException(404, "Playlist not found")
-    data = payload.model_dump()
-    if payload.sport_type is not None:
-        data["name"] = SPORT_LABELS[payload.sport_type]
-        data["dummy_epg_program_minutes"] = SPORT_EVENT_MINUTES.get(payload.sport_type, 60)
-    cat = PlaylistCategory(playlist_id=playlist_id, **data)
+    cat = PlaylistCategory(playlist_id=playlist_id, **payload.model_dump())
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
-    if cat.sport_type is not None:
-        sport_refresh_jobs.start_refresh(cat.id)
     return _serialize_category_summary(cat, channel_count=0)
 
 
@@ -432,28 +396,6 @@ async def merge_categories(
             await db.delete(src_cat)
     await db.commit()
     return {"ok": True}
-
-
-@router.post("/{playlist_id}/categories/{category_id}/sport-refresh")
-async def refresh_sport_category_now(playlist_id: int, category_id: int, db: DbSession, _admin: AdminUser) -> dict:
-    """Kicks off a background refresh of this one Live Sport category and returns immediately -
-    same "poll for progress" pattern as EPG source refresh (see epg_sources.py). The scheduled
-    job already does this on an interval; this is the "Refresh Now" button."""
-    cat = await db.get(PlaylistCategory, category_id)
-    if cat is None or cat.playlist_id != playlist_id:
-        raise HTTPException(404, "Category not found")
-    if cat.sport_type is None:
-        raise HTTPException(400, "This category is not a Live Sport category")
-    job = sport_refresh_jobs.start_refresh(category_id)
-    return {"job_id": job.id}
-
-
-@router.get("/{playlist_id}/sport-refresh-jobs/{job_id}")
-async def get_sport_refresh_job(playlist_id: int, job_id: str, _admin: AdminUser) -> dict:
-    job = sport_refresh_jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(404, "Refresh job not found")
-    return {"job_id": job.id, "status": job.status, "error": job.error}
 
 
 # ---------- New Channel Manager: source links ----------
@@ -667,7 +609,6 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
         target_cat = await db.get(PlaylistCategory, payload.target_category_id)
         if target_cat is None or target_cat.playlist_id != playlist_id:
             raise HTTPException(404, "Target category not found")
-        _ensure_not_sport_managed(target_cat)
     elif payload.target_category_name:
         result = await db.execute(
             select(PlaylistCategory).where(
@@ -722,7 +663,6 @@ async def import_channels(playlist_id: int, payload: ImportIn, db: DbSession, _a
 
 
 MAX_PAGE_SIZE = 500
-EVENT_STATE_SORT_MAX_CHANNELS = 2000
 
 
 def _category_channels_query(category_id: int, q: str | None, enabled: bool | None, unmapped: bool | None = None):
@@ -760,21 +700,6 @@ async def list_category_channels(
 
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     base_query = _category_channels_query(category_id, q, enabled)
-
-    if cat.sort_mode == CategorySortMode.EVENT_STATE:
-        # Sorting by current program state needs every matching channel's programs computed up
-        # front (the live/upcoming/ended order isn't expressible in SQL) - capped the same as the
-        # EPG preview below, since this is meant for event-driven categories (tens to low
-        # hundreds of channels), not a full provider dump. `total` is capped to match so
-        # client-side infinite scroll never asks for a page past what was actually ordered.
-        result = await db.execute(
-            base_query.options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
-            .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
-            .limit(EVENT_STATE_SORT_MAX_CHANNELS)
-        )
-        ordered = await order_by_event_state(db, list(result.scalars().all()), playlist_id)
-        items = [_serialize_channel(pc) for pc in ordered[offset : offset + limit]]
-        return {"items": items, "total": len(ordered), "offset": offset, "limit": limit}
 
     total = await db.scalar(select(func.count()).select_from(base_query.subquery()))
     result = await db.execute(
@@ -821,7 +746,6 @@ async def reorder_channels(
     cat = await db.get(PlaylistCategory, category_id)
     if cat is None or cat.playlist_id != playlist_id:
         raise HTTPException(404, "Category not found")
-    _ensure_not_sport_managed(cat)
     for item in items:
         pc = await db.get(PlaylistChannel, item.id)
         if pc and pc.playlist_category_id == category_id:
@@ -897,7 +821,6 @@ async def add_manual_channel(
     cat = await db.get(PlaylistCategory, category_id)
     if cat is None or cat.playlist_id != playlist_id:
         raise HTTPException(404, "Category not found")
-    _ensure_not_sport_managed(cat)
     pc = PlaylistChannel(
         playlist_category_id=category_id,
         name=payload.name,
@@ -923,7 +846,6 @@ async def move_channels(playlist_id: int, payload: ChannelBatchTarget, db: DbSes
     target_cat = await db.get(PlaylistCategory, payload.target_category_id)
     if target_cat is None or target_cat.playlist_id != playlist_id:
         raise HTTPException(404, "Target category not found")
-    _ensure_not_sport_managed(target_cat)
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     moved = 0
     for pc in result.scalars().all():
@@ -938,7 +860,6 @@ async def copy_channels(playlist_id: int, payload: ChannelBatchTarget, db: DbSes
     target_cat = await db.get(PlaylistCategory, payload.target_category_id)
     if target_cat is None or target_cat.playlist_id != playlist_id:
         raise HTTPException(404, "Target category not found")
-    _ensure_not_sport_managed(target_cat)
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     copied = 0
     for pc in result.scalars().all():
@@ -1356,7 +1277,6 @@ def _serialize_dummy_epg_rule(rule: DummyEpgRule) -> dict:
         "name": rule.name,
         "pattern": rule.pattern,
         "timezone": rule.timezone,
-        "sport_type": rule.sport_type.value if rule.sport_type else None,
         "enabled": rule.enabled,
         "sort_order": rule.sort_order,
     }
@@ -1371,22 +1291,10 @@ def _validate_pattern_or_400(pattern: str) -> None:
 
 class DummyEpgRuleIn(BaseModel):
     name: str
-    pattern: str | None = None
+    pattern: str
     timezone: str | None = None
-    """IANA zone (e.g. "America/New_York") the pattern's hour/minute is expressed in. None = UTC.
-    Ignored for a sport rule - a fixture's kickoff is already an unambiguous UTC instant."""
-    sport_type: SportType | None = None
-    """Set instead of pattern for a sport rule - matches a channel's name against real fixtures
-    for this sport (see app/services/sport_data.py) rather than parsing a date out of it.
-    Exactly one of pattern/sport_type must be given."""
+    """IANA zone (e.g. "America/New_York") the pattern's hour/minute is expressed in. None = UTC."""
     enabled: bool = True
-
-
-def _validate_pattern_xor_sport(pattern: str | None, sport_type: SportType | None) -> None:
-    if (pattern is None) == (sport_type is None):
-        raise HTTPException(400, "Exactly one of pattern or sport_type is required")
-    if pattern is not None:
-        _validate_pattern_or_400(pattern)
 
 
 @router.get("/{playlist_id}/dummy-epg-rules")
@@ -1399,7 +1307,7 @@ async def list_dummy_epg_rules(playlist_id: int, db: DbSession, _admin: AdminUse
 
 @router.post("/{playlist_id}/dummy-epg-rules")
 async def create_dummy_epg_rule(playlist_id: int, payload: DummyEpgRuleIn, db: DbSession, _admin: AdminUser) -> dict:
-    _validate_pattern_xor_sport(payload.pattern, payload.sport_type)
+    _validate_pattern_or_400(payload.pattern)
     count = await db.scalar(
         select(func.count()).select_from(DummyEpgRule).where(DummyEpgRule.playlist_id == playlist_id)
     )
@@ -1413,7 +1321,6 @@ class DummyEpgRuleUpdate(BaseModel):
     name: str | None = None
     pattern: str | None = None
     timezone: str | None = None
-    sport_type: SportType | None = None
     enabled: bool | None = None
 
 
@@ -1425,16 +1332,8 @@ async def update_dummy_epg_rule(
     if rule is None or rule.playlist_id != playlist_id:
         raise HTTPException(404, "Rule not found")
     updates = payload.model_dump(exclude_unset=True)
-    if "pattern" in updates or "sport_type" in updates:
-        # Validate the *merged* result, not just whichever of the two was actually sent - e.g.
-        # sending only sport_type on a rule that already has a pattern needs pattern cleared too.
-        new_pattern = updates.get("pattern", rule.pattern)
-        new_sport_type = updates.get("sport_type", rule.sport_type)
-        _validate_pattern_xor_sport(new_pattern, new_sport_type)
-        if new_sport_type is not None:
-            updates["pattern"] = None
-        else:
-            updates["sport_type"] = None
+    if "pattern" in updates:
+        _validate_pattern_or_400(updates["pattern"])
     for key, value in updates.items():
         setattr(rule, key, value)
     await db.commit()
