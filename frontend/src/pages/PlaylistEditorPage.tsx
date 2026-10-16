@@ -65,6 +65,19 @@ import type {
 import { EmptyState } from "../App";
 import { toggleSelection } from "../utils/selection";
 
+// DD/MM/YYYY regardless of the browser's own locale - en-US's default M/D/YYYY reads ambiguously
+// next to this app's otherwise locale-free UI (is 10/16 October 16th or an invalid month?).
+function formatDateTime(d: Date): string {
+  return d
+    .toLocaleString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })
+    .replace(/am|pm/i, (m) => m.toUpperCase());
+}
+function formatTime(d: Date): string {
+  return d
+    .toLocaleTimeString("en-GB", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })
+    .replace(/am|pm/i, (m) => m.toUpperCase());
+}
+
 const CHANNEL_PAGE_SIZE = 200;
 // Above this many selected channels, bulk actions still work (ids are just integers, cheap to
 // ship) but we warn before firing - a 50k-row UPDATE/DELETE is a lot to ask of one request.
@@ -210,6 +223,16 @@ export default function PlaylistEditorPage() {
     onSuccess: invalidate,
   });
 
+  const clearCategoryEpgMutation = useMutation({
+    mutationFn: (categoryIds: number[]) =>
+      api.post<{ cleared: number }>(`/api/playlists/${playlistId}/categories/epg/clear`, { category_ids: categoryIds }).then((r) => r.data),
+    onSuccess: (data) => {
+      invalidate();
+      setMultiSelectedCategoryIds(new Set());
+      notifications.show({ message: `Cleared EPG mapping on ${data.cleared} channel(s)`, color: "green" });
+    },
+  });
+
   function handleCategoryDragEnd(activeId: number, overId: number) {
     const newOrder = reorderBlock(categories.map((c) => c.id), multiSelectedCategoryIds, activeId, overId);
     reorderCategoriesMutation.mutate(newOrder.map((id, i) => ({ id, sort_order: i })));
@@ -310,6 +333,27 @@ export default function PlaylistEditorPage() {
               </Tooltip>
             </Group>
           </Group>
+          {multiSelectedCategoryIds.size > 0 && (
+            <Button
+              size="xs"
+              variant="light"
+              color="red"
+              leftSection={<IconWand size={14} />}
+              loading={clearCategoryEpgMutation.isPending}
+              mb="xs"
+              onClick={() => {
+                if (
+                  confirm(
+                    `Clear EPG mapping for every channel in ${multiSelectedCategoryIds.size} selected categor${multiSelectedCategoryIds.size === 1 ? "y" : "ies"}?`,
+                  )
+                ) {
+                  clearCategoryEpgMutation.mutate([...multiSelectedCategoryIds]);
+                }
+              }}
+            >
+              Clear EPG Mapping ({multiSelectedCategoryIds.size})
+            </Button>
+          )}
           <ScrollArea style={{ flex: 1 }}>
             <DndContext
               sensors={categorySensors}
@@ -2968,7 +3012,7 @@ function EpgPreviewModal({
                         <Table.Tr key={i}>
                           <Table.Td w={260}>
                             <Text size="xs" c="dimmed">
-                              {new Date(p.start).toLocaleString()} – {new Date(p.stop).toLocaleTimeString()}
+                              {formatDateTime(new Date(p.start))} – {formatTime(new Date(p.stop))}
                             </Text>
                           </Table.Td>
                           <Table.Td>

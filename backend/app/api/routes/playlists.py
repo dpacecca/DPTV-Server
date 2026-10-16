@@ -2,7 +2,7 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
@@ -396,6 +396,35 @@ async def merge_categories(
             await db.delete(src_cat)
     await db.commit()
     return {"ok": True}
+
+
+class CategoryEpgClearIn(BaseModel):
+    category_ids: list[int]
+
+
+@router.post("/{playlist_id}/categories/epg/clear")
+async def clear_category_epg_mappings(
+    playlist_id: int, payload: CategoryEpgClearIn, db: DbSession, _admin: AdminUser
+) -> dict:
+    """Unmaps every channel's EPG match across the given categories in one statement - for
+    cleaning up after a bad auto-match run, without having to page through and bulk-select
+    channels one category at a time. Only categories that actually belong to this playlist are
+    touched; any other id is silently ignored rather than erroring the whole batch."""
+    owned_result = await db.execute(
+        select(PlaylistCategory.id).where(
+            PlaylistCategory.playlist_id == playlist_id, PlaylistCategory.id.in_(payload.category_ids)
+        )
+    )
+    owned_ids = [row[0] for row in owned_result.all()]
+    if not owned_ids:
+        return {"cleared": 0}
+    result = await db.execute(
+        update(PlaylistChannel)
+        .where(PlaylistChannel.playlist_category_id.in_(owned_ids))
+        .values(epg_channel_id=None, epg_match_type=EpgMatchType.NONE)
+    )
+    await db.commit()
+    return {"cleared": result.rowcount}
 
 
 # ---------- New Channel Manager: source links ----------
