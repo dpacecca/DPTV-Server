@@ -301,6 +301,111 @@ async def delete_playlist(playlist_id: int, db: DbSession, _admin: AdminUser) ->
     return {"ok": True}
 
 
+def _unique_playlist_name(base: str, taken: set[str]) -> str:
+    candidate = f"{base} (Copy)"
+    n = 2
+    while candidate in taken:
+        candidate = f"{base} (Copy {n})"
+        n += 1
+    return candidate
+
+
+@router.post("/{playlist_id}/duplicate")
+async def duplicate_playlist(playlist_id: int, db: DbSession, _admin: AdminUser) -> dict:
+    """Deep-copies a playlist - every category, channel, and playlist-owned dummy EPG rule,
+    plus each category's source-category import links - so the copy works standalone right away
+    (e.g. to try a risky bulk edit without touching the original) instead of sharing any mutable
+    state with the source. A channel's source/EPG-channel mapping is a shared resource it merely
+    references, not playlist-owned, so the copy keeps pointing at the same rows - same as a fresh
+    import would."""
+    source = await db.get(Playlist, playlist_id, options=[*_full_load()])
+    if source is None:
+        raise HTTPException(404, "Playlist not found")
+
+    existing_names = {row[0] for row in (await db.execute(select(Playlist.name))).all()}
+    new_playlist = Playlist(
+        name=_unique_playlist_name(source.name, existing_names),
+        enabled=source.enabled,
+        xc_enabled=source.xc_enabled,
+        m3u_output_enabled=source.m3u_output_enabled,
+        m3u_filename=source.m3u_filename,
+        epg_output_enabled=source.epg_output_enabled,
+        epg_filename=source.epg_filename,
+        epg_days_to_keep=source.epg_days_to_keep,
+    )
+    db.add(new_playlist)
+    await db.flush()
+
+    rules_result = await db.execute(select(DummyEpgRule).where(DummyEpgRule.playlist_id == playlist_id))
+    rule_id_map: dict[int, int] = {}
+    for rule in rules_result.scalars().all():
+        new_rule = DummyEpgRule(
+            playlist_id=new_playlist.id,
+            name=rule.name,
+            pattern=rule.pattern,
+            timezone=rule.timezone,
+            enabled=rule.enabled,
+            sort_order=rule.sort_order,
+        )
+        db.add(new_rule)
+        await db.flush()
+        rule_id_map[rule.id] = new_rule.id
+
+    category_ids = [c.id for c in source.categories]
+    source_links_by_category: dict[int, list[int]] = {}
+    if category_ids:
+        links_result = await db.execute(
+            select(PlaylistCategorySourceLink).where(PlaylistCategorySourceLink.playlist_category_id.in_(category_ids))
+        )
+        for link in links_result.scalars().all():
+            source_links_by_category.setdefault(link.playlist_category_id, []).append(link.source_category_id)
+
+    for cat in source.categories:
+        new_cat = PlaylistCategory(
+            playlist_id=new_playlist.id,
+            name=cat.name,
+            channel_type=cat.channel_type,
+            sort_order=cat.sort_order,
+            dummy_epg_mode=cat.dummy_epg_mode,
+            dummy_epg_program_minutes=cat.dummy_epg_program_minutes,
+            dummy_epg_rule_id=rule_id_map.get(cat.dummy_epg_rule_id) if cat.dummy_epg_rule_id else None,
+        )
+        db.add(new_cat)
+        await db.flush()
+
+        for source_cat_id in source_links_by_category.get(cat.id, []):
+            db.add(PlaylistCategorySourceLink(playlist_category_id=new_cat.id, source_category_id=source_cat_id))
+
+        for pc in cat.channels:
+            db.add(
+                PlaylistChannel(
+                    playlist_category_id=new_cat.id,
+                    source_channel_id=pc.source_channel_id,
+                    name=pc.name,
+                    manual_stream_url=pc.manual_stream_url,
+                    name_locked=pc.name_locked,
+                    number=pc.number,
+                    logo_url_override=pc.logo_url_override,
+                    enabled=pc.enabled,
+                    sort_order=pc.sort_order,
+                    epg_channel_id=pc.epg_channel_id,
+                    epg_match_type=pc.epg_match_type,
+                    dummy_epg_mode=pc.dummy_epg_mode,
+                    dummy_epg_program_minutes=pc.dummy_epg_program_minutes,
+                    dummy_epg_rule_id=rule_id_map.get(pc.dummy_epg_rule_id) if pc.dummy_epg_rule_id else None,
+                    detected_width=pc.detected_width,
+                    detected_height=pc.detected_height,
+                    detected_fps=pc.detected_fps,
+                    detected_bitrate_kbps=pc.detected_bitrate_kbps,
+                    probe_status=pc.probe_status,
+                    last_probed_at=pc.last_probed_at,
+                )
+            )
+
+    await db.commit()
+    return await _get_playlist_with_category_summaries(db, new_playlist.id)
+
+
 # ---------- Categories ----------
 
 

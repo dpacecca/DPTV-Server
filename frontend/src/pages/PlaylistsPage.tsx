@@ -5,6 +5,7 @@ import {
   Button,
   FileInput,
   Group,
+  Loader,
   Modal,
   Paper,
   Select,
@@ -14,13 +15,14 @@ import {
   Text,
   TextInput,
   Title,
+  Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconPlus, IconTrash, IconUpload } from "@tabler/icons-react";
+import { IconCopy, IconDownload, IconPlus, IconTrash, IconUpload } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
-import type { Playlist, Source } from "../api/types";
+import type { Playlist, Source, XcUser } from "../api/types";
 import { EmptyState } from "../App";
 
 export default function PlaylistsPage() {
@@ -29,6 +31,7 @@ export default function PlaylistsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [importM3uOpen, setImportM3uOpen] = useState(false);
+  const [exportTarget, setExportTarget] = useState<Playlist | null>(null);
 
   const { data: playlists, isLoading } = useQuery<Playlist[]>({
     queryKey: ["playlists"],
@@ -48,6 +51,15 @@ export default function PlaylistsPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/api/playlists/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["playlists"] }),
+  });
+
+  const duplicateMutation = useMutation({
+    mutationFn: (id: number) => api.post<Playlist>(`/api/playlists/${id}/duplicate`).then((r) => r.data),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      notifications.show({ message: `Duplicated as "${data.name}"`, color: "green" });
+    },
+    onError: () => notifications.show({ message: "Duplicate failed", color: "red" }),
   });
 
   return (
@@ -95,9 +107,23 @@ export default function PlaylistsPage() {
                     </Badge>
                   </Table.Td>
                   <Table.Td>
-                    <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(p.id)}>
-                      <IconTrash size={16} />
-                    </ActionIcon>
+                    <Group gap={4} wrap="nowrap">
+                      <Tooltip label="Duplicate">
+                        <ActionIcon variant="subtle" loading={duplicateMutation.isPending} onClick={() => duplicateMutation.mutate(p.id)}>
+                          <IconCopy size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Export M3U">
+                        <ActionIcon variant="subtle" onClick={() => setExportTarget(p)}>
+                          <IconDownload size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Delete">
+                        <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(p.id)}>
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -117,7 +143,101 @@ export default function PlaylistsPage() {
       </Modal>
 
       <ImportM3uModal opened={importM3uOpen} onClose={() => setImportM3uOpen(false)} />
+      <ExportM3uModal playlist={exportTarget} onClose={() => setExportTarget(null)} />
     </Stack>
+  );
+}
+
+// Triggers a browser download of the playlist's generated M3U, using one XC user's credentials
+// to build the playable stream URLs (the output endpoint requires one - see output_m3u). Skips
+// straight to the download with no picker when there's only one XC user to choose from.
+function ExportM3uModal({ playlist, onClose }: { playlist: Playlist | null; onClose: () => void }) {
+  const [xcUserId, setXcUserId] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  const { data: xcUsers, isLoading } = useQuery<XcUser[]>({
+    queryKey: ["xc-users"],
+    queryFn: () => api.get("/api/xc-users").then((r) => r.data),
+    enabled: playlist !== null,
+  });
+
+  const singleUser = xcUsers?.length === 1 ? xcUsers[0] : null;
+
+  async function download(userId: number) {
+    if (!playlist) return;
+    setDownloading(true);
+    try {
+      const res = await api.get(`/api/playlists/${playlist.id}/output/m3u`, {
+        params: { xc_user_id: userId },
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(res.data as Blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = playlist.m3u_filename || `${playlist.name}.m3u`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      handleClose();
+    } catch {
+      notifications.show({ message: "Export failed", color: "red" });
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  function handleClose() {
+    setXcUserId(null);
+    onClose();
+  }
+
+  return (
+    <Modal opened={playlist !== null} onClose={handleClose} title={`Export M3U — ${playlist?.name ?? ""}`}>
+      <Stack>
+        {isLoading && (
+          <Group justify="center" py="md">
+            <Loader size="sm" />
+          </Group>
+        )}
+        {!isLoading && xcUsers?.length === 0 && (
+          <Text size="sm" c="dimmed">
+            No XC users exist yet - create one on the XC Users page first. Every exported stream URL
+            is generated with one XC user's credentials baked in.
+          </Text>
+        )}
+        {!isLoading && singleUser && (
+          <>
+            <Text size="sm" c="dimmed">
+              Stream URLs in the file will use XC user "{singleUser.username}".
+            </Text>
+            <Button leftSection={<IconDownload size={16} />} loading={downloading} onClick={() => download(singleUser.id)}>
+              Download
+            </Button>
+          </>
+        )}
+        {!isLoading && xcUsers && xcUsers.length > 1 && (
+          <>
+            <Select
+              label="Build stream URLs using XC user"
+              placeholder="Choose an XC user"
+              data={xcUsers.map((u) => ({ value: String(u.id), label: u.username }))}
+              value={xcUserId}
+              onChange={setXcUserId}
+              required
+            />
+            <Button
+              leftSection={<IconDownload size={16} />}
+              loading={downloading}
+              disabled={!xcUserId}
+              onClick={() => xcUserId && download(Number(xcUserId))}
+            >
+              Download
+            </Button>
+          </>
+        )}
+      </Stack>
+    </Modal>
   );
 }
 
