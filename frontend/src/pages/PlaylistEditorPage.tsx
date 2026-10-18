@@ -178,6 +178,7 @@ export default function PlaylistEditorPage() {
   const [selectedChannelIds, setSelectedChannelIds] = useState<Set<number>>(new Set());
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryType, setNewCategoryType] = useState<ChannelType>("live");
   const [categorySettingsTarget, setCategorySettingsTarget] = useState<PlaylistCategory | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [moveMode, setMoveMode] = useState<"move" | "copy" | null>(null);
@@ -202,11 +203,13 @@ export default function PlaylistEditorPage() {
   };
 
   const createCategoryMutation = useMutation({
-    mutationFn: (name: string) => api.post(`/api/playlists/${playlistId}/categories`, { name, channel_type: "live" }),
+    mutationFn: (payload: { name: string; channel_type: ChannelType }) =>
+      api.post(`/api/playlists/${playlistId}/categories`, payload),
     onSuccess: () => {
       invalidate();
       setNewCategoryOpen(false);
       setNewCategoryName("");
+      setNewCategoryType("live");
     },
   });
 
@@ -570,10 +573,30 @@ export default function PlaylistEditorPage() {
         </Paper>
       </Group>
 
-      <Modal opened={newCategoryOpen} onClose={() => setNewCategoryOpen(false)} title="New Category">
+      <Modal
+        opened={newCategoryOpen}
+        onClose={() => {
+          setNewCategoryOpen(false);
+          setNewCategoryType("live");
+        }}
+        title="New Category"
+      >
         <Stack>
           <TextInput label="Name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.currentTarget.value)} />
-          <Button onClick={() => createCategoryMutation.mutate(newCategoryName)} disabled={!newCategoryName}>
+          <Select
+            label="Type"
+            data={[
+              { value: "live", label: "Live TV" },
+              { value: "vod", label: "Movies" },
+              { value: "series", label: "TV Shows" },
+            ]}
+            value={newCategoryType}
+            onChange={(v) => setNewCategoryType((v as ChannelType) ?? "live")}
+          />
+          <Button
+            onClick={() => createCategoryMutation.mutate({ name: newCategoryName, channel_type: newCategoryType })}
+            disabled={!newCategoryName}
+          >
             Create
           </Button>
         </Stack>
@@ -585,7 +608,7 @@ export default function PlaylistEditorPage() {
             {selectedChannelIds.size} channel(s) selected
           </Text>
           {categories
-            .filter((c) => c.id !== activeCategory?.id)
+            .filter((c) => c.id !== activeCategory?.id && c.channel_type === activeCategory?.channel_type)
             .map((c) => (
               <Button
                 key={c.id}
@@ -754,6 +777,11 @@ function SortableCategoryRow({
             <Text size="sm" truncate>
               {category.name}
             </Text>
+            {category.channel_type !== "live" && (
+              <Badge size="xs" variant="light" color={category.channel_type === "vod" ? "grape" : "cyan"}>
+                {category.channel_type === "vod" ? "Movies" : "TV Shows"}
+              </Badge>
+            )}
           </Group>
           <Text size="xs" c="dimmed">
             {category.channel_count} channels
