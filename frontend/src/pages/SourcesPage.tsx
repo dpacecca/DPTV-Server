@@ -14,9 +14,10 @@ import {
   Text,
   TextInput,
   Title,
+  Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
@@ -25,6 +26,7 @@ import { EmptyState } from "../App";
 import {
   EpgAssignmentFields,
   emptyEpgAssignment,
+  epgAssignmentFromSource,
   epgAssignmentToPayload,
   type EpgAssignmentValue,
 } from "../components/EpgAssignmentFields";
@@ -43,10 +45,27 @@ const emptyForm = {
   provider_uses_tokens: false,
 };
 
+function formFromSource(source: Source): typeof emptyForm {
+  return {
+    name: source.name,
+    type: source.type,
+    base_url: source.base_url ?? "",
+    username: source.username ?? "",
+    password: source.password ?? "",
+    m3u_url: source.m3u_url ?? "",
+    auto_clear_removed_days: source.auto_clear_removed_days,
+    auto_enable_new_groups: source.auto_enable_new_groups,
+    ignore_vod: source.ignore_vod,
+    ignore_series: source.ignore_series,
+    provider_uses_tokens: source.provider_uses_tokens,
+  };
+}
+
 export default function SourcesPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingSource, setEditingSource] = useState<Source | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [epgAssignment, setEpgAssignment] = useState<EpgAssignmentValue>(emptyEpgAssignment());
 
@@ -55,16 +74,31 @@ export default function SourcesPage() {
     queryFn: () => api.get("/api/sources").then((r) => r.data),
   });
 
-  const createMutation = useMutation({
-    mutationFn: () => api.post("/api/sources", { ...form, ...epgAssignmentToPayload(epgAssignment) }),
+  function openAddModal() {
+    setEditingSource(null);
+    setForm(emptyForm);
+    setEpgAssignment(emptyEpgAssignment());
+    setModalOpen(true);
+  }
+
+  function openEditModal(source: Source) {
+    setEditingSource(source);
+    setForm(formFromSource(source));
+    setEpgAssignment(epgAssignmentFromSource(source));
+    setModalOpen(true);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const payload = { ...form, ...epgAssignmentToPayload(epgAssignment) };
+      return editingSource ? api.put(`/api/sources/${editingSource.id}`, payload) : api.post("/api/sources", payload);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sources"] });
       setModalOpen(false);
-      setForm(emptyForm);
-      setEpgAssignment(emptyEpgAssignment());
-      notifications.show({ message: "Source added", color: "green" });
+      notifications.show({ message: editingSource ? "Source saved" : "Source added", color: "green" });
     },
-    onError: () => notifications.show({ message: "Failed to add source", color: "red" }),
+    onError: () => notifications.show({ message: editingSource ? "Failed to save source" : "Failed to add source", color: "red" }),
   });
 
   const syncMutation = useMutation({
@@ -118,7 +152,7 @@ export default function SourcesPage() {
           >
             Update All
           </Button>
-          <Button leftSection={<IconPlus size={16} />} onClick={() => setModalOpen(true)}>
+          <Button leftSection={<IconPlus size={16} />} onClick={openAddModal}>
             Add Source
           </Button>
         </Group>
@@ -154,16 +188,25 @@ export default function SourcesPage() {
                   </Table.Td>
                   <Table.Td>
                     <Group gap="xs">
-                      <ActionIcon
-                        variant="subtle"
-                        loading={syncMutation.isPending && syncMutation.variables === s.id}
-                        onClick={() => syncMutation.mutate(s.id)}
-                      >
-                        <IconRefresh size={16} />
-                      </ActionIcon>
-                      <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(s.id)}>
-                        <IconTrash size={16} />
-                      </ActionIcon>
+                      <Tooltip label="Edit">
+                        <ActionIcon variant="subtle" onClick={() => openEditModal(s)}>
+                          <IconPencil size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Sync now">
+                        <ActionIcon
+                          variant="subtle"
+                          loading={syncMutation.isPending && syncMutation.variables === s.id}
+                          onClick={() => syncMutation.mutate(s.id)}
+                        >
+                          <IconRefresh size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Delete">
+                        <ActionIcon variant="subtle" color="red" onClick={() => deleteMutation.mutate(s.id)}>
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      </Tooltip>
                     </Group>
                   </Table.Td>
                 </Table.Tr>
@@ -173,7 +216,7 @@ export default function SourcesPage() {
         )}
       </Paper>
 
-      <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title="Add Source" size="lg">
+      <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title={editingSource ? "Edit Source" : "Add Source"} size="lg">
         <Stack>
           <TextInput label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.currentTarget.value })} required />
           <Select
@@ -240,10 +283,12 @@ export default function SourcesPage() {
             onChange={(v) => setForm({ ...form, auto_clear_removed_days: v === "" ? null : Number(v) })}
             min={1}
           />
-          <Text size="xs" c="dimmed">
-            After adding, use the refresh icon on the sources list to load categories and channels.
-          </Text>
-          <Button onClick={() => createMutation.mutate()} loading={createMutation.isPending} disabled={!form.name}>
+          {!editingSource && (
+            <Text size="xs" c="dimmed">
+              After adding, use the refresh icon on the sources list to load categories and channels.
+            </Text>
+          )}
+          <Button onClick={() => saveMutation.mutate()} loading={saveMutation.isPending} disabled={!form.name}>
             Save
           </Button>
         </Stack>
