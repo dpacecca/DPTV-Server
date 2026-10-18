@@ -13,6 +13,7 @@ import {
   Paper,
   Popover,
   ScrollArea,
+  SegmentedControl,
   Select,
   Stack,
   Switch,
@@ -179,6 +180,7 @@ export default function PlaylistEditorPage() {
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryType, setNewCategoryType] = useState<ChannelType>("live");
+  const [activeChannelType, setActiveChannelType] = useState<ChannelType>("live");
   const [categorySettingsTarget, setCategorySettingsTarget] = useState<PlaylistCategory | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [moveMode, setMoveMode] = useState<"move" | "copy" | null>(null);
@@ -195,7 +197,16 @@ export default function PlaylistEditorPage() {
   const categorySensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const categories = playlist?.categories ?? [];
-  const activeCategory = categories.find((c) => c.id === selectedCategoryId) ?? categories[0] ?? null;
+  const visibleCategories = categories.filter((c) => c.channel_type === activeChannelType);
+  const activeCategory = visibleCategories.find((c) => c.id === selectedCategoryId) ?? visibleCategories[0] ?? null;
+
+  function switchChannelTypeTab(type: ChannelType) {
+    setActiveChannelType(type);
+    setSelectedCategoryId(null);
+    setMultiSelectedCategoryIds(new Set());
+    setSelectedChannelIds(new Set());
+    setSearch("");
+  }
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["playlist", playlistId] });
@@ -237,7 +248,7 @@ export default function PlaylistEditorPage() {
   });
 
   function handleCategoryDragEnd(activeId: number, overId: number) {
-    const newOrder = reorderBlock(categories.map((c) => c.id), multiSelectedCategoryIds, activeId, overId);
+    const newOrder = reorderBlock(visibleCategories.map((c) => c.id), multiSelectedCategoryIds, activeId, overId);
     reorderCategoriesMutation.mutate(newOrder.map((id, i) => ({ id, sort_order: i })));
   }
 
@@ -330,12 +341,30 @@ export default function PlaylistEditorPage() {
             </Text>
             <Group gap={4}>
               <Tooltip label="Add Category">
-                <ActionIcon variant="subtle" onClick={() => setNewCategoryOpen(true)}>
+                <ActionIcon
+                  variant="subtle"
+                  onClick={() => {
+                    setNewCategoryType(activeChannelType);
+                    setNewCategoryOpen(true);
+                  }}
+                >
                   <IconPlus size={16} />
                 </ActionIcon>
               </Tooltip>
             </Group>
           </Group>
+          <SegmentedControl
+            size="xs"
+            fullWidth
+            mb="xs"
+            value={activeChannelType}
+            onChange={(v) => switchChannelTypeTab((v as ChannelType) ?? "live")}
+            data={[
+              { value: "live", label: "Live TV" },
+              { value: "vod", label: "Movies" },
+              { value: "series", label: "TV Shows" },
+            ]}
+          />
           {multiSelectedCategoryIds.size > 0 && (
             <Button
               size="xs"
@@ -369,9 +398,9 @@ export default function PlaylistEditorPage() {
               }}
               onDragCancel={() => setDraggingCategoryId(null)}
             >
-              <SortableContext items={categories.map((c) => c.id)} strategy={verticalListSortingStrategy}>
+              <SortableContext items={visibleCategories.map((c) => c.id)} strategy={verticalListSortingStrategy}>
                 <Stack gap={2}>
-                  {categories.map((c) => (
+                  {visibleCategories.map((c) => (
                     <SortableCategoryRow
                       key={c.id}
                       category={c}
@@ -385,7 +414,7 @@ export default function PlaylistEditorPage() {
                       onToggleMultiSelect={(shiftKey) =>
                         toggleSelection(
                           c.id,
-                          categories.map((cat) => cat.id),
+                          visibleCategories.map((cat) => cat.id),
                           shiftKey,
                           setMultiSelectedCategoryIds,
                           categorySelectionAnchorRef,
@@ -397,9 +426,11 @@ export default function PlaylistEditorPage() {
                       }}
                     />
                   ))}
-                  {categories.length === 0 && (
+                  {visibleCategories.length === 0 && (
                     <Text c="dimmed" size="sm" p="sm">
-                      No categories yet. Add one, or import from a source (which creates categories automatically).
+                      {categories.length === 0
+                        ? "No categories yet. Add one, or import from a source (which creates categories automatically)."
+                        : "No categories of this type yet."}
                     </Text>
                   )}
                 </Stack>
@@ -412,7 +443,7 @@ export default function PlaylistEditorPage() {
                     </Paper>
                   ) : (
                     <Paper withBorder p={6} shadow="md" bg="var(--mantine-color-body)">
-                      <Text size="sm">{categories.find((c) => c.id === draggingCategoryId)?.name}</Text>
+                      <Text size="sm">{visibleCategories.find((c) => c.id === draggingCategoryId)?.name}</Text>
                     </Paper>
                   ))}
               </DragOverlay>
@@ -632,6 +663,7 @@ export default function PlaylistEditorPage() {
           onClose={() => setImportOpen(false)}
           playlistId={playlistId}
           categories={categories}
+          defaultChannelType={activeChannelType}
           onImported={invalidate}
         />
       )}
@@ -777,11 +809,6 @@ function SortableCategoryRow({
             <Text size="sm" truncate>
               {category.name}
             </Text>
-            {category.channel_type !== "live" && (
-              <Badge size="xs" variant="light" color={category.channel_type === "vod" ? "grape" : "cyan"}>
-                {category.channel_type === "vod" ? "Movies" : "TV Shows"}
-              </Badge>
-            )}
           </Group>
           <Text size="xs" c="dimmed">
             {category.channel_count} channels
@@ -2172,16 +2199,18 @@ function ImportModal({
   onClose,
   playlistId,
   categories,
+  defaultChannelType,
   onImported,
 }: {
   opened: boolean;
   onClose: () => void;
   playlistId: string;
   categories: PlaylistCategory[];
+  defaultChannelType: ChannelType;
   onImported: () => void;
 }) {
   const [sourceId, setSourceId] = useState<string | null>(null);
-  const [channelType, setChannelType] = useState<ChannelType>("live");
+  const [channelType, setChannelType] = useState<ChannelType>(defaultChannelType);
   const [selectedSourceCategories, setSelectedSourceCategories] = useState<Set<number>>(new Set());
   const sourceCategorySelectionAnchorRef = useRef<number | null>(null);
   const shiftKeyRef = useRef(false);
@@ -2189,6 +2218,13 @@ function ImportModal({
   const [targetMode, setTargetMode] = useState<"existing" | "new">("new");
   const [targetCategoryId, setTargetCategoryId] = useState<string | null>(null);
   const [newCategoryName, setNewCategoryName] = useState("");
+
+  // This modal stays mounted across opens/closes (see its parent), so the channel-type default
+  // only ever applies here, synced to whichever tab was active when it was opened - plain
+  // useState's initializer wouldn't pick up a later prop change on its own.
+  useEffect(() => {
+    if (opened) setChannelType(defaultChannelType);
+  }, [opened, defaultChannelType]);
 
   const { data: sources } = useQuery<Source[]>({
     queryKey: ["sources"],
@@ -2227,7 +2263,7 @@ function ImportModal({
   });
 
   const relevantCategories = (sourceCategories ?? []).filter((c) => c.channel_type === channelType && c.enabled);
-  const targetableCategories = categories;
+  const targetableCategories = categories.filter((c) => c.channel_type === channelType);
 
   return (
     <Modal opened={opened} onClose={onClose} title="Import Channels from Source" size="lg">
