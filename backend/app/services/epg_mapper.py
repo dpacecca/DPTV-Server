@@ -1,9 +1,24 @@
+import re
+
 from rapidfuzz import fuzz, process
 
 from app.services.name_normalize import extract_country_prefix, normalize_name
 
 # Deliberately model-agnostic (id -> display name) rather than typed to EpgChannel - callers
 # look their own objects back up by the returned id.
+
+_DUMMY_EPG_ID_RE = re.compile(r"^dummy[-_]?\d*$", re.IGNORECASE)
+
+
+def is_dummy_epg_channel_id(epg_channel_id: str) -> bool:
+    """True for a provider-generated placeholder guide entry (tvg-id like "dummy-35927") used
+    when a channel has no real EPG data - its display name is typically just the channel's own
+    raw name echoed back with decorative padding (e.g. "####### TNT SPORT RAW 50 FPS #######"),
+    which can spuriously out-score the real candidate on leftover shared noise tokens rather than
+    genuine identity, and even when it doesn't, mapping to it is never useful - a dummy entry
+    carries no real schedule. Callers building a candidate pool should drop these entirely rather
+    than leave the fuzzy scorer to (fail to) deprioritize them."""
+    return bool(_DUMMY_EPG_ID_RE.match(epg_channel_id.strip()))
 
 _COUNTRY_MATCH_BONUS = 10.0
 """Added to (or, on a mismatch, subtracted from) a candidate's raw WRatio score (0-100) when

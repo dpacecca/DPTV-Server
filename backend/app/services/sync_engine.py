@@ -168,7 +168,11 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
         epg_candidates: dict[int, str] = {}
         if source.epg_source_id is not None:
             epg_result = await db.execute(select(EpgChannel).where(EpgChannel.epg_source_id == source.epg_source_id))
-            epg_candidates = {c.id: c.display_name for c in epg_result.scalars().all()}
+            epg_candidates = {
+                c.id: c.display_name
+                for c in epg_result.scalars().all()
+                if not epg_mapper.is_dummy_epg_channel_id(c.epg_channel_id)
+            }
 
         # Sorted by the channel's own provider-order position (not new_channel_rows' own
         # iteration order, which follows the provider's flat multi-category response) so a
