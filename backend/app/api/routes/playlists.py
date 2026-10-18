@@ -666,7 +666,11 @@ async def _epg_candidates_for_source(db: DbSession, source_id: int) -> dict[int,
     if source is None or source.epg_source_id is None:
         return {}
     result = await db.execute(select(EpgChannel).where(EpgChannel.epg_source_id == source.epg_source_id))
-    return {c.id: c.display_name for c in result.scalars().all()}
+    return {
+        c.id: c.display_name
+        for c in result.scalars().all()
+        if not epg_mapper.is_dummy_epg_channel_id(c.epg_channel_id)
+    }
 
 
 @router.post("/{playlist_id}/import")
@@ -1253,12 +1257,14 @@ async def tag_resolution(playlist_id: int, payload: TagResolutionIn, db: DbSessi
 async def _epg_candidates(db: DbSession, epg_source_ids: list[int] | None) -> list[EpgChannel]:
     """All EPG channels to search against - scoped to selected guides when given, matching
     IPTVBoss's 'Search Options' (e.g. disabling UK/CA guides when mapping US channels so
-    similarly-named channels from the wrong region don't win the fuzzy match)."""
+    similarly-named channels from the wrong region don't win the fuzzy match). Excludes a
+    provider's "dummy-NNNNN" placeholder entries (see epg_mapper.is_dummy_epg_channel_id) - never
+    a real match, and their padded/echoed names can spuriously win on noise alone."""
     query = select(EpgChannel)
     if epg_source_ids:
         query = query.where(EpgChannel.epg_source_id.in_(epg_source_ids))
     result = await db.execute(query)
-    return list(result.scalars().all())
+    return [c for c in result.scalars().all() if not epg_mapper.is_dummy_epg_channel_id(c.epg_channel_id)]
 
 
 @router.get("/{playlist_id}/channels/{channel_id}/epg/search")
