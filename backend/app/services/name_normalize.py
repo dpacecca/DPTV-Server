@@ -1,7 +1,12 @@
 import re
 
 _NOISE_WORDS = r"hd|fhd|uhd|4k|8k|sd|hevc|h265|h264|raw|now|us|usa|uk|ca|vip|backup|feed"
-_NOISE_WORD_RE = re.compile(rf"\b(?:{_NOISE_WORDS}|\d{{3,4}}p)\b", re.IGNORECASE)
+_NOISE_WORD_RE = re.compile(rf"\b(?:{_NOISE_WORDS}|\d{{3,4}}p|\d{{2,3}}\s*fps)\b", re.IGNORECASE)
+"""Also catches a resolution tag (1080p, 720p) and a frame-rate tag (50 FPS, 60FPS) - left
+unstripped, a frame-rate tag that happens to match between the channel being matched and an
+unrelated-but-identically-decorated EPG candidate ("TNT Sport RAW 50 FPS") was a real false
+signal: it could out-score the actual, undecorated match ("TNT Sports 4") on shared "50 fps"
+tokens alone, rather than on channel identity."""
 
 _LEADING_PREFIX_RE = re.compile(r"^\s*[a-z]{2,12}\s*:\s*", re.IGNORECASE)
 """A short leading tag before a colon (e.g. "UK:", "US:", "NOW:") - providers commonly use these
