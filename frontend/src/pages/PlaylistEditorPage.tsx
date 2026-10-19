@@ -748,6 +748,7 @@ export default function PlaylistEditorPage() {
           playlistId={playlistId}
           categoryId={activeCategory.id}
           categoryName={activeCategory.name}
+          channelIds={[...selectedChannelIds]}
         />
       )}
 
@@ -3000,26 +3001,35 @@ function EpgPreviewModal({
   playlistId,
   categoryId,
   categoryName,
+  channelIds,
 }: {
   opened: boolean;
   onClose: () => void;
   playlistId: string;
   categoryId: number;
   categoryName: string;
+  channelIds: number[];
 }) {
   const [hours, setHours] = useState(24);
 
   const { data, isLoading, isError } = useQuery<EpgPreviewResult>({
-    queryKey: ["epg-preview", playlistId, categoryId, hours],
+    queryKey: ["epg-preview", playlistId, categoryId, hours, channelIds],
     queryFn: () =>
       api
-        .get(`/api/playlists/${playlistId}/categories/${categoryId}/epg-preview`, { params: { hours } })
+        .get(`/api/playlists/${playlistId}/categories/${categoryId}/epg-preview`, {
+          params: { hours, channel_ids: channelIds.length > 0 ? channelIds : undefined },
+        })
         .then((r) => r.data),
     enabled: opened,
   });
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`EPG Preview — ${categoryName}`} size="xl">
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={`EPG Preview — ${categoryName}${channelIds.length > 0 ? ` (${channelIds.length} selected)` : ""}`}
+      size="xl"
+    >
       <Stack>
         <Group justify="space-between" align="flex-end">
           <Select
