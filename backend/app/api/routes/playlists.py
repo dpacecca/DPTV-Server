@@ -898,28 +898,38 @@ PREVIEW_MAX_HOURS = 72
 
 @router.get("/{playlist_id}/categories/{category_id}/epg-preview")
 async def preview_category_epg(
-    playlist_id: int, category_id: int, db: DbSession, _admin: AdminUser, hours: int = 24
+    playlist_id: int,
+    category_id: int,
+    db: DbSession,
+    _admin: AdminUser,
+    hours: int = 24,
+    channel_ids: list[int] | None = Query(None),
 ) -> dict:
     """What each enabled channel in this category would actually show in the guide right now -
     real programs where EPG-mapped, dummy-generated ones otherwise (including custom event rules
     and "Up Next" blocks) - computed by the exact same code XMLTV output uses, so this can never
-    silently disagree with what a real player pulls. Capped to PREVIEW_MAX_CHANNELS/_HOURS since
-    this runs synchronously (unlike the duplicate scanner, generating dummy programs is pure
-    in-memory computation, but a huge category over a long window is still real work to both
-    compute and ship back as JSON)."""
+    silently disagree with what a real player pulls. `channel_ids`, when given (e.g. the admin's
+    current selection in the channel table), previews just those channels instead of the whole
+    category. Capped to PREVIEW_MAX_CHANNELS/_HOURS either way since this runs synchronously
+    (unlike the duplicate scanner, generating dummy programs is pure in-memory computation, but a
+    huge category over a long window is still real work to both compute and ship back as JSON)."""
     cat = await db.get(PlaylistCategory, category_id)
     if cat is None or cat.playlist_id != playlist_id:
         raise HTTPException(404, "Category not found")
 
     hours = max(1, min(hours, PREVIEW_MAX_HOURS))
-    total = await db.scalar(
-        select(func.count())
-        .select_from(PlaylistChannel)
-        .where(PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True))
-    )
+
+    def _base_query():
+        query = select(PlaylistChannel).where(
+            PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True)
+        )
+        if channel_ids:
+            query = query.where(PlaylistChannel.id.in_(channel_ids))
+        return query
+
+    total = await db.scalar(select(func.count()).select_from(_base_query().subquery()))
     result = await db.execute(
-        select(PlaylistChannel)
-        .where(PlaylistChannel.playlist_category_id == category_id, PlaylistChannel.enabled.is_(True))
+        _base_query()
         .options(selectinload(PlaylistChannel.source_channel), selectinload(PlaylistChannel.epg_channel))
         .order_by(PlaylistChannel.sort_order, PlaylistChannel.id)
         .limit(PREVIEW_MAX_CHANNELS)
