@@ -6,6 +6,7 @@ from urllib.parse import quote, unquote
 
 import httpx
 from lxml import html as lxml_html
+from rapidfuzz import fuzz, process
 
 from app.config import get_settings
 from app.services.name_normalize import normalize_name
@@ -24,11 +25,24 @@ _DOWNLOAD_CONCURRENCY = 8
 
 _COUNTRY_SUFFIX_RE = re.compile(r"^(.+)\.([A-Za-z]{2,3})$")
 
-# Rebuilt wholesale by refresh_iptvboss_logo_cache() (startup + weekly, see core/scheduler.py) -
-# maps a normalize_name()'d channel name to the logo's path under the local cache directory, so
-# request-hot paths (M3U/XMLTV/XC API output) can resolve a logo synchronously with zero network
-# I/O. Empty (not an error) until the first refresh completes.
+# Same similarity threshold epg_mapper.auto_match defaults to, for the same reason: below this,
+# WRatio starts pairing genuinely different channels together often enough that a wrong guess is
+# worse than no logo at all.
+_FUZZY_SENSITIVITY = 0.9
+
+# All three rebuilt wholesale by refresh_iptvboss_logo_cache() (startup + weekly, see
+# core/scheduler.py) - empty (not an error) until the first refresh completes.
+# normalize_name()'d channel name -> logo path under the local cache directory. The fast path:
+# request-hot callers (M3U/XMLTV/XC API output) hit this first, zero network I/O and no scoring.
 _name_index: dict[str, str] = {}
+# logo path -> its normalize_name()'d channel name - the candidate pool get_iptvboss_logo_url()
+# falls back to fuzzy-matching against (same rapidfuzz WRatio approach as epg_mapper.
+# search_candidates) when _name_index has no exact entry for a channel's name.
+_fuzzy_choices: dict[str, str] = {}
+# Memoizes a normalized channel name -> logo path (or None for "no confident match") once
+# _fuzzy_match has resolved it, so repeat lookups for the same channel - M3U/XMLTV output
+# re-resolves every channel's logo on every request - don't re-run a fuzzy search each time.
+_fuzzy_cache: dict[str, str | None] = {}
 
 
 def _cache_root() -> str:
@@ -147,8 +161,10 @@ async def refresh_iptvboss_logo_cache() -> dict:
         if key and key not in index:
             index[key] = rel_path
 
-    global _name_index
+    global _name_index, _fuzzy_choices, _fuzzy_cache
     _name_index = index
+    _fuzzy_choices = {rel_path: name for name, rel_path in index.items()}
+    _fuzzy_cache = {}
 
     logger.info(
         "Refreshed iptvboss logo cache: %d files found, %d downloaded, %d skipped, %d errors, %d channel names indexed",
@@ -157,16 +173,28 @@ async def refresh_iptvboss_logo_cache() -> dict:
     return {"files_found": len(files), **stats, "channels_indexed": len(index)}
 
 
+def _fuzzy_match(key: str) -> str | None:
+    if key in _fuzzy_cache:
+        return _fuzzy_cache[key]
+    result = process.extractOne(key, _fuzzy_choices, scorer=fuzz.WRatio, score_cutoff=_FUZZY_SENSITIVITY * 100)
+    rel_path = result[2] if result else None
+    _fuzzy_cache[key] = rel_path
+    return rel_path
+
+
 def get_iptvboss_logo_url(channel_name: str | None) -> str | None:
-    """Synchronous, zero-I/O lookup for use on request-hot paths. Matches purely on channel
-    name (normalize_name()'d, same as EPG fuzzy matching) against the locally-cached iptvboss
-    set - unlike the iptv-org fallback in iptv_org_epg.py, this never needs an EPG mapping at
-    all, so it also covers channels with no EPG match. Returns an absolute URL served by this
-    server itself (see the /logo-cache static mount in main.py), never the remote iptvboss URL -
-    the whole point is this app doesn't depend on that CDN being reachable at request time."""
+    """Synchronous, zero-I/O lookup for use on request-hot paths. Matches on channel name
+    (normalize_name()'d, same as EPG fuzzy matching) against the locally-cached iptvboss set -
+    an exact normalized match first, then the same rapidfuzz WRatio approach epg_mapper uses for
+    EPG matching if that misses (see _fuzzy_match). Unlike the iptv-org fallback in
+    iptv_org_epg.py, this never needs an EPG mapping at all, so it also covers channels with no
+    EPG match. Returns an absolute URL served by this server itself (see the /logo-cache static
+    mount in main.py), never the remote iptvboss URL - the whole point is this app doesn't depend
+    on that CDN being reachable at request time."""
     if not channel_name or not _name_index:
         return None
-    rel_path = _name_index.get(normalize_name(channel_name))
+    key = normalize_name(channel_name)
+    rel_path = _name_index.get(key) or _fuzzy_match(key)
     if not rel_path:
         return None
     settings = get_settings()
