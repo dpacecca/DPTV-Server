@@ -1158,6 +1158,8 @@ function ChannelDetailModal({
   const channelId = channel.id;
   const [name, setName] = useState(channel.name);
   const [logoOverride, setLogoOverride] = useState(channel.logo_url_override ?? "");
+  const [logoSearch, setLogoSearch] = useState("");
+  const [debouncedLogoSearch] = useDebounce(logoSearch, 300);
   const [search, setSearch] = useState("");
   // Local, optimistically-updated mirrors of the dummy EPG fields rather than reading `channel.*`
   // directly - `channel` is a snapshot taken when this modal was opened (see `detailChannel` in
@@ -1238,6 +1240,12 @@ function ChannelDetailModal({
     enabled: epgSourceIds.size > 0,
   });
 
+  const { data: logoSearchResults } = useQuery({
+    queryKey: ["logo-cache-search", debouncedLogoSearch],
+    queryFn: () => api.get("/api/logo-cache/search", { params: { q: debouncedLogoSearch } }).then((r) => r.data),
+    enabled: debouncedLogoSearch.trim().length > 0,
+  });
+
   const assignEpgMutation = useMutation({
     mutationFn: (epgChannelId: number | null) => api.patch(`/api/playlists/${playlistId}/channels/${channelId}/epg`, { epg_channel_id: epgChannelId }),
     onSuccess: onChanged,
@@ -1279,6 +1287,38 @@ function ChannelDetailModal({
             Save
           </Button>
         </Group>
+        <Stack gap={4}>
+          <TextInput
+            placeholder="Search cached logos by name..."
+            leftSection={<IconSearch size={14} />}
+            value={logoSearch}
+            onChange={(e) => setLogoSearch(e.currentTarget.value)}
+          />
+          {(logoSearchResults ?? []).length > 0 && (
+            <Stack gap={4} mah={160} style={{ overflowY: "auto" }}>
+              {logoSearchResults.map((r: { name: string; url: string; score: number }) => (
+                <Group
+                  key={r.url}
+                  justify="space-between"
+                  p={6}
+                  style={{ borderRadius: 6, cursor: "pointer" }}
+                  onClick={() => {
+                    setLogoOverride(r.url);
+                    updateMutation.mutate({ logo_url_override: r.url });
+                  }}
+                >
+                  <Group gap={8}>
+                    <Image src={r.url} alt="" w={24} h={24} fit="contain" />
+                    <Text size="sm">{r.name}</Text>
+                  </Group>
+                  <Badge size="xs" variant="light">
+                    {(r.score * 100).toFixed(0)}%
+                  </Badge>
+                </Group>
+              ))}
+            </Stack>
+          )}
+        </Stack>
         <Group>
           <Switch
             label="Ignore name changes from provider"

@@ -43,6 +43,11 @@ _fuzzy_choices: dict[str, str] = {}
 # _fuzzy_match has resolved it, so repeat lookups for the same channel - M3U/XMLTV output
 # re-resolves every channel's logo on every request - don't re-run a fuzzy search each time.
 _fuzzy_cache: dict[str, str | None] = {}
+# Every cached logo, undeduplicated (unlike _name_index/_fuzzy_choices, which keep only one
+# country's file per channel name) - (display name, logo path) pairs backing search_logos(), so
+# an admin manually picking a logo can see and choose between e.g. the US and UK "ESPN" rather
+# than being stuck with whichever one auto-matching happened to pick.
+_all_logos: list[tuple[str, str]] = []
 
 
 def _cache_root() -> str:
@@ -151,20 +156,26 @@ async def refresh_iptvboss_logo_cache() -> dict:
 
     stats = {"downloaded": 0, "skipped": 0, "error": 0}
     index: dict[str, str] = {}
+    all_logos: list[tuple[str, str]] = []
     for status, rel_path in results:
         stats[status] += 1
         if status == "error":
             continue
         filename = rel_path.rsplit("/", 1)[-1]
         stem = os.path.splitext(filename)[0]
-        key = normalize_name(_strip_country_suffix(stem))
+        base_name = _strip_country_suffix(stem)
+        country = stem[len(base_name) + 1:] if len(stem) > len(base_name) else None
+        display_name = f"{base_name} ({country.upper()})" if country else base_name
+        all_logos.append((display_name, rel_path))
+        key = normalize_name(base_name)
         if key and key not in index:
             index[key] = rel_path
 
-    global _name_index, _fuzzy_choices, _fuzzy_cache
+    global _name_index, _fuzzy_choices, _fuzzy_cache, _all_logos
     _name_index = index
     _fuzzy_choices = {rel_path: name for name, rel_path in index.items()}
     _fuzzy_cache = {}
+    _all_logos = all_logos
 
     logger.info(
         "Refreshed iptvboss logo cache: %d files found, %d downloaded, %d skipped, %d errors, %d channel names indexed",
@@ -182,6 +193,12 @@ def _fuzzy_match(key: str) -> str | None:
     return rel_path
 
 
+def _logo_url(rel_path: str) -> str:
+    settings = get_settings()
+    quoted = "/".join(quote(part) for part in rel_path.split("/"))
+    return f"{settings.public_base_url.rstrip('/')}/logo-cache/{quoted}"
+
+
 def get_iptvboss_logo_url(channel_name: str | None) -> str | None:
     """Synchronous, zero-I/O lookup for use on request-hot paths. Matches on channel name
     (normalize_name()'d, same as EPG fuzzy matching) against the locally-cached iptvboss set -
@@ -197,6 +214,23 @@ def get_iptvboss_logo_url(channel_name: str | None) -> str | None:
     rel_path = _name_index.get(key) or _fuzzy_match(key)
     if not rel_path:
         return None
-    settings = get_settings()
-    quoted = "/".join(quote(part) for part in rel_path.split("/"))
-    return f"{settings.public_base_url.rstrip('/')}/logo-cache/{quoted}"
+    return _logo_url(rel_path)
+
+
+def search_logos(query: str, limit: int = 20) -> list[dict]:
+    """Lets an admin search the whole cached logo set by name (e.g. to manually pick a better
+    match than get_iptvboss_logo_url() found, or find one for a channel it couldn't match at
+    all) - for the "Channel Settings" logo override field's search picker. Ranked with the same
+    rapidfuzz WRatio scoring as the automatic match, but against every cached logo rather than
+    the deduplicated one-per-channel-name index, so e.g. both the US and UK "ESPN" show up as
+    separate results to choose between rather than whichever one auto-matching picked."""
+    query = query.strip()
+    if not query or not _all_logos:
+        return []
+    q = normalize_name(query)
+    choices = {i: normalize_name(name) for i, (name, _rel_path) in enumerate(_all_logos)}
+    results = process.extract(q, choices, scorer=fuzz.WRatio, limit=limit, score_cutoff=40.0)
+    return [
+        {"name": _all_logos[idx][0], "url": _logo_url(_all_logos[idx][1]), "score": round(score / 100, 3)}
+        for _text, score, idx in results
+    ]

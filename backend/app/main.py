@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.api.routes import (
     auth,
     epg_sources,
+    logo_cache,
     logs,
     playlists,
     scheduler as scheduler_routes,
@@ -91,6 +92,7 @@ app.include_router(playlists.router)
 app.include_router(xc_users.router)
 app.include_router(scheduler_routes.router)
 app.include_router(settings_routes.router)
+app.include_router(logo_cache.router)
 app.include_router(xc_server.router)
 app.include_router(logs.router)
 
