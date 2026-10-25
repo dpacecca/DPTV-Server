@@ -75,6 +75,7 @@ export interface PlaylistChannel {
   enabled: boolean;
   sort_order: number;
   logo_url: string | null;
+  logo_url_override: string | null;
   manual_stream_url: string | null;
   provider_name: string | null;
   source_channel_id: number | null;

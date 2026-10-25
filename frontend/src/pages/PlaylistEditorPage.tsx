@@ -6,6 +6,7 @@ import {
   Button,
   Checkbox,
   Group,
+  Image,
   Loader,
   Menu,
   Modal,
@@ -1156,6 +1157,7 @@ function ChannelDetailModal({
 }) {
   const channelId = channel.id;
   const [name, setName] = useState(channel.name);
+  const [logoOverride, setLogoOverride] = useState(channel.logo_url_override ?? "");
   const [search, setSearch] = useState("");
   // Local, optimistically-updated mirrors of the dummy EPG fields rather than reading `channel.*`
   // directly - `channel` is a snapshot taken when this modal was opened (see `detailChannel` in
@@ -1258,6 +1260,25 @@ function ChannelDetailModal({
             </Text>
           </Text>
         )}
+        <Group align="flex-end">
+          <TextInput
+            label="Logo URL"
+            description="Overrides the provider logo and any automatic match. Leave blank to use the automatic one."
+            placeholder="https://..."
+            value={logoOverride}
+            onChange={(e) => setLogoOverride(e.currentTarget.value)}
+            style={{ flex: 1 }}
+          />
+          {channel.logo_url && (
+            <Image src={channel.logo_url} alt="" w={36} h={36} fit="contain" radius="sm" />
+          )}
+          <Button
+            variant="light"
+            onClick={() => updateMutation.mutate({ logo_url_override: logoOverride.trim() === "" ? null : logoOverride.trim() })}
+          >
+            Save
+          </Button>
+        </Group>
         <Group>
           <Switch
             label="Ignore name changes from provider"

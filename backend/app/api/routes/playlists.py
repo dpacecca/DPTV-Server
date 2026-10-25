@@ -61,6 +61,7 @@ def _serialize_channel(pc: PlaylistChannel) -> dict:
         "enabled": pc.enabled,
         "sort_order": pc.sort_order,
         "logo_url": resolve_channel_logo(pc),
+        "logo_url_override": pc.logo_url_override,
         "manual_stream_url": pc.manual_stream_url,
         "provider_name": pc.source_channel.name if pc.source_channel else None,
         "source_channel_id": pc.source_channel_id,

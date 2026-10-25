@@ -7,10 +7,16 @@ from app.config import get_settings
 _buffer: deque[dict] = deque(maxlen=get_settings().guide_refresh_log_buffer_size)
 
 # Loggers that carry EPG/guide refresh activity worth surfacing to an admin: scheduled and
-# manually-triggered syncs, plus the logo-cache refresh. Attaching to these specific loggers
+# manually-triggered syncs, plus the logo-cache refreshes. Attaching to these specific loggers
 # rather than the root logger keeps unrelated noise (httpx, apscheduler's own bookkeeping,
 # uvicorn access logs) out of this buffer.
-_SOURCE_LOGGER_NAMES = ("dptv.iptv_org_epg", "dptv.scheduler", "dptv.epg_refresh_jobs", "dptv.sync_engine")
+_SOURCE_LOGGER_NAMES = (
+    "dptv.iptv_org_epg",
+    "dptv.iptvboss_logos",
+    "dptv.scheduler",
+    "dptv.epg_refresh_jobs",
+    "dptv.sync_engine",
+)
 
 
 class _BufferHandler(logging.Handler):

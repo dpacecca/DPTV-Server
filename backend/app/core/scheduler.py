@@ -11,6 +11,7 @@ from app.db import SessionLocal
 from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
 from app.services.iptv_org_epg import refresh_logo_cache
+from app.services.iptvboss_logos import refresh_iptvboss_logo_cache
 from app.services.sync_engine import run_full_sync
 
 logger = logging.getLogger("dptv.scheduler")
@@ -26,6 +27,13 @@ async def _refresh_logo_cache_job() -> None:
         await refresh_logo_cache()
     except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
         logger.exception("Failed to refresh iptv-org logo cache")
+
+
+async def _refresh_iptvboss_logo_cache_job() -> None:
+    try:
+        await refresh_iptvboss_logo_cache()
+    except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
+        logger.exception("Failed to refresh iptvboss logo cache")
 
 
 async def _run_scheduled_sync(schedule_id: int) -> None:
@@ -76,11 +84,25 @@ async def start_scheduler() -> None:
         id="iptv-org-logo-cache-refresh",
         replace_existing=True,
     )
-    # Fire once immediately in the background so the cache is warm shortly after startup,
-    # without delaying the rest of app startup on a network fetch.
+    scheduler.add_job(
+        _refresh_iptvboss_logo_cache_job,
+        trigger=IntervalTrigger(weeks=1),
+        id="iptvboss-logo-cache-refresh",
+        replace_existing=True,
+    )
+    # Fire both once immediately in the background so the caches are warm shortly after
+    # startup, without delaying the rest of app startup on a network fetch. Safe to re-run on
+    # every restart: both refreshes skip any file already cached at the same size, so this is
+    # only ever a full download the very first time.
     scheduler.add_job(
         _refresh_logo_cache_job,
         trigger=DateTrigger(),
         id="iptv-org-logo-cache-refresh-initial",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _refresh_iptvboss_logo_cache_job,
+        trigger=DateTrigger(),
+        id="iptvboss-logo-cache-refresh-initial",
         replace_existing=True,
     )
