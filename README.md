@@ -192,6 +192,56 @@ after which updating is just:
 sudo update
 ```
 
+## XC server: cheap change detection for players
+
+A player can poll the server cheaply (every ~15 minutes, say) and re-download
+its playlist or guide only when something it would see has actually changed.
+
+**Sync status** — `GET /player_api.php?username=…&password=…&action=dptv_sync_status`
+(normal XC authentication) returns:
+
+```json
+{
+  "server": "DPTV-Server", "version": "1.0.4",
+  "live":   {"rev": "3f1c9a0b5e27d4c8", "updated_at": 1761390000},
+  "vod":    {"rev": "a90e1d22c4b7f513", "updated_at": 1761300000},
+  "series": {"rev": "0c55e7a1b9d3f240", "updated_at": null},
+  "epg":    {"rev": "7be2f0c4a1d98e36", "updated_at": 1761392400},
+  "last_source_sync_at": 1761391800,
+  "last_epg_refresh_at": 1761392400
+}
+```
+
+- Each `rev` is an opaque 16-character string covering only *that user's*
+  enabled playlists. Compare it for equality; don't parse it. It changes
+  when categories, channels (edits, reorders, enable/disable, manual URL,
+  EPG mapping), the provider data behind them (name/logo/stream URL from a
+  source sync), the user's playlist assignments or playlist flags change —
+  including deletions. A source sync that changes nothing leaves it alone.
+- `epg.rev` also covers the dummy EPG rules, refreshes of the EPG sources
+  mapped in those playlists, and rolls over once per UTC day (the guide is a
+  sliding window starting "now").
+- `updated_at` values are the newest underlying timestamps (unix seconds,
+  `null` when empty) — informational only, since a deletion changes `rev`
+  without moving them.
+
+**HTTP validators** — `get.php`, `xmltv.php` and the `player_api.php` list
+actions (`get_live_categories`, `get_live_streams`, `get_vod_categories`,
+`get_vod_streams`, `get_series_categories`, `get_series`) send `ETag`,
+`Last-Modified` and `Cache-Control: no-cache`. The ETag is the matching
+`rev` in quotes (`get.php`: a hash of live+vod+series; `xmltv.php`: `epg`;
+each action: its type's `rev`). A request with a matching `If-None-Match`
+(preferred) or `If-Modified-Since` gets `304 Not Modified` without the
+server building the body. `get.php` and `xmltv.php` also answer `HEAD` with
+the same headers and no body. Clients that send no validators get exactly
+the same response bodies as before.
+
+**Push (optional)** — Settings → Integrations → *After a sync, notify URL*:
+when set, the server POSTs
+`{"event": "sync_finished", "kind": "sources"|"epg", "at": <unix>}` to that
+URL after each scheduled or manual source/EPG sync (fire-and-forget, 5 s
+timeout, failures only logged).
+
 ## Project layout
 
 ```
@@ -200,6 +250,8 @@ backend/    FastAPI app, SQLAlchemy models, Alembic migrations, services
   app/services/     Xtream/M3U client, XMLTV parse/generate, sync engine,
                      fuzzy EPG mapper, dummy EPG generator
   app/api/routes/   Admin REST API + the public Xtream-Codes-compatible API
+  tests/            pytest suite (`pip install -e '.[dev]' && pytest`, runs on
+                     SQLite; set DPTV_TEST_DATABASE_URL to use Postgres)
 frontend/   React + Vite + Mantine admin UI
 deploy/     systemd unit examples, update script for native installs
 ```

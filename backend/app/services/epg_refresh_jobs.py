@@ -7,6 +7,7 @@ from app.db import SessionLocal
 from app.models.base import SyncStatus
 from app.models.epg import EpgSource
 from app.services.sync_engine import sync_all_epg_sources, sync_epg_source
+from app.services.sync_notify import notify_sync_finished
 
 logger = logging.getLogger("dptv.epg_refresh_jobs")
 
@@ -52,6 +53,7 @@ async def _run_single(job_id: str, epg_source_id: int) -> None:
                 raise RuntimeError("EPG source not found")
             summary = await sync_epg_source(db, epg)
             await db.commit()
+        notify_sync_finished("epg")
         job.result = summary
         job.status = "done"
     except Exception as exc:  # noqa: BLE001
@@ -79,6 +81,7 @@ async def _run_all(job_id: str) -> None:
         async with SessionLocal() as db:
             summary = await sync_all_epg_sources(db)
             await db.commit()
+        notify_sync_finished("epg")
         job.result = summary
         job.status = "done"
     except Exception as exc:  # noqa: BLE001

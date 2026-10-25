@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +17,8 @@ from app.models.xc_user import XcUser, XcUserPlaylist
 from app.services.channel_logo import resolve_channel_logo
 from app.services.epg_writer import build_xmltv, xmltv_channel_id
 from app.services.m3u_writer import build_m3u
+from app.services.sync_status import Rev, compute_sync_status, last_modified_for, unix
+from app.services.version import get_current_version
 from app.services.xtream_client import XtreamClient
 
 router = APIRouter(tags=["xc-server"])
@@ -121,8 +124,79 @@ def _series_json(cat: PlaylistCategory, pc: PlaylistChannel) -> dict:
     }
 
 
+# --- Conditional-request support -----------------------------------------------------------------
+#
+# get.php, xmltv.php and the player_api.php list actions carry an ETag built from the user's
+# sync-status revision(s) (services/sync_status.py) plus Last-Modified and Cache-Control: no-cache,
+# and answer a matching If-None-Match / If-Modified-Since with 304 before building the body.
+# Clients that send neither header get exactly the same body as before.
+
+_LIST_ACTION_KINDS = {
+    "get_live_categories": "live",
+    "get_live_streams": "live",
+    "get_vod_categories": "vod",
+    "get_vod_streams": "vod",
+    "get_series_categories": "series",
+    "get_series": "series",
+}
+
+
+def _validator_headers(user: XcUser, key: str, rev: Rev) -> dict[str, str]:
+    last_modified = last_modified_for(user.id, key, rev)
+    return {
+        "ETag": f'"{rev.rev}"',
+        "Last-Modified": format_datetime(last_modified, usegmt=True),
+        "Cache-Control": "no-cache",
+    }
+
+
+def _is_not_modified(request: Request, headers: dict[str, str]) -> bool:
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match is not None:
+        # RFC 9110 13.1.2/13.2.2: If-None-Match wins over If-Modified-Since; weak comparison
+        # (a proxy like nginx with gzip on may hand our ETag back as W/"...").
+        etag = headers["ETag"]
+        tags = [t.strip() for t in if_none_match.split(",")]
+        return any(t == "*" or t.removeprefix("W/") == etag for t in tags)
+    if_modified_since = request.headers.get("if-modified-since")
+    if if_modified_since:
+        try:
+            since = parsedate_to_datetime(if_modified_since)
+        except (TypeError, ValueError):
+            return False
+        if since is None:
+            return False
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        return parsedate_to_datetime(headers["Last-Modified"]) <= since
+    return False
+
+
+def _not_modified_response(headers: dict[str, str]) -> Response:
+    return Response(status_code=304, headers=headers)
+
+
+def _head_response(headers: dict[str, str], media_type: str) -> Response:
+    response = Response(status_code=200, headers=headers, media_type=media_type)
+    # The real length isn't known without building the body, which is exactly what HEAD avoids.
+    del response.headers["content-length"]
+    return response
+
+
+def _sync_status_json(status) -> dict:
+    out: dict = {"server": "DPTV-Server", "version": get_current_version()}
+    for kind in ("live", "vod", "series", "epg"):
+        rev = status.revs[kind]
+        out[kind] = {"rev": rev.rev, "updated_at": unix(rev.updated_at)}
+    out["last_source_sync_at"] = unix(status.last_source_sync_at)
+    out["last_epg_refresh_at"] = unix(status.last_epg_refresh_at)
+    return out
+
+
 @router.get("/player_api.php")
 async def player_api(
+    request: Request,
+    response: Response,
     db: DbSession,
     username: str | None = None,
     password: str | None = None,
@@ -132,11 +206,33 @@ async def player_api(
     series_id: int | None = None,
 ):
     user = await _authenticate(db, username, password)
-    playlists = await _enabled_playlists(db, user)
 
     if not action:
+        # No validators here: server_info.timestamp_now changes every second, so a 304 would
+        # hand a client a stale clock.
         return {"user_info": _user_info(user), "server_info": _server_info()}
 
+    if action == "dptv_sync_status":
+        response.headers["Cache-Control"] = "no-cache"
+        return _sync_status_json(await compute_sync_status(db, user))
+
+    if action == "get_series_info":
+        return await _proxy_series_info(db, series_id)
+
+    if action in ("get_short_epg", "get_simple_data_table"):
+        return await _short_epg(db, stream_id)
+
+    kind = _LIST_ACTION_KINDS.get(action)
+    if kind is None:
+        raise HTTPException(400, f"Unsupported action: {action}")
+
+    status = await compute_sync_status(db, user)
+    validators = _validator_headers(user, kind, status.revs[kind])
+    if _is_not_modified(request, validators):
+        return _not_modified_response(validators)
+    response.headers.update(validators)
+
+    playlists = await _enabled_playlists(db, user)
     all_categories: list[PlaylistCategory] = [c for pl in playlists for c in pl.categories]
 
     if action == "get_live_categories":
@@ -188,13 +284,7 @@ async def player_api(
             out.extend(_series_json(c, pc) for pc in c.channels if pc.enabled)
         return out
 
-    if action == "get_series_info":
-        return await _proxy_series_info(db, series_id)
-
-    if action in ("get_short_epg", "get_simple_data_table"):
-        return await _short_epg(db, stream_id)
-
-    raise HTTPException(400, f"Unsupported action: {action}")
+    raise HTTPException(400, f"Unsupported action: {action}")  # unreachable: kind was matched above
 
 
 async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) -> dict:
@@ -259,20 +349,32 @@ async def _proxy_series_info(db: AsyncSession, series_id: int | None) -> dict:
     return {"episodes": episodes_by_season}
 
 
-@router.get("/get.php")
-async def get_m3u(db: DbSession, username: str | None = None, password: str | None = None):
+@router.api_route("/get.php", methods=["GET", "HEAD"])
+async def get_m3u(request: Request, db: DbSession, username: str | None = None, password: str | None = None):
     user = await _authenticate(db, username, password)
+    status = await compute_sync_status(db, user)
+    validators = _validator_headers(user, "m3u", status.combined(("live", "vod", "series")))
+    if _is_not_modified(request, validators):
+        return _not_modified_response(validators)
+    if request.method == "HEAD":
+        return _head_response(validators, "application/x-mpegurl")
     playlists = await _enabled_playlists(db, user)
     lines = ["#EXTM3U"]
     for pl in playlists:
         body = await build_m3u(db, pl, user)
         lines.extend(body.splitlines()[1:])
-    return Response(content="\n".join(lines) + "\n", media_type="application/x-mpegurl")
+    return Response(content="\n".join(lines) + "\n", media_type="application/x-mpegurl", headers=validators)
 
 
-@router.get("/xmltv.php")
-async def get_xmltv(db: DbSession, username: str | None = None, password: str | None = None):
+@router.api_route("/xmltv.php", methods=["GET", "HEAD"])
+async def get_xmltv(request: Request, db: DbSession, username: str | None = None, password: str | None = None):
     user = await _authenticate(db, username, password)
+    status = await compute_sync_status(db, user)
+    validators = _validator_headers(user, "epg", status.revs["epg"])
+    if _is_not_modified(request, validators):
+        return _not_modified_response(validators)
+    if request.method == "HEAD":
+        return _head_response(validators, "application/xml")
     playlists = await _enabled_playlists(db, user)
     parts = []
     for pl in playlists:
@@ -281,7 +383,7 @@ async def get_xmltv(db: DbSession, username: str | None = None, password: str | 
         inner = text.split("<tv", 1)[1].split(">", 1)[1].rsplit("</tv>", 1)[0]
         parts.append(inner)
     combined = f'<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-info-name="DPTV-Server">{"".join(parts)}</tv>\n'
-    return Response(content=combined, media_type="application/xml")
+    return Response(content=combined, media_type="application/xml", headers=validators)
 
 
 async def _resolve_and_redirect(db: AsyncSession, username: str, password: str, channel_id: int) -> RedirectResponse:

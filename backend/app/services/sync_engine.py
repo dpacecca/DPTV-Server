@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import ChannelType, EpgMatchType, SyncStatus, SyncTrigger
@@ -85,6 +85,7 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
 
     new_channel_rows: list[SourceChannel] = []
     seen_chan_ids: set[int] = set()
+    bookkeeping_rows: list[dict] = []
 
     for ch in fetched_channel_data:
         cat_key = (ch.category_external_id, ch.stream_type)
@@ -111,18 +112,41 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
             new_channel_rows.append(row)
             summary["channels_added"] += 1
         else:
+            # Only fields a player can actually see (name - propagated to playlist channels below
+            # - logo and stream URL) plus tvg_id/removed_at go through the ORM, so a real change
+            # bumps SourceChannel.updated_at via its onupdate. SQLAlchemy skips the UPDATE
+            # entirely when every assigned value equals the loaded one, so an unchanged channel
+            # keeps its updated_at - which is what the XC server's sync-status revision
+            # (services/sync_status.py) relies on to tell "the provider changed something" apart
+            # from "a sync merely ran".
             existing.name = ch.name
-            existing.sort_order = ch.sort_order
             existing.tvg_id = ch.tvg_id or existing.tvg_id
             existing.logo_url = ch.logo_url or existing.logo_url
             existing.stream_url = ch.stream_url or existing.stream_url
-            existing.last_seen_at = run_started
             if existing.removed_at is not None:
                 existing.removed_at = None
+            # Pure bookkeeping (last_seen_at changes on every run, sort_order isn't shown to
+            # players) is written separately below, without touching updated_at.
+            bookkeeping_rows.append({"b_id": existing.id, "b_sort_order": ch.sort_order})
             summary["channels_updated"] += 1
             seen_chan_ids.add(existing.id)
 
     await db.flush()
+
+    if bookkeeping_rows:
+        sc_table = SourceChannel.__table__
+        await db.execute(
+            update(sc_table)
+            .where(sc_table.c.id == bindparam("b_id"))
+            .values(
+                sort_order=bindparam("b_sort_order"),
+                last_seen_at=run_started,
+                # Explicitly SET updated_at = updated_at so the column's onupdate=now() doesn't
+                # fire for a row whose visible content didn't change.
+                updated_at=sc_table.c.updated_at,
+            ),
+            bookkeeping_rows,
+        )
 
     for (cat_id, _ext_id), existing in existing_by_key.items():
         if existing.id not in seen_chan_ids and existing not in new_channel_rows and existing.removed_at is None:

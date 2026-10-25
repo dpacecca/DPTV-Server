@@ -12,6 +12,7 @@ from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
 from app.services.iptv_org_epg import refresh_logo_cache
 from app.services.iptvboss_logos import refresh_iptvboss_logo_cache
+from app.services.sync_notify import notify_sync_finished
 from app.services.sync_engine import run_full_sync
 
 logger = logging.getLogger("dptv.scheduler")
@@ -50,6 +51,10 @@ async def _run_scheduled_sync(schedule_id: int) -> None:
         try:
             await run_full_sync(db, SyncTrigger.SCHEDULED, sync_sources=schedule.sync_sources, sync_epg=schedule.sync_epg)
             await db.commit()
+            if schedule.sync_sources:
+                notify_sync_finished("sources")
+            if schedule.sync_epg:
+                notify_sync_finished("epg")
         except Exception:  # noqa: BLE001
             logger.exception("Scheduled sync failed")
             await db.rollback()
