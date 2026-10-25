@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     scan_max_concurrency: int = 8
     scan_default_timeout_seconds: float = 8.0
 
+    sync_notify_url: str = ""
+    """If set, POSTed {"event": "sync_finished", "kind": "sources"|"epg", "at": <unix>} after every
+    scheduled or manual source/EPG sync finishes (see app/services/sync_notify.py), so a player
+    such as DPTV-Player can refresh right away instead of waiting for its next poll. Empty = off."""
+
 
 @lru_cache
 def get_settings() -> Settings:

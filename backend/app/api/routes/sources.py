@@ -10,6 +10,7 @@ from app.models.source import Source, SourceCategory, SourceChannel
 from app.services import epg_refresh_jobs
 from app.services.xtream_client import detect_builtin_epg_url
 from app.services.sync_engine import sync_all_sources, sync_source
+from app.services.sync_notify import notify_sync_finished
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -242,6 +243,7 @@ async def sync_all(db: DbSession, _admin: AdminUser) -> dict:
     Scheduler's "Sync Now" instead for that plus EPG auto-mapping/auto-clear in one pass."""
     summary = await sync_all_sources(db)
     await db.commit()
+    notify_sync_finished("sources")
     return summary
 
 
@@ -256,6 +258,7 @@ async def trigger_source_sync(source_id: int, db: DbSession, _admin: AdminUser) 
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         raise HTTPException(502, f"Sync failed: {exc}") from exc
+    notify_sync_finished("sources")
     return summary
 
 
