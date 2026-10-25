@@ -46,6 +46,12 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_default_concurrency": ("Duplicate Scanning", "int"),
     "scan_max_concurrency": ("Duplicate Scanning", "int"),
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
+    "sync_notify_url": ("Integrations", "string"),
+}
+
+# Fields whose auto-generated label (key title-cased) would read badly.
+FIELD_LABELS: dict[str, str] = {
+    "sync_notify_url": "After a sync, notify URL",
 }
 
 FIELD_DESCRIPTIONS: dict[str, str] = {
@@ -68,6 +74,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "scan_default_concurrency": "How many streams to probe at once by default during a duplicate scan.",
     "scan_max_concurrency": "Upper limit an admin can raise a scan's concurrency to.",
     "scan_default_timeout_seconds": "Default per-stream timeout (seconds) during a duplicate scan.",
+    "sync_notify_url": (
+        "Optional http(s) URL that gets a POST with JSON {\"event\": \"sync_finished\", \"kind\": "
+        "\"sources\" or \"epg\", \"at\": <unix seconds>} whenever a scheduled or manual source/EPG "
+        "sync finishes - e.g. so a player can refresh straight away. Fire-and-forget with a short "
+        "timeout; failures are only logged. Leave empty to turn off."
+    ),
 }
 
 
@@ -104,7 +116,7 @@ async def get_settings_fields(_admin: AdminUser) -> dict:
                 key=key,
                 group=group,
                 type=type_,
-                label=_label(key),
+                label=FIELD_LABELS.get(key) or _label(key),
                 description=FIELD_DESCRIPTIONS.get(key, ""),
                 value=bool(current) if is_secret else current,
                 default=None if is_secret else settings.model_fields[key].default,
@@ -128,6 +140,7 @@ class SettingsUpdate(BaseModel):
     scan_default_concurrency: int | None = None
     scan_max_concurrency: int | None = None
     scan_default_timeout_seconds: float | None = None
+    sync_notify_url: str | None = None
 
 
 @router.patch("")

@@ -40,7 +40,7 @@ interface SettingsResponse {
 }
 
 // Order groups appear in - anything not listed here (shouldn't happen) falls in after.
-const GROUP_ORDER = ["Server", "Security", "Duplicate Scanning", "Logging"];
+const GROUP_ORDER = ["Server", "Security", "Duplicate Scanning", "Logging", "Integrations"];
 
 export default function SettingsPage() {
   const qc = useQueryClient();

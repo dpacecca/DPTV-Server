@@ -8,6 +8,7 @@ from app.api.deps import AdminUser, DbSession
 from app.models.base import SyncTrigger
 from app.models.sync import SyncRun, SyncSchedule
 from app.services.sync_engine import run_full_sync
+from app.services.sync_notify import notify_sync_finished
 
 router = APIRouter(prefix="/api", tags=["scheduler"])
 
@@ -115,4 +116,6 @@ async def list_sync_runs(db: DbSession, _admin: AdminUser, limit: int = 20) -> l
 async def trigger_manual_sync(db: DbSession, _admin: AdminUser) -> dict:
     run = await run_full_sync(db, SyncTrigger.MANUAL)
     await db.commit()
+    notify_sync_finished("sources")
+    notify_sync_finished("epg")
     return {"id": run.id, "status": run.status, "summary": run.summary}
