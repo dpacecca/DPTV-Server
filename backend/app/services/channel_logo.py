@@ -13,8 +13,9 @@ def resolve_channel_logo(pc: "PlaylistChannel") -> str | None:
     2. whatever the provider itself supplied (tvg-logo/stream_icon)
     3. iptv-org's community-maintained logo database, keyed by the mapped EPG channel id - only
        useful when that id follows iptv-org's own "Name.cc" convention, a no-op otherwise
-    4. the locally-cached iptvboss logo set, matched by channel name - broader coverage than #3
-       since it needs no EPG mapping at all, but a name-based match so less precise
+    4. the iptvboss logo catalog (hotlinked, not mirrored - see iptvboss_logos.py), matched by
+       channel name - broader coverage than #3 since it needs no EPG mapping at all, but a
+       name-based match so less precise
     """
     if pc.logo_url_override:
         return pc.logo_url_override

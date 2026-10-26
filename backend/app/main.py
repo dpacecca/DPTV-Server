@@ -1,11 +1,9 @@
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.api.routes import (
@@ -56,13 +54,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Serves the locally-cached channel logos (see services/iptvboss_logos.py) - players/browsers
-# fetch these directly, so this has to be mounted before the app starts taking requests, not
-# just whenever the first cache refresh happens to finish.
-_logo_cache_dir = os.path.join(settings.data_dir, "logo_cache")
-os.makedirs(_logo_cache_dir, exist_ok=True)
-app.mount("/logo-cache", StaticFiles(directory=_logo_cache_dir), name="logo-cache")
 
 _NON_XC_ROOT_PATHS = {"/docs", "/openapi.json", "/redoc"}
 

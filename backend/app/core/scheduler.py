@@ -11,7 +11,7 @@ from app.db import SessionLocal
 from app.models.base import SyncTrigger
 from app.models.sync import SyncSchedule
 from app.services.iptv_org_epg import refresh_logo_cache
-from app.services.iptvboss_logos import refresh_iptvboss_logo_cache
+from app.services.iptvboss_logos import refresh_iptvboss_logo_index
 from app.services.sync_notify import notify_sync_finished
 from app.services.sync_engine import run_full_sync
 
@@ -30,11 +30,11 @@ async def _refresh_logo_cache_job() -> None:
         logger.exception("Failed to refresh iptv-org logo cache")
 
 
-async def _refresh_iptvboss_logo_cache_job() -> None:
+async def _refresh_iptvboss_logo_index_job() -> None:
     try:
-        await refresh_iptvboss_logo_cache()
+        await refresh_iptvboss_logo_index()
     except Exception:  # noqa: BLE001 - best-effort background refresh, never worth crashing over
-        logger.exception("Failed to refresh iptvboss logo cache")
+        logger.exception("Failed to refresh iptvboss logo index")
 
 
 async def _run_scheduled_sync(schedule_id: int) -> None:
@@ -90,15 +90,14 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
-        _refresh_iptvboss_logo_cache_job,
+        _refresh_iptvboss_logo_index_job,
         trigger=IntervalTrigger(weeks=1),
-        id="iptvboss-logo-cache-refresh",
+        id="iptvboss-logo-index-refresh",
         replace_existing=True,
     )
     # Fire both once immediately in the background so the caches are warm shortly after
-    # startup, without delaying the rest of app startup on a network fetch. Safe to re-run on
-    # every restart: both refreshes skip any file already cached at the same size, so this is
-    # only ever a full download the very first time.
+    # startup, without delaying the rest of app startup on a network fetch. Cheap to re-run on
+    # every restart: the iptvboss one only ever reads directory listing pages, never an image.
     scheduler.add_job(
         _refresh_logo_cache_job,
         trigger=DateTrigger(),
@@ -106,8 +105,8 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
-        _refresh_iptvboss_logo_cache_job,
+        _refresh_iptvboss_logo_index_job,
         trigger=DateTrigger(),
-        id="iptvboss-logo-cache-refresh-initial",
+        id="iptvboss-logo-index-refresh-initial",
         replace_existing=True,
     )
