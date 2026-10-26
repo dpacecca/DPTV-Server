@@ -1840,7 +1840,7 @@ function MapEpgModal({
       // dropdown before hitting Apply.
       const initial: Record<number, number | null> = {};
       for (const row of data.matched) {
-        initial[row.channel_id] = row.candidates[0]?.key ?? null;
+        initial[row.channel_id] = (row.candidates[0]?.key as number | undefined) ?? null;
       }
       for (const row of data.unmatched) {
         initial[row.channel_id] = null;
@@ -1975,7 +1975,7 @@ function MapEpgModal({
                   key={row.channel_id}
                   row={row}
                   pendingValue={pending[row.channel_id]}
-                  onChange={(v) => setPending((prev) => ({ ...prev, [row.channel_id]: v }))}
+                  onChange={(v) => setPending((prev) => ({ ...prev, [row.channel_id]: v as number | null }))}
                   searchFn={makeSearchFn(row.channel_id)}
                   searchKey={searchKey}
                 />
