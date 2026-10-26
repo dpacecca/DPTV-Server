@@ -38,6 +38,7 @@ import {
   IconGripVertical,
   IconLock,
   IconLockOpen,
+  IconPhoto,
   IconPlus,
   IconSearch,
   IconSettings,
@@ -188,6 +189,7 @@ export default function PlaylistEditorPage() {
   const [detailChannel, setDetailChannel] = useState<PlaylistChannel | null>(null);
   const [manualChannelOpen, setManualChannelOpen] = useState(false);
   const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
+  const [bulkLogoOpen, setBulkLogoOpen] = useState(false);
   const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
   const [dummyEpgRulesOpen, setDummyEpgRulesOpen] = useState(false);
   const [bulkDummyEpgOpen, setBulkDummyEpgOpen] = useState(false);
@@ -493,6 +495,15 @@ export default function PlaylistEditorPage() {
                   >
                     Map EPG...
                   </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconPhoto size={14} />}
+                    disabled={selectedChannelIds.size === 0}
+                    onClick={() => setBulkLogoOpen(true)}
+                  >
+                    Match Logos...
+                  </Button>
                   <Button size="xs" variant="light" leftSection={<IconVideo size={14} />} onClick={() => setScanDuplicatesOpen(true)}>
                     Scan Duplicates...
                   </Button>
@@ -702,6 +713,19 @@ export default function PlaylistEditorPage() {
           opened={bulkEpgOpen}
           onClose={() => {
             setBulkEpgOpen(false);
+            setSelectedChannelIds(new Set());
+          }}
+          playlistId={playlistId}
+          channelIds={[...selectedChannelIds]}
+          onChanged={invalidate}
+        />
+      )}
+
+      {playlistId && (
+        <MapLogosModal
+          opened={bulkLogoOpen}
+          onClose={() => {
+            setBulkLogoOpen(false);
             setSelectedChannelIds(new Set());
           }}
           playlistId={playlistId}
@@ -1617,9 +1641,11 @@ function CategorySettingsModal({
   );
 }
 
-// A single row of a bulk mapping preview.
+// A single row of a bulk mapping preview. key is a number for EPG candidates (an epg_channel_id)
+// and a string for logo candidates (the logo's URL, which is its own stable identity) - shared
+// between MapEpgModal/BulkMapRow and MapLogosModal/BulkLogoMapRow below.
 interface MatchCandidate {
-  key: number;
+  key: number | string;
   label: string;
   sublabel?: string;
   score?: number;
@@ -1649,8 +1675,8 @@ function BulkMapRow({
   searchKey,
 }: {
   row: PreviewRow;
-  pendingValue: number | null | undefined;
-  onChange: (v: number | null) => void;
+  pendingValue: number | string | null | undefined;
+  onChange: (v: number | string | null) => void;
   searchFn: (query: string) => Promise<MatchCandidate[]>;
   searchKey: string;
 }) {
@@ -1959,6 +1985,166 @@ function MapEpgModal({
             <Group>
               <Button onClick={() => applyMutation.mutate()} loading={applyMutation.isPending} disabled={totalPending === 0}>
                 Apply {totalPending} mapping(s)
+              </Button>
+              <Button variant="subtle" onClick={() => previewMutation.mutate()} loading={previewMutation.isPending}>
+                Re-run preview
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Stack>
+    </Modal>
+  );
+}
+
+function normalizeLogoCandidate(c: { url: string; name: string; score?: number }): MatchCandidate {
+  return { key: c.url, label: c.name, score: c.score };
+}
+
+// "Match Logos" flow: preview iptvboss matches for the selected channels, review/override any of
+// them via BulkMapRow's dropdown (reused from the EPG flow - same search-as-you-type picker,
+// just backed by the logo catalog here), then Apply. Simpler than MapEpgModal - there's a single
+// global iptvboss catalog, no per-source selection.
+function MapLogosModal({
+  opened,
+  onClose,
+  playlistId,
+  channelIds,
+  onChanged,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  playlistId: string;
+  channelIds: number[];
+  onChanged: () => void;
+}) {
+  const [sensitivity, setSensitivity] = useState(0.9);
+  const [preview, setPreview] = useState<{ matched: PreviewRow[]; unmatched: PreviewRow[] } | null>(null);
+  // channel_id -> chosen candidate key (null = explicitly clear the override). A row with no
+  // entry here hasn't been touched and is left alone on Apply.
+  const [pending, setPending] = useState<Record<number, string | null>>({});
+
+  const previewMutation = useMutation({
+    mutationFn: async (): Promise<{ matched: PreviewRow[]; unmatched: PreviewRow[] }> => {
+      const { data } = await api.post(`/api/playlists/${playlistId}/channels/logo/bulk-preview`, {
+        channel_ids: channelIds,
+        sensitivity,
+      });
+      return {
+        matched: data.matched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeLogoCandidate) })),
+        unmatched: data.unmatched.map((r: any) => ({ ...r, candidates: r.candidates.map(normalizeLogoCandidate) })),
+      };
+    },
+    onSuccess: (data) => {
+      setPreview(data);
+      const initial: Record<number, string | null> = {};
+      for (const row of data.matched) {
+        initial[row.channel_id] = (row.candidates[0]?.key as string | undefined) ?? null;
+      }
+      for (const row of data.unmatched) {
+        initial[row.channel_id] = null;
+      }
+      setPending(initial);
+    },
+    onError: (err: any) =>
+      notifications.show({
+        message: err?.response?.data?.detail || "Preview failed - check the browser console for details",
+        color: "red",
+      }),
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: async () => {
+      const entries = Object.entries(pending);
+      const { data } = await api.post(`/api/playlists/${playlistId}/channels/logo/bulk-assign`, {
+        assignments: entries.map(([channelId, url]) => ({ channel_id: Number(channelId), logo_url: url })),
+      });
+      return data as { applied: number; invalid: { channel_id: number; reason: string }[] };
+    },
+    onSuccess: (data) => {
+      onChanged();
+      notifications.show({
+        message: data.invalid.length
+          ? `Applied ${data.applied} logo(s), ${data.invalid.length} failed`
+          : `Applied ${data.applied} logo(s)`,
+        color: data.invalid.length ? "yellow" : "green",
+      });
+    },
+    onError: (err: any) =>
+      notifications.show({
+        message: err?.response?.data?.detail || "Apply failed - check the browser console for details",
+        color: "red",
+      }),
+  });
+
+  function resetPreview() {
+    setPreview(null);
+    setPending({});
+  }
+
+  function handleClose() {
+    resetPreview();
+    onClose();
+  }
+
+  function makeSearchFn(): (query: string) => Promise<MatchCandidate[]> {
+    return async (query: string) => {
+      const { data } = await api.get("/api/logo-cache/search", { params: { q: query } });
+      return (data as { url: string; name: string; score: number }[]).map(normalizeLogoCandidate);
+    };
+  }
+
+  const totalPending = Object.keys(pending).length;
+
+  return (
+    <Modal opened={opened} onClose={handleClose} title={`Match Logos for ${channelIds.length} channel(s)`} size="lg">
+      <Stack>
+        <NumberInput
+          label="Sensitivity"
+          description="Lower it if close-but-not-exact channel names aren't matching"
+          value={sensitivity}
+          onChange={(v) => setSensitivity(typeof v === "number" ? v : 0.9)}
+          min={0.5}
+          max={1}
+          step={0.05}
+          decimalScale={2}
+        />
+
+        {!preview && (
+          <Button onClick={() => previewMutation.mutate()} loading={previewMutation.isPending}>
+            Preview matches for {channelIds.length} channel(s)
+          </Button>
+        )}
+
+        {preview && (
+          <Stack gap={4}>
+            <Text size="sm" c="green">
+              {preview.matched.length} of {preview.matched.length + preview.unmatched.length} confidently matched -
+              review below and adjust any that look wrong, then Apply.
+              {preview.unmatched.length > 0 && " The rest will have their logo override cleared unless you pick one by hand."}
+            </Text>
+            <Stack gap={6} mah={320} style={{ overflowY: "auto" }}>
+              {[...preview.matched, ...preview.unmatched].map((row) => (
+                <Group key={row.channel_id} wrap="nowrap" gap="xs" align="center">
+                  {pending[row.channel_id] && (
+                    <Image src={pending[row.channel_id] as string} alt="" w={24} h={24} fit="contain" radius="sm" />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <BulkMapRow
+                      row={row}
+                      pendingValue={pending[row.channel_id]}
+                      onChange={(v) => setPending((prev) => ({ ...prev, [row.channel_id]: v as string | null }))}
+                      searchFn={makeSearchFn()}
+                      searchKey="logo"
+                    />
+                  </div>
+                </Group>
+              ))}
+            </Stack>
+
+            <Group>
+              <Button onClick={() => applyMutation.mutate()} loading={applyMutation.isPending} disabled={totalPending === 0}>
+                Apply {totalPending} logo(s)
               </Button>
               <Button variant="subtle" onClick={() => previewMutation.mutate()} loading={previewMutation.isPending}>
                 Re-run preview

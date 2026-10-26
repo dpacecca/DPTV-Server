@@ -20,6 +20,7 @@ from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.xc_user import XcUser
 from app.services.channel_logo import resolve_channel_logo
 from app.services import duplicate_scanner, dummy_epg, epg_mapper, scan_jobs
+from app.services.iptvboss_logos import search_logos
 from app.services.epg_writer import build_xmltv, compute_channel_programs
 from app.services.m3u_parser import parse_m3u
 from app.services.m3u_writer import build_m3u
@@ -1398,6 +1399,70 @@ async def bulk_assign_epg(playlist_id: int, payload: BulkEpgAssignIn, db: DbSess
             continue
         pc.epg_channel_id = entry.epg_channel_id
         pc.epg_match_type = EpgMatchType.MANUAL if entry.epg_channel_id else EpgMatchType.NONE
+        applied += 1
+
+    await db.commit()
+    return {"applied": applied, "invalid": invalid}
+
+
+class BulkLogoMatchIn(BaseModel):
+    channel_ids: list[int]
+    sensitivity: float = 0.9
+
+
+@router.post("/{playlist_id}/channels/logo/bulk-preview")
+async def preview_bulk_match_logos(playlist_id: int, payload: BulkLogoMatchIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Proposes iptvboss logo matches for many channels at once, e.g. everything selected in the
+    channel list - a preview only, nothing is written here. Each channel comes back with its top
+    few candidates (best first, same rapidfuzz ranking as the single-channel search picker) so an
+    admin can review and swap out any wrong match before committing via bulk-assign."""
+    result = await db.execute(
+        select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)).order_by(PlaylistChannel.sort_order)
+    )
+    channels = result.scalars().all()
+
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    for pc in channels:
+        candidates = search_logos(pc.name, limit=5)
+        row = {"channel_id": pc.id, "channel_name": pc.name, "candidates": candidates}
+        if candidates and candidates[0]["score"] >= payload.sensitivity:
+            matched.append(row)
+        else:
+            unmatched.append(row)
+
+    return {"matched": matched, "unmatched": unmatched}
+
+
+class BulkLogoAssignEntry(BaseModel):
+    channel_id: int
+    logo_url: str | None
+
+
+class BulkLogoAssignIn(BaseModel):
+    assignments: list[BulkLogoAssignEntry]
+
+
+@router.post("/{playlist_id}/channels/logo/bulk-assign")
+async def bulk_assign_logos(playlist_id: int, payload: BulkLogoAssignIn, db: DbSession, _admin: AdminUser) -> dict:
+    """Commits a reviewed (and possibly hand-edited) set of logo matches from bulk-preview above
+    into each channel's logo_url_override - always overwrites, same as the single-channel PATCH
+    and as bulk_assign_epg above."""
+    result = await db.execute(
+        select(PlaylistChannel)
+        .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+        .where(PlaylistCategory.playlist_id == playlist_id)
+    )
+    channels_by_id = {pc.id: pc for pc in result.scalars().all()}
+
+    applied = 0
+    invalid: list[dict] = []
+    for entry in payload.assignments:
+        pc = channels_by_id.get(entry.channel_id)
+        if pc is None:
+            invalid.append({"channel_id": entry.channel_id, "reason": "channel not found in this playlist"})
+            continue
+        pc.logo_url_override = entry.logo_url
         applied += 1
 
     await db.commit()
