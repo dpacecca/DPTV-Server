@@ -981,6 +981,7 @@ function ChannelTable({
                   />
                 </Table.Th>
                 <Table.Th style={{ flex: 1, minWidth: 0 }}>Name</Table.Th>
+                <Table.Th w={44}>Logo</Table.Th>
                 <Table.Th w={180}>EPG</Table.Th>
                 <Table.Th w={120}>Dummy EPG</Table.Th>
                 <Table.Th w={90}>Enabled</Table.Th>
@@ -1117,6 +1118,9 @@ function ChannelRow({
           {channel.name_locked ? <IconLock size={12} /> : null}
           <Text size="sm">{channel.name}</Text>
         </Group>
+      </Table.Td>
+      <Table.Td w={44}>
+        {channel.logo_url && <Image src={channel.logo_url} alt="" w={28} h={28} fit="contain" radius="sm" />}
       </Table.Td>
       <Table.Td w={180} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {channel.epg_channel_id ? (
