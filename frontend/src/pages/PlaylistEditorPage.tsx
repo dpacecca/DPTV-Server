@@ -2204,14 +2204,19 @@ function ScanDuplicatesModal({
 }) {
   const [concurrency, setConcurrency] = useState(2);
   const [jobId, setJobId] = useState<string | null>(null);
-  const [keepChoice, setKeepChoice] = useState<Record<string, number>>({});
+  // Per group, every channel to keep: ticking several keeps them all (e.g. two countries' feeds).
+  const [keepChoice, setKeepChoice] = useState<Record<string, number[]>>({});
+  const [splitCountries, setSplitCountries] = useState(true);
   const [tagResolution, setTagResolution] = useState(false);
   const [applySummary, setApplySummary] = useState<{ removed: number; tagged: number } | null>(null);
 
   const startMutation = useMutation({
     mutationFn: () =>
       api
-        .post(`/api/playlists/${playlistId}/categories/${categoryId}/scan-duplicates`, { concurrency })
+        .post(`/api/playlists/${playlistId}/categories/${categoryId}/scan-duplicates`, {
+          concurrency,
+          split_countries: splitCountries,
+        })
         .then((r) => r.data as { job_id: string; total: number }),
     onSuccess: (data) => {
       setJobId(data.job_id);
@@ -2230,9 +2235,9 @@ function ScanDuplicatesModal({
   // Default each group's keep choice to the scan's own best-quality pick, once per completed job.
   useEffect(() => {
     if (job?.status === "done" && Object.keys(keepChoice).length === 0 && job.duplicate_groups.length > 0) {
-      const defaults: Record<string, number> = {};
+      const defaults: Record<string, number[]> = {};
       for (const g of job.duplicate_groups) {
-        if (g.best_channel_id) defaults[g.key] = g.best_channel_id;
+        if (g.best_channel_id) defaults[g.key] = [g.best_channel_id];
       }
       setKeepChoice(defaults);
     }
@@ -2246,11 +2251,12 @@ function ScanDuplicatesModal({
 
   const applyMutation = useMutation({
     mutationFn: async () => {
+      // A group with nothing ticked is left alone, like one with everything ticked.
       const groups = (job?.duplicate_groups ?? [])
-        .filter((g) => keepChoice[g.key])
+        .filter((g) => (keepChoice[g.key] ?? []).length > 0)
         .map((g) => ({
-          keep_channel_id: keepChoice[g.key],
-          remove_channel_ids: g.channel_ids.filter((id) => id !== keepChoice[g.key]),
+          keep_channel_ids: keepChoice[g.key],
+          remove_channel_ids: g.channel_ids.filter((id) => !keepChoice[g.key].includes(id)),
         }))
         .filter((g) => g.remove_channel_ids.length > 0);
       const removeIds = new Set(groups.flatMap((g) => g.remove_channel_ids));
@@ -2305,6 +2311,11 @@ function ScanDuplicatesModal({
               min={1}
               max={8}
             />
+            <Checkbox
+              label='Keep channels from different countries separate (e.g. "AU: ESPN 2" and "US: ESPN 2")'
+              checked={splitCountries}
+              onChange={(e) => setSplitCountries(e.currentTarget.checked)}
+            />
             <Button onClick={() => startMutation.mutate()} loading={startMutation.isPending}>
               Start Scan
             </Button>
@@ -2335,13 +2346,26 @@ function ScanDuplicatesModal({
             ) : (
               <Stack gap="md">
                 <Text size="sm" fw={600}>
-                  {job.duplicate_groups.length} duplicate group(s) found — pick which channel to keep in each
+                  {job.duplicate_groups.length} duplicate group(s) found — tick every channel to keep in each
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Unticked channels are removed. Tick several to keep them all; a group with nothing ticked is left
+                  as it is.
                 </Text>
                 {job.duplicate_groups.map((g) => (
                   <Paper key={g.key} withBorder p="xs">
-                    <Text size="xs" fw={600} tt="capitalize" mb={4}>
-                      {g.key}
-                    </Text>
+                    <Group justify="space-between" mb={4} wrap="nowrap">
+                      <Text size="xs" fw={600} tt="capitalize">
+                        {g.key}
+                      </Text>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        onClick={() => setKeepChoice((prev) => ({ ...prev, [g.key]: [...g.channel_ids] }))}
+                      >
+                        Keep all
+                      </Button>
+                    </Group>
                     <Stack gap={2}>
                       {g.channel_ids.map((cid) => {
                         const r = resultById.get(cid);
@@ -2350,8 +2374,16 @@ function ScanDuplicatesModal({
                             <Group gap="xs" wrap="nowrap">
                               <Checkbox
                                 size="xs"
-                                checked={keepChoice[g.key] === cid}
-                                onChange={() => setKeepChoice((prev) => ({ ...prev, [g.key]: cid }))}
+                                checked={(keepChoice[g.key] ?? []).includes(cid)}
+                                onChange={() =>
+                                  setKeepChoice((prev) => {
+                                    const kept = prev[g.key] ?? [];
+                                    return {
+                                      ...prev,
+                                      [g.key]: kept.includes(cid) ? kept.filter((id) => id !== cid) : [...kept, cid],
+                                    };
+                                  })
+                                }
                               />
                               <Text size="xs">{r?.name}</Text>
                             </Group>

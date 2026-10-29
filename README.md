@@ -202,7 +202,7 @@ its playlist or guide only when something it would see has actually changed.
 
 ```json
 {
-  "server": "DPTV-Server", "version": "1.0.5",
+  "server": "DPTV-Server", "version": "1.0.6",
   "live":   {"rev": "3f1c9a0b5e27d4c8", "updated_at": 1761390000},
   "vod":    {"rev": "a90e1d22c4b7f513", "updated_at": 1761300000},
   "series": {"rev": "0c55e7a1b9d3f240", "updated_at": null},

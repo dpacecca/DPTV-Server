@@ -64,7 +64,7 @@ async def _probe_one(channel_id: int, name: str, url: str | None, timeout_second
     }
 
 
-async def _run(job_id: str, channel_ids: list[int], concurrency: int, timeout_seconds: float) -> None:
+async def _run(job_id: str, channel_ids: list[int], concurrency: int, timeout_seconds: float, split_countries: bool) -> None:
     job = _jobs[job_id]
     try:
         async with SessionLocal() as db:
@@ -101,7 +101,7 @@ async def _run(job_id: str, channel_ids: list[int], concurrency: int, timeout_se
             await db.commit()
 
         job.results = results
-        job.duplicate_groups = duplicate_scanner.group_duplicates(results)
+        job.duplicate_groups = duplicate_scanner.group_duplicates(results, split_countries=split_countries)
         job.status = "done"
     except Exception as exc:  # noqa: BLE001
         logger.exception("Duplicate scan job %s failed", job_id)
@@ -109,7 +109,14 @@ async def _run(job_id: str, channel_ids: list[int], concurrency: int, timeout_se
         job.error = str(exc)
 
 
-def start_scan_job(playlist_id: int, category_id: int, channel_ids: list[int], concurrency: int, timeout_seconds: float) -> ScanJob:
+def start_scan_job(
+    playlist_id: int,
+    category_id: int,
+    channel_ids: list[int],
+    concurrency: int,
+    timeout_seconds: float,
+    split_countries: bool = False,
+) -> ScanJob:
     job_id = secrets.token_hex(8)
     job = ScanJob(id=job_id, playlist_id=playlist_id, category_id=category_id, total=len(channel_ids))
     _jobs[job_id] = job
@@ -118,5 +125,5 @@ def start_scan_job(playlist_id: int, category_id: int, channel_ids: list[int], c
         for old_id in list(_jobs)[: len(_jobs) - _MAX_JOBS]:
             _jobs.pop(old_id, None)
 
-    asyncio.create_task(_run(job_id, channel_ids, concurrency, timeout_seconds))
+    asyncio.create_task(_run(job_id, channel_ids, concurrency, timeout_seconds, split_countries))
     return job
