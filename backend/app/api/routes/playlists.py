@@ -1080,11 +1080,34 @@ async def delete_channel(playlist_id: int, channel_id: int, db: DbSession, _admi
     return {"ok": True}
 
 
+_NATURAL_SPLIT = re.compile(r"(\d+)")
+
+
+def _natural_key(name: str) -> list:
+    """"Sky Sports 2" before "Sky Sports 10": digit runs compare as numbers, the rest ignoring case."""
+    return [int(part) if part.isdigit() else part.casefold() for part in _NATURAL_SPLIT.split(name)]
+
+
+def sort_az_slots(channels: list) -> list[tuple]:
+    """Bulk "Sort A-Z": within each category, the selected channels take the places they already
+    hold, in name order - the channels around them don't move, and a selection spread through a
+    list sorts into those same spread-out places. Pairs of (channel, new sort_order)."""
+    by_category: dict[int, list] = {}
+    for pc in channels:
+        by_category.setdefault(pc.playlist_category_id, []).append(pc)
+    out = []
+    for members in by_category.values():
+        slots = sorted(pc.sort_order for pc in members)
+        ordered = sorted(members, key=lambda pc: (_natural_key(pc.name), pc.id))
+        out.extend(zip(ordered, slots))
+    return out
+
+
 class BulkAction(BaseModel):
     channel_ids: list[int]
     action: str
     """One of: uppercase, sentence_case, add_prefix, add_suffix, find_replace, enable, disable,
-    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_epg_mapping."""
+    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_epg_mapping, sort_az."""
     find: str | None = None
     replace: str | None = None
     text: str | None = None
@@ -1107,6 +1130,11 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
 
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     channels = result.scalars().all()
+    if payload.action == "sort_az":
+        for slot in sort_az_slots(channels):
+            slot[0].sort_order = slot[1]
+        await db.commit()
+        return {"affected": len(channels)}
     count = 0
     for pc in channels:
         if payload.action == "uppercase":
