@@ -528,6 +528,10 @@ export default function PlaylistEditorPage() {
                       </Button>
                     </Menu.Target>
                     <Menu.Dropdown>
+                      <Menu.Item onClick={() => runBulk({ action: "sort_az" })} disabled={selectedChannelIds.size < 2}>
+                        Sort A-Z
+                      </Menu.Item>
+                      <Menu.Divider />
                       <Menu.Item onClick={() => runBulk({ action: "uppercase" })}>UPPERCASE names</Menu.Item>
                       <Menu.Item onClick={() => runBulk({ action: "sentence_case" })}>Sentence case names</Menu.Item>
                       <Menu.Item
