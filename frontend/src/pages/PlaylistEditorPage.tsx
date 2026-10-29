@@ -191,6 +191,8 @@ export default function PlaylistEditorPage() {
   const [bulkEpgOpen, setBulkEpgOpen] = useState(false);
   const [bulkLogoOpen, setBulkLogoOpen] = useState(false);
   const [scanDuplicatesOpen, setScanDuplicatesOpen] = useState(false);
+  // "Scan Selected...": the same scan, limited to the channels selected when it was opened.
+  const [scanSelectedIds, setScanSelectedIds] = useState<number[] | null>(null);
   const [dummyEpgRulesOpen, setDummyEpgRulesOpen] = useState(false);
   const [bulkDummyEpgOpen, setBulkDummyEpgOpen] = useState(false);
   const [epgPreviewOpen, setEpgPreviewOpen] = useState(false);
@@ -507,6 +509,15 @@ export default function PlaylistEditorPage() {
                   <Button size="xs" variant="light" leftSection={<IconVideo size={14} />} onClick={() => setScanDuplicatesOpen(true)}>
                     Scan Duplicates...
                   </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconVideo size={14} />}
+                    disabled={selectedChannelIds.size === 0}
+                    onClick={() => setScanSelectedIds([...selectedChannelIds])}
+                  >
+                    Scan Selected...
+                  </Button>
                   <Button size="xs" variant="light" leftSection={<IconEye size={14} />} disabled={!activeCategory} onClick={() => setEpgPreviewOpen(true)}>
                     Preview EPG...
                   </Button>
@@ -741,6 +752,18 @@ export default function PlaylistEditorPage() {
           playlistId={playlistId}
           categoryId={activeCategory.id}
           categoryName={activeCategory.name}
+          onChanged={invalidate}
+        />
+      )}
+
+      {playlistId && activeCategory && scanSelectedIds && (
+        <ScanDuplicatesModal
+          opened
+          onClose={() => setScanSelectedIds(null)}
+          playlistId={playlistId}
+          categoryId={activeCategory.id}
+          categoryName={activeCategory.name}
+          channelIds={scanSelectedIds}
           onChanged={invalidate}
         />
       )}
@@ -2193,6 +2216,7 @@ function ScanDuplicatesModal({
   playlistId,
   categoryId,
   categoryName,
+  channelIds,
   onChanged,
 }: {
   opened: boolean;
@@ -2200,9 +2224,13 @@ function ScanDuplicatesModal({
   playlistId: string;
   categoryId: number;
   categoryName: string;
+  /** Scan only these channels ("Scan Selected..."); omitted = the whole category. */
+  channelIds?: number[];
   onChanged: () => void;
 }) {
   const [concurrency, setConcurrency] = useState(2);
+  // Channels ticked for deletion by hand, for duplicates the scan did not group.
+  const [deleteIds, setDeleteIds] = useState<Set<number>>(new Set());
   const [jobId, setJobId] = useState<string | null>(null);
   // Per group, every channel to keep: ticking several keeps them all (e.g. two countries' feeds).
   const [keepChoice, setKeepChoice] = useState<Record<string, number[]>>({});
@@ -2216,11 +2244,13 @@ function ScanDuplicatesModal({
         .post(`/api/playlists/${playlistId}/categories/${categoryId}/scan-duplicates`, {
           concurrency,
           split_countries: splitCountries,
+          channel_ids: channelIds,
         })
         .then((r) => r.data as { job_id: string; total: number }),
     onSuccess: (data) => {
       setJobId(data.job_id);
       setKeepChoice({});
+      setDeleteIds(new Set());
       setApplySummary(null);
     },
   });
@@ -2266,6 +2296,13 @@ function ScanDuplicatesModal({
         const r = await api.post(`/api/playlists/${playlistId}/channels/dedupe/apply`, { groups });
         removed = r.data.removed;
       }
+      // Ticked by hand: deleted whatever the groups said (a ticked keeper goes too).
+      const manual = [...deleteIds].filter((id) => !removeIds.has(id));
+      if (manual.length > 0) {
+        const r = await api.post(`/api/playlists/${playlistId}/channels/bulk`, { action: "delete", channel_ids: manual });
+        removed += r.data.affected;
+        manual.forEach((id) => removeIds.add(id));
+      }
 
       let tagged = 0;
       if (tagResolution) {
@@ -2286,13 +2323,19 @@ function ScanDuplicatesModal({
   function handleClose() {
     setJobId(null);
     setKeepChoice({});
+    setDeleteIds(new Set());
     setTagResolution(false);
     setApplySummary(null);
     onClose();
   }
 
   return (
-    <Modal opened={opened} onClose={handleClose} title={`Scan "${categoryName}" for duplicates`} size="lg">
+    <Modal
+      opened={opened}
+      onClose={handleClose}
+      title={channelIds ? `Scan ${channelIds.length} selected channel(s)` : `Scan "${categoryName}" for duplicates`}
+      size="lg"
+    >
       <Stack>
         {!jobId && (
           <>
@@ -2401,6 +2444,43 @@ function ScanDuplicatesModal({
               </Stack>
             )}
 
+            {job.results.length > 0 && (
+              <Stack gap={4}>
+                <Text size="sm" fw={600}>
+                  Scanned channels — tick any to delete
+                </Text>
+                <ScrollArea.Autosize mah={360}>
+                  <Stack gap={2}>
+                    {[...job.results]
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((r) => (
+                        <Group key={r.channel_id} justify="space-between" wrap="nowrap">
+                          <Checkbox
+                            size="xs"
+                            color="red"
+                            label={<Text size="xs">{r.name}</Text>}
+                            checked={deleteIds.has(r.channel_id)}
+                            onChange={() =>
+                              setDeleteIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(r.channel_id)) next.delete(r.channel_id);
+                                else next.add(r.channel_id);
+                                return next;
+                              })
+                            }
+                          />
+                          <Text size="xs" c={r.status === "ok" ? "dimmed" : "red"} style={{ whiteSpace: "nowrap" }}>
+                            {r.status === "ok"
+                              ? `${r.resolution_label ?? "?"} · ${r.fps ?? "?"}fps · ${r.bitrate_kbps ?? "?"}kbps`
+                              : r.status}
+                          </Text>
+                        </Group>
+                      ))}
+                  </Stack>
+                </ScrollArea.Autosize>
+              </Stack>
+            )}
+
             {failedNotInGroups.length > 0 && (
               <Text size="xs" c="dimmed">
                 Couldn't probe: {failedNotInGroups.map((r) => r.name).join(", ")}
@@ -2416,7 +2496,7 @@ function ScanDuplicatesModal({
             <Button
               onClick={() => applyMutation.mutate()}
               loading={applyMutation.isPending}
-              disabled={Object.keys(keepChoice).length === 0 && !tagResolution}
+              disabled={Object.keys(keepChoice).length === 0 && deleteIds.size === 0 && !tagResolution}
             >
               Apply
             </Button>
