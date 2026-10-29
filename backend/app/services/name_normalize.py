@@ -12,7 +12,7 @@ just the digit-prefixed pattern) since _SUPERSCRIPT_RE below can strip a supersc
 before this runs, orphaning a plain "FPS" with no digits in front of it to match against."""
 
 _SUPERSCRIPT_RE = re.compile(
-    "[²³¹⁰-₟ᴬ-ᵪᶛ-ᶿ]+"
+    "[²³¹⁰-₟ᴬ-ᵪᶛ-ᶿʰ-ʸˠ-ˤꟸꟹ]+"
 )
 """Superscript/subscript digits (⁵⁰, ², ³, ¹) and the Latin "small capital" modifier letters a
 superscript-text generator uses for letters (ᴿᴬᵂ for "RAW") - covers the Unicode "Superscripts
@@ -20,14 +20,20 @@ and Subscripts" block plus the two "Spacing Modifier Letters"/"Phonetic Extensio
 blocks those generators draw from. Stripped outright, not folded back to plain text: a provider
 uses superscript specifically to visually de-emphasize a tag as secondary annotation (exactly
 like a parenthetical), so whatever word it spells is decoration regardless of whether that word
-happens to already be on the plain-ASCII noise list above."""
+happens to already be on the plain-ASCII noise list above. Also the modifier letters from
+"Spacing Modifier Letters" (ʰ-ʸ, ˠ-ˤ: "ʰᵈ" for "HD") and the two Latin Extended-D superscript
+capitals (ꟸ, ꟹ) - the same set DPTV-Player treats as a provider's tag marks."""
 
-_LEADING_PREFIX_RE = re.compile(r"^\s*[a-z]{2,12}\s*:\s*", re.IGNORECASE)
-"""A short leading tag before a colon (e.g. "UK:", "US:", "NOW:") - providers commonly use these
-to group channels by country/network within a single category listing, so it isn't part of what
-identifies the channel itself."""
+_LEADING_PREFIX_RE = re.compile(
+    r"^\s*(?:[a-z]{2,12}\s*:|\|?\s*[a-z]{2,12}\s*\||[\[(]\s*[a-z]{2,12}\s*[\])])\s*", re.IGNORECASE
+)
+"""A short leading tag (e.g. "UK:", "US:", "NOW:", and the bar and bracket forms "DE|", "DE |",
+"|UK|", "[UK]", "(UK)") - providers commonly use these to group channels by country/network
+within a single category listing, so it isn't part of what identifies the channel itself."""
 
-_COUNTRY_PREFIX_RE = re.compile(r"^\s*([a-z]{2,3})\s*:\s*", re.IGNORECASE)
+_COUNTRY_PREFIX_RE = re.compile(
+    r"^\s*(?:([a-z]{2,3})\s*:|\|?\s*([a-z]{2,3})\s*\||[\[(]\s*([a-z]{2,3})\s*[\])])\s*", re.IGNORECASE
+)
 """Narrower than _LEADING_PREFIX_RE above (2-3 letters only, and capturing) - this one is for
 *reading* an actual country/region code (e.g. "US:", "UK:", "AU:") rather than just stripping
 noise, so it deliberately excludes longer network-style tags like "SPORTS:" or "BACKUP:" that
@@ -52,13 +58,15 @@ def _canonicalize(name: str) -> str:
 
 def extract_country_prefix(name: str) -> str | None:
     """Pulls the leading country/region code (e.g. "US", "UK", "AU") off a channel name, if it
-    has one in that "XX: " form - the same shape normalize_name() strips for text comparison.
+    has one in that "XX: " form (or "XX|", "|XX|", "[XX]", "(XX)") - the same shape normalize_name() strips for text comparison.
     Used by epg_mapper as a same-country signal so fuzzy matching doesn't just pick whichever
     same-named channel scores a point or two higher text-wise, regardless of region. None if the
     name doesn't start with one (most EPG guide display names won't - that's fine, it's only ever
     used as a bonus/penalty, never a hard requirement)."""
     m = _COUNTRY_PREFIX_RE.match(_canonicalize(name))
-    return m.group(1).upper() if m else None
+    if not m:
+        return None
+    return next(g for g in m.groups() if g).upper()
 
 
 def normalize_name(name: str) -> str:
