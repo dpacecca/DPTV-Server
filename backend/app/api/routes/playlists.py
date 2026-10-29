@@ -1153,6 +1153,8 @@ class ScanDuplicatesIn(BaseModel):
     """Scan only these channels. Omit to scan every channel currently in the category."""
     concurrency: int | None = None
     timeout_seconds: float | None = None
+    split_countries: bool = True
+    """Never group channels whose country prefixes differ ("AU: ESPN 2" / "US: ESPN 2")."""
 
 
 @router.post("/{playlist_id}/categories/{category_id}/scan-duplicates")
@@ -1184,6 +1186,7 @@ async def scan_duplicates(
         channel_ids,
         concurrency=concurrency,
         timeout_seconds=payload.timeout_seconds or settings.scan_default_timeout_seconds,
+        split_countries=payload.split_countries,
     )
     return {"job_id": job.id, "total": job.total}
 
@@ -1205,7 +1208,10 @@ async def get_scan_job(playlist_id: int, job_id: str, _admin: AdminUser) -> dict
 
 
 class DedupeGroupIn(BaseModel):
-    keep_channel_id: int
+    keep_channel_id: int | None = None
+    keep_channel_ids: list[int] = []
+    """Every channel of the group to keep (a group can keep several, e.g. two countries' feeds);
+    keep_channel_id is the older single-keeper form and still accepted."""
     remove_channel_ids: list[int]
 
 
@@ -1217,9 +1223,10 @@ class ApplyDedupeIn(BaseModel):
 async def apply_dedupe(playlist_id: int, payload: ApplyDedupeIn, db: DbSession, _admin: AdminUser) -> dict:
     """Deletes the losing channels from each duplicate group. The frontend sends the exact
     keep/remove split (defaulted from the scan's ranking but editable by the admin before
-    applying), so this doesn't re-derive "best" itself - it just enforces that a group's keeper
-    is never deleted even if the two lists overlap."""
-    keep_ids = {g.keep_channel_id for g in payload.groups}
+    applying), so this doesn't re-derive "best" itself - it just enforces that a group's keepers
+    are never deleted even if the lists overlap."""
+    keep_ids = {cid for g in payload.groups for cid in g.keep_channel_ids}
+    keep_ids |= {g.keep_channel_id for g in payload.groups if g.keep_channel_id is not None}
     remove_ids = {cid for g in payload.groups for cid in g.remove_channel_ids} - keep_ids
     if not remove_ids:
         return {"removed": 0}
