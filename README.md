@@ -202,13 +202,14 @@ its playlist or guide only when something it would see has actually changed.
 
 ```json
 {
-  "server": "DPTV-Server", "version": "1.0.8",
+  "server": "DPTV-Server", "version": "1.0.9",
   "live":   {"rev": "3f1c9a0b5e27d4c8", "updated_at": 1761390000},
   "vod":    {"rev": "a90e1d22c4b7f513", "updated_at": 1761300000},
   "series": {"rev": "0c55e7a1b9d3f240", "updated_at": null},
   "epg":    {"rev": "7be2f0c4a1d98e36", "updated_at": 1761392400},
   "last_source_sync_at": 1761391800,
-  "last_epg_refresh_at": 1761392400
+  "last_epg_refresh_at": 1761392400,
+  "profile": {"rev": "12", "updated_at": 1761395000}
 }
 ```
 
@@ -224,6 +225,23 @@ its playlist or guide only when something it would see has actually changed.
 - `updated_at` values are the newest underlying timestamps (unix seconds,
   `null` when empty) — informational only, since a deletion changes `rev`
   without moving them.
+
+**Shared player profile (1.0.9)** — every TV signed in with one XC login can share a
+DPTV-Player profile: watch history, progress, favourites, the last channel, customisations. The
+server stores it per login, as the player sent it, and never reads inside it; the player merges.
+
+- `GET /player_api.php?…&action=dptv_profile` returns
+  `{"revision": 12, "updated_at": 1761395000, "device": "Bedroom", "data": {…}}`
+  (`revision` 0 and `data` null when nothing has been synced yet).
+- `POST /player_api.php?…&action=dptv_profile_put` with
+  `{"base_revision": 12, "device": "Bedroom", "data": {…}}` stores it as revision 13. A write
+  whose `base_revision` is no longer the current one is refused with `409` and the current
+  revision, so the player fetches it, merges and writes again; nothing another TV wrote is lost.
+  Profiles are limited to 8 MB.
+- `profile.rev` in the sync status says when to fetch it again. XC Users shows each login's
+  synced profile (when, which TV, size) with a Clear button.
+- If players reach the server through `deploy/nginx-site-xc-only.conf`, copy it to nginx again
+  after updating (it now allows uploads up to 16 MB; nginx's default is 1 MB).
 
 **HTTP validators** — `get.php`, `xmltv.php` and the `player_api.php` list
 actions (`get_live_categories`, `get_live_streams`, `get_vod_categories`,
