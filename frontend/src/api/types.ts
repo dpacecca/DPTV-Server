@@ -136,6 +136,15 @@ export interface XcUser {
   expiry_date: string | null;
   notes: string | null;
   playlists: XcUserPlaylistLink[];
+  /** The player profile synced for this login (1.0.9), null until a TV has synced one. */
+  profile: XcUserProfileInfo | null;
+}
+
+export interface XcUserProfileInfo {
+  revision: number;
+  updated_at: string | null;
+  device: string | null;
+  bytes: number;
 }
 
 export interface SyncSchedule {

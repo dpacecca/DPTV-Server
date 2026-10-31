@@ -34,13 +34,27 @@ def _serialize(user: XcUser) -> dict:
             {"playlist_id": link.playlist_id, "playlist_name": link.playlist.name, "enabled": link.enabled}
             for link in user.playlists
         ],
+        # The synced player profile (1.0.9): when it was last written, and by which TV.
+        "profile": (
+            {
+                "revision": user.profile.revision,
+                "updated_at": user.profile.updated_at.isoformat() if user.profile.updated_at else None,
+                "device": user.profile.device,
+                "bytes": len(user.profile.data.encode("utf-8")),
+            }
+            if user.profile
+            else None
+        ),
     }
 
 
 @router.get("")
 async def list_xc_users(db: DbSession, _admin: AdminUser) -> list[dict]:
     result = await db.execute(
-        select(XcUser).options(selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist))
+        select(XcUser).options(
+            selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist),
+            selectinload(XcUser.profile),
+        )
     )
     return [_serialize(u) for u in result.unique().scalars().all()]
 
@@ -50,13 +64,16 @@ async def create_xc_user(payload: XcUserIn, db: DbSession, _admin: AdminUser) ->
     user = XcUser(**payload.model_dump())
     db.add(user)
     await db.commit()
-    await db.refresh(user, attribute_names=["playlists"])
+    await db.refresh(user, attribute_names=["playlists", "profile"])
     return _serialize(user)
 
 
 @router.put("/{user_id}")
 async def update_xc_user(user_id: int, payload: XcUserIn, db: DbSession, _admin: AdminUser) -> dict:
-    user = await db.get(XcUser, user_id, options=[selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist)])
+    user = await db.get(
+        XcUser, user_id,
+        options=[selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist), selectinload(XcUser.profile)],
+    )
     if user is None:
         raise HTTPException(404, "XC user not found")
     for key, value in payload.model_dump().items():
@@ -114,3 +131,11 @@ async def remove_playlist_link(user_id: int, playlist_id: int, db: DbSession, _a
         await db.delete(link)
         await db.commit()
     return {"ok": True}
+
+
+@router.delete("/{user_id}/profile")
+async def clear_profile(user_id: int, db: DbSession, _admin: AdminUser) -> dict:
+    """Forget the player profile synced for this login (1.0.9); the next TV to sync starts it afresh."""
+    from app.services import profile_store
+
+    return {"cleared": await profile_store.clear(db, user_id)}

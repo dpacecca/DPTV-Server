@@ -1,7 +1,9 @@
+import json
 from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +18,7 @@ from app.models.source import Source
 from app.models.xc_user import XcUser, XcUserPlaylist
 from app.services.channel_logo import resolve_channel_logo
 from app.services.epg_writer import build_xmltv, xmltv_channel_id
+from app.services import profile_store
 from app.services.m3u_writer import build_m3u
 from app.services.sync_status import Rev, compute_sync_status, last_modified_for, unix
 from app.services.version import get_current_version
@@ -214,7 +217,22 @@ async def player_api(
 
     if action == "dptv_sync_status":
         response.headers["Cache-Control"] = "no-cache"
-        return _sync_status_json(await compute_sync_status(db, user))
+        out = _sync_status_json(await compute_sync_status(db, user))
+        # The shared player profile (1.0.9): a TV that sees a new revision pulls and merges it.
+        stored = await profile_store.read(db, user)
+        out["profile"] = {"rev": str(stored.revision), "updated_at": unix(stored.updated_at)}
+        return out
+
+    if action == "dptv_profile":
+        stored = await profile_store.read(db, user)
+        # The data is the player's own JSON, stored as sent: spliced in, not parsed and dumped again.
+        body = (
+            '{"revision":' + str(stored.revision)
+            + ',"updated_at":' + json.dumps(unix(stored.updated_at))
+            + ',"device":' + json.dumps(stored.device)
+            + ',"data":' + (stored.data or "null") + "}"
+        )
+        return Response(content=body, media_type="application/json", headers={"Cache-Control": "no-store"})
 
     if action == "get_series_info":
         return await _proxy_series_info(db, series_id)
@@ -285,6 +303,35 @@ async def player_api(
         return out
 
     raise HTTPException(400, f"Unsupported action: {action}")  # unreachable: kind was matched above
+
+
+class ProfilePut(BaseModel):
+    base_revision: int
+    """The revision this profile was merged from (0 when the server had none)."""
+    data: dict
+    device: str | None = None
+
+
+@router.post("/player_api.php")
+async def player_api_post(
+    payload: ProfilePut,
+    db: DbSession,
+    username: str | None = None,
+    password: str | None = None,
+    action: str | None = None,
+):
+    """Writes for DPTV-Player (1.0.9); every other action stays GET-only. A write based on an old
+    revision is refused with 409 and the current revision, so the player merges that and retries."""
+    user = await _authenticate(db, username, password)
+    if action != "dptv_profile_put":
+        raise HTTPException(400, f"Unsupported action: {action}")
+    try:
+        stored = await profile_store.write(db, user, payload.base_revision, payload.data, payload.device)
+    except profile_store.StaleRevision as stale:
+        raise HTTPException(409, {"error": "stale", "revision": stale.current})
+    except ValueError:
+        raise HTTPException(413, "Profile too large")
+    return {"revision": stored.revision, "updated_at": unix(stored.updated_at)}
 
 
 async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) -> dict:

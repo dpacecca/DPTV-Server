@@ -62,6 +62,12 @@ export default function XcUsersPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["xc-users"] }),
   });
 
+  // Forget a login's synced player profile (1.0.9); the next TV to sync starts it afresh from its own.
+  const clearProfileMutation = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/xc-users/${id}/profile`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["xc-users"] }),
+  });
+
   const linkPlaylistMutation = useMutation({
     mutationFn: ({ userId, playlistId, enabled }: { userId: number; playlistId: number; enabled: boolean }) =>
       api.post(`/api/xc-users/${userId}/playlists`, { playlist_id: playlistId, enabled }),
@@ -88,6 +94,7 @@ export default function XcUsersPage() {
                 <Table.Th>Username</Table.Th>
                 <Table.Th>Password</Table.Th>
                 <Table.Th>Playlists</Table.Th>
+                <Table.Th>Synced profile</Table.Th>
                 <Table.Th>Enabled</Table.Th>
                 <Table.Th />
               </Table.Tr>
@@ -115,6 +122,32 @@ export default function XcUsersPage() {
                         );
                       })}
                     </Group>
+                  </Table.Td>
+                  <Table.Td>
+                    {u.profile ? (
+                      <Group gap={6} wrap="nowrap">
+                        <Text size="xs" c="dimmed">
+                          {u.profile.updated_at ? new Date(u.profile.updated_at).toLocaleString() : "—"}
+                          {u.profile.device ? ` · ${u.profile.device}` : ""} · {Math.max(1, Math.round(u.profile.bytes / 1024))} KB
+                        </Text>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="red"
+                          onClick={() => {
+                            if (confirm(`Clear the synced profile of ${u.username}? Each TV keeps its own copy and syncs it again.`)) {
+                              clearProfileMutation.mutate(u.id);
+                            }
+                          }}
+                        >
+                          Clear
+                        </Button>
+                      </Group>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        Not synced yet
+                      </Text>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     <Switch checked={u.enabled} onChange={() => toggleEnabledMutation.mutate(u)} />

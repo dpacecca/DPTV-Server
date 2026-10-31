@@ -21,6 +21,9 @@ class XcUser(Base, TimestampMixin):
     playlists: Mapped[list["XcUserPlaylist"]] = relationship(
         back_populates="xc_user", cascade="all, delete-orphan"
     )
+    profile: Mapped["XcUserProfile | None"] = relationship(
+        back_populates="xc_user", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class XcUserPlaylist(Base):
@@ -34,6 +37,26 @@ class XcUserPlaylist(Base):
 
     xc_user: Mapped["XcUser"] = relationship(back_populates="playlists")
     playlist: Mapped["Playlist"] = relationship()
+
+
+class XcUserProfile(Base):
+    """A player's profile for one XC login (1.0.9): watch history, progress, favourites, the last
+    channel, customisations... as DPTV-Player's own backup JSON, opaque to the server. Every TV
+    signed in with this login reads and merges it, so they share one profile. [revision] goes up by
+    one on each write; a write names the revision it merged from, and a stale one is refused (409)
+    so the player merges the newer profile and tries again - nothing a TV wrote is lost."""
+
+    __tablename__ = "xc_user_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    xc_user_id: Mapped[int] = mapped_column(ForeignKey("xc_users.id", ondelete="CASCADE"), unique=True, index=True)
+    data: Mapped[str] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    device: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    """The name the last TV to write gave itself, for the admin page."""
+
+    xc_user: Mapped["XcUser"] = relationship(back_populates="profile")
 
 
 class AdminUser(Base, TimestampMixin):
