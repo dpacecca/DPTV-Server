@@ -138,6 +138,15 @@ export interface XcUser {
   source_override_id: number | null;
   source_override_name: string | null;
   playlists: XcUserPlaylistLink[];
+  /** The player profile synced for this login (1.0.9), null until a TV has synced one. */
+  profile: XcUserProfileInfo | null;
+}
+
+export interface XcUserProfileInfo {
+  revision: number;
+  updated_at: string | null;
+  device: string | null;
+  bytes: number;
 }
 
 export interface SyncSchedule {

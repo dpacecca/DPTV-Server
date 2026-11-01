@@ -7,7 +7,7 @@ from app.models.playlist import (
 )
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun, SyncSchedule
-from app.models.xc_user import AdminUser, XcUser, XcUserPlaylist
+from app.models.xc_user import AdminUser, XcUser, XcUserPlaylist, XcUserProfile
 
 __all__ = [
     "AdminUser",
@@ -25,4 +25,5 @@ __all__ = [
     "SyncSchedule",
     "XcUser",
     "XcUserPlaylist",
+    "XcUserProfile",
 ]

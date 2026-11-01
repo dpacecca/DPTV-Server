@@ -1080,11 +1080,34 @@ async def delete_channel(playlist_id: int, channel_id: int, db: DbSession, _admi
     return {"ok": True}
 
 
+_NATURAL_SPLIT = re.compile(r"(\d+)")
+
+
+def _natural_key(name: str) -> list:
+    """"Sky Sports 2" before "Sky Sports 10": digit runs compare as numbers, the rest ignoring case."""
+    return [int(part) if part.isdigit() else part.casefold() for part in _NATURAL_SPLIT.split(name)]
+
+
+def sort_az_slots(channels: list) -> list[tuple]:
+    """Bulk "Sort A-Z": within each category, the selected channels take the places they already
+    hold, in name order - the channels around them don't move, and a selection spread through a
+    list sorts into those same spread-out places. Pairs of (channel, new sort_order)."""
+    by_category: dict[int, list] = {}
+    for pc in channels:
+        by_category.setdefault(pc.playlist_category_id, []).append(pc)
+    out = []
+    for members in by_category.values():
+        slots = sorted(pc.sort_order for pc in members)
+        ordered = sorted(members, key=lambda pc: (_natural_key(pc.name), pc.id))
+        out.extend(zip(ordered, slots))
+    return out
+
+
 class BulkAction(BaseModel):
     channel_ids: list[int]
     action: str
     """One of: uppercase, sentence_case, add_prefix, add_suffix, find_replace, enable, disable,
-    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_epg_mapping."""
+    delete, lock_name, unlock_name, set_dummy_epg_mode, clear_epg_mapping, sort_az."""
     find: str | None = None
     replace: str | None = None
     text: str | None = None
@@ -1107,6 +1130,11 @@ async def bulk_edit_channels(playlist_id: int, payload: BulkAction, db: DbSessio
 
     result = await db.execute(select(PlaylistChannel).where(PlaylistChannel.id.in_(payload.channel_ids)))
     channels = result.scalars().all()
+    if payload.action == "sort_az":
+        for slot in sort_az_slots(channels):
+            slot[0].sort_order = slot[1]
+        await db.commit()
+        return {"affected": len(channels)}
     count = 0
     for pc in channels:
         if payload.action == "uppercase":
@@ -1153,6 +1181,8 @@ class ScanDuplicatesIn(BaseModel):
     """Scan only these channels. Omit to scan every channel currently in the category."""
     concurrency: int | None = None
     timeout_seconds: float | None = None
+    split_countries: bool = True
+    """Never group channels whose country prefixes differ ("AU: ESPN 2" / "US: ESPN 2")."""
 
 
 @router.post("/{playlist_id}/categories/{category_id}/scan-duplicates")
@@ -1184,6 +1214,7 @@ async def scan_duplicates(
         channel_ids,
         concurrency=concurrency,
         timeout_seconds=payload.timeout_seconds or settings.scan_default_timeout_seconds,
+        split_countries=payload.split_countries,
     )
     return {"job_id": job.id, "total": job.total}
 
@@ -1205,7 +1236,10 @@ async def get_scan_job(playlist_id: int, job_id: str, _admin: AdminUser) -> dict
 
 
 class DedupeGroupIn(BaseModel):
-    keep_channel_id: int
+    keep_channel_id: int | None = None
+    keep_channel_ids: list[int] = []
+    """Every channel of the group to keep (a group can keep several, e.g. two countries' feeds);
+    keep_channel_id is the older single-keeper form and still accepted."""
     remove_channel_ids: list[int]
 
 
@@ -1217,9 +1251,10 @@ class ApplyDedupeIn(BaseModel):
 async def apply_dedupe(playlist_id: int, payload: ApplyDedupeIn, db: DbSession, _admin: AdminUser) -> dict:
     """Deletes the losing channels from each duplicate group. The frontend sends the exact
     keep/remove split (defaulted from the scan's ranking but editable by the admin before
-    applying), so this doesn't re-derive "best" itself - it just enforces that a group's keeper
-    is never deleted even if the two lists overlap."""
-    keep_ids = {g.keep_channel_id for g in payload.groups}
+    applying), so this doesn't re-derive "best" itself - it just enforces that a group's keepers
+    are never deleted even if the lists overlap."""
+    keep_ids = {cid for g in payload.groups for cid in g.keep_channel_ids}
+    keep_ids |= {g.keep_channel_id for g in payload.groups if g.keep_channel_id is not None}
     remove_ids = {cid for g in payload.groups for cid in g.remove_channel_ids} - keep_ids
     if not remove_ids:
         return {"removed": 0}

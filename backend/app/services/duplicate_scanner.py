@@ -1,5 +1,6 @@
 import re
 
+from app.services.name_normalize import extract_country_prefix
 from app.services.name_normalize import normalize_name as _normalize_name
 
 _QUALITY_TOKEN = r"(?:U?HD|FHD|RAW|SD|\d{3,4}p|4K|8K)"
@@ -58,10 +59,24 @@ def _rank_key(probe: dict) -> tuple:
     )
 
 
-def group_duplicates(channels: list[dict]) -> list[dict]:
+def _split_by_country(key: str, members: list[dict]) -> dict[str, list[dict]]:
+    """One group per country prefix when the members carry more than one ("AU: ESPN 2" and "US:
+    ESPN 2" are two channels, not two copies of one); members without a prefix stay together on
+    their own. A group whose members share one country (or have none) is left as it is."""
+    by_country: dict[str | None, list[dict]] = {}
+    for m in members:
+        by_country.setdefault(extract_country_prefix(m["name"]), []).append(m)
+    if len([c for c in by_country if c is not None]) < 2:
+        return {key: members}
+    return {(f"{key} ({country})" if country else key): ms for country, ms in by_country.items()}
+
+
+def group_duplicates(channels: list[dict], split_countries: bool = False) -> list[dict]:
     """channels: [{"channel_id", "name", "status", "height", "fps", "bitrate_kbps", ...}, ...],
     already scoped to a single category. Groups by normalized name; only groups with more than
     one member are real duplicate candidates. Each group's channel_ids are ordered best first.
+    With [split_countries], channels with different country prefixes are never grouped
+    ([_split_by_country]).
 
     best_channel_id is None when no member of the group probed successfully - there's no
     reliable pick in that case, so the caller shouldn't pre-select anything for removal.
@@ -70,6 +85,11 @@ def group_duplicates(channels: list[dict]) -> list[dict]:
     for ch in channels:
         key = normalize_channel_name(ch["name"])
         groups.setdefault(key, []).append(ch)
+    if split_countries:
+        split: dict[str, list[dict]] = {}
+        for key, members in groups.items():
+            split.update(_split_by_country(key, members))
+        groups = split
 
     result = []
     for key, members in groups.items():

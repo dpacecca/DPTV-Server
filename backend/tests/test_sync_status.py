@@ -186,7 +186,7 @@ async def test_sync_status_action(client, seeded):
     body = r.json()
     assert body["server"] == "DPTV-Server"
     assert set(body) == {
-        "server", "version", "live", "vod", "series", "epg", "last_source_sync_at", "last_epg_refresh_at",
+        "server", "version", "live", "vod", "series", "epg", "last_source_sync_at", "last_epg_refresh_at", "profile",
     }
     for kind in ("live", "vod", "series", "epg"):
         assert isinstance(body[kind]["rev"], str) and len(body[kind]["rev"]) == 16
