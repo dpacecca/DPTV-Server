@@ -202,7 +202,7 @@ its playlist or guide only when something it would see has actually changed.
 
 ```json
 {
-  "server": "DPTV-Server", "version": "1.0.9",
+  "server": "DPTV-Server", "version": "1.0.10",
   "live":   {"rev": "3f1c9a0b5e27d4c8", "updated_at": 1761390000},
   "vod":    {"rev": "a90e1d22c4b7f513", "updated_at": 1761300000},
   "series": {"rev": "0c55e7a1b9d3f240", "updated_at": null},
@@ -225,6 +225,15 @@ its playlist or guide only when something it would see has actually changed.
 - `updated_at` values are the newest underlying timestamps (unix seconds,
   `null` when empty) — informational only, since a deletion changes `rev`
   without moving them.
+
+**A panel line per login (1.0.10)** — DPTV-Server hands out streams by redirecting to the
+provider, so by default every XC login streams on the line of the source the channels came from,
+and that line's connection limit is shared by all of them. To give a login its own line on the same
+panel, add a Source with that line's username and password (it never needs syncing) and pick it in
+the login's **Source Override** on the XC Users page. Its live, VOD and series streams then go to
+the panel with its own credentials, while it keeps sharing the same playlist, logos and EPG.
+Channels from any other panel keep their own source (the override only applies where the panel —
+scheme, host and port — is the same).
 
 **Shared player profile (1.0.9)** — every TV signed in with one XC login can share a
 DPTV-Player profile: watch history, progress, favourites, the last channel, customisations. The
