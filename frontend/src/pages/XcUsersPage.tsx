@@ -7,6 +7,7 @@ import {
   Group,
   Modal,
   Paper,
+  Select,
   Stack,
   Switch,
   Table,
@@ -17,7 +18,7 @@ import {
 import { IconCopy, IconLink, IconPlus, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE, api } from "../api/client";
-import type { Playlist, XcUser } from "../api/types";
+import type { Playlist, Source, XcUser } from "../api/types";
 
 // API_BASE is empty in normal deployments (the UI and the XC API share an origin, whether
 // that's the vite dev proxy or the production nginx container), so window.location.origin is
@@ -42,6 +43,11 @@ export default function XcUsersPage() {
     queryFn: () => api.get("/api/playlists").then((r) => r.data),
   });
 
+  const { data: sources } = useQuery<Source[]>({
+    queryKey: ["sources"],
+    queryFn: () => api.get("/api/sources").then((r) => r.data),
+  });
+
   const createMutation = useMutation({
     mutationFn: () => api.post("/api/xc-users", { username, password }),
     onSuccess: () => {
@@ -59,6 +65,12 @@ export default function XcUsersPage() {
 
   const toggleEnabledMutation = useMutation({
     mutationFn: (user: XcUser) => api.put(`/api/xc-users/${user.id}`, { ...user, enabled: !user.enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["xc-users"] }),
+  });
+
+  const sourceOverrideMutation = useMutation({
+    mutationFn: ({ user, sourceId }: { user: XcUser; sourceId: number | null }) =>
+      api.put(`/api/xc-users/${user.id}`, { ...user, source_override_id: sourceId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["xc-users"] }),
   });
 
@@ -88,6 +100,7 @@ export default function XcUsersPage() {
                 <Table.Th>Username</Table.Th>
                 <Table.Th>Password</Table.Th>
                 <Table.Th>Playlists</Table.Th>
+                <Table.Th>Source Override</Table.Th>
                 <Table.Th>Enabled</Table.Th>
                 <Table.Th />
               </Table.Tr>
@@ -115,6 +128,17 @@ export default function XcUsersPage() {
                         );
                       })}
                     </Group>
+                  </Table.Td>
+                  <Table.Td>
+                    <Select
+                      size="xs"
+                      placeholder="None (use each channel's own source)"
+                      data={(sources ?? []).map((s) => ({ value: String(s.id), label: s.name }))}
+                      value={u.source_override_id ? String(u.source_override_id) : null}
+                      onChange={(v) => sourceOverrideMutation.mutate({ user: u, sourceId: v ? Number(v) : null })}
+                      clearable
+                      style={{ minWidth: 180 }}
+                    />
                   </Table.Td>
                   <Table.Td>
                     <Switch checked={u.enabled} onChange={() => toggleEnabledMutation.mutate(u)} />

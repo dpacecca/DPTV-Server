@@ -135,6 +135,8 @@ export interface XcUser {
   max_connections: number;
   expiry_date: string | null;
   notes: string | null;
+  source_override_id: number | null;
+  source_override_name: string | null;
   playlists: XcUserPlaylistLink[];
 }
 

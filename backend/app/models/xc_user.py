@@ -18,9 +18,25 @@ class XcUser(Base, TimestampMixin):
     expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    source_override_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """When set, every live/VOD/series stream this user requests is resolved against THIS
+    source's credentials instead of whichever source the channel's SourceChannel actually
+    belongs to (see xc_server.py's _resolve_and_redirect/_proxy_series_info) - built for sharing
+    one playlist across multiple accounts on the same upstream panel (e.g. a reseller panel where
+    each account has its own login but an identical channel/stream-id catalog): duplicate the
+    Source with the other account's credentials, point this XC user at it, and every channel in
+    their assigned playlist(s) plays from that account without duplicating the playlist itself -
+    which also means logo/EPG customization on a channel is automatically shared across every
+    user, since there's only ever one PlaylistChannel row. Relies on the channel's
+    external_stream_id being valid on the override source too; if it isn't, that one channel just
+    won't play for this user."""
+
     playlists: Mapped[list["XcUserPlaylist"]] = relationship(
         back_populates="xc_user", cascade="all, delete-orphan"
     )
+    source_override: Mapped["Source | None"] = relationship()
 
 
 class XcUserPlaylist(Base):

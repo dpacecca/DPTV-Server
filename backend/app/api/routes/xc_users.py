@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminUser, DbSession
 from app.models.playlist import Playlist
+from app.models.source import Source
 from app.models.xc_user import XcUser, XcUserPlaylist
 
 router = APIRouter(prefix="/api/xc-users", tags=["xc-users"])
@@ -19,6 +20,10 @@ class XcUserIn(BaseModel):
     max_connections: int = 1
     expiry_date: datetime | None = None
     notes: str | None = None
+    source_override_id: int | None = None
+    """When set, every stream this user requests is resolved against this source's credentials
+    instead of whichever source the channel's own SourceChannel belongs to - see
+    XcUser.source_override_id's docstring for the reseller-panel use case this is for."""
 
 
 def _serialize(user: XcUser) -> dict:
@@ -30,6 +35,8 @@ def _serialize(user: XcUser) -> dict:
         "max_connections": user.max_connections,
         "expiry_date": user.expiry_date.isoformat() if user.expiry_date else None,
         "notes": user.notes,
+        "source_override_id": user.source_override_id,
+        "source_override_name": user.source_override.name if user.source_override else None,
         "playlists": [
             {"playlist_id": link.playlist_id, "playlist_name": link.playlist.name, "enabled": link.enabled}
             for link in user.playlists
@@ -37,31 +44,44 @@ def _serialize(user: XcUser) -> dict:
     }
 
 
+def _xc_user_load_options():
+    return (
+        selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist),
+        selectinload(XcUser.source_override),
+    )
+
+
+async def _check_source_override(db: DbSession, source_id: int | None) -> None:
+    if source_id is not None and await db.get(Source, source_id) is None:
+        raise HTTPException(404, "Source not found")
+
+
 @router.get("")
 async def list_xc_users(db: DbSession, _admin: AdminUser) -> list[dict]:
-    result = await db.execute(
-        select(XcUser).options(selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist))
-    )
+    result = await db.execute(select(XcUser).options(*_xc_user_load_options()))
     return [_serialize(u) for u in result.unique().scalars().all()]
 
 
 @router.post("")
 async def create_xc_user(payload: XcUserIn, db: DbSession, _admin: AdminUser) -> dict:
+    await _check_source_override(db, payload.source_override_id)
     user = XcUser(**payload.model_dump())
     db.add(user)
     await db.commit()
-    await db.refresh(user, attribute_names=["playlists"])
+    await db.refresh(user, attribute_names=["playlists", "source_override"])
     return _serialize(user)
 
 
 @router.put("/{user_id}")
 async def update_xc_user(user_id: int, payload: XcUserIn, db: DbSession, _admin: AdminUser) -> dict:
-    user = await db.get(XcUser, user_id, options=[selectinload(XcUser.playlists).selectinload(XcUserPlaylist.playlist)])
+    await _check_source_override(db, payload.source_override_id)
+    user = await db.get(XcUser, user_id, options=[*_xc_user_load_options()])
     if user is None:
         raise HTTPException(404, "XC user not found")
     for key, value in payload.model_dump().items():
         setattr(user, key, value)
     await db.commit()
+    await db.refresh(user, attribute_names=["playlists", "source_override"])
     return _serialize(user)
 
 

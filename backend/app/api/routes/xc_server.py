@@ -19,7 +19,7 @@ from app.services.epg_writer import build_xmltv, xmltv_channel_id
 from app.services.m3u_writer import build_m3u
 from app.services.sync_status import Rev, compute_sync_status, last_modified_for, unix
 from app.services.version import get_current_version
-from app.services.xtream_client import XtreamClient
+from app.services.xtream_client import XtreamClient, _live_url, _series_episode_url, _vod_url
 
 router = APIRouter(tags=["xc-server"])
 settings = get_settings()
@@ -217,7 +217,7 @@ async def player_api(
         return _sync_status_json(await compute_sync_status(db, user))
 
     if action == "get_series_info":
-        return await _proxy_series_info(db, series_id)
+        return await _proxy_series_info(db, series_id, user)
 
     if action in ("get_short_epg", "get_simple_data_table"):
         return await _short_epg(db, stream_id)
@@ -316,18 +316,27 @@ async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) ->
     return {"epg_listings": listings}
 
 
-async def _proxy_series_info(db: AsyncSession, series_id: int | None) -> dict:
+async def _proxy_series_info(db: AsyncSession, series_id: int | None, user: XcUser) -> dict:
     if series_id is None:
         raise HTTPException(400, "series_id is required")
     pc = await db.get(PlaylistChannel, series_id, options=[selectinload(PlaylistChannel.source_channel)])
     if pc is None or pc.source_channel is None:
         return {"episodes": {}}
     sc = pc.source_channel
-    # Walk source_channel -> source_category -> source to get provider credentials.
-    from app.models.source import SourceCategory
+    # A source override (see XcUser.source_override_id) applies here too, same as live/VOD in
+    # _resolve_and_redirect - fetch this user's episode list from their own account on the
+    # override source rather than whichever source the channel is actually tied to, assuming
+    # (same as live/VOD) the series' external_stream_id is valid there too. The resulting
+    # composite "{source.id}_{episode_id}" id already carries whichever source was used here
+    # through to series_episode_stream below, so nothing else needs to change for that part.
+    if user.source_override_id:
+        source = await db.get(Source, user.source_override_id)
+    else:
+        # Walk source_channel -> source_category -> source to get provider credentials.
+        from app.models.source import SourceCategory
 
-    category = await db.get(SourceCategory, sc.source_category_id)
-    source = await db.get(Source, category.source_id) if category else None
+        category = await db.get(SourceCategory, sc.source_category_id)
+        source = await db.get(Source, category.source_id) if category else None
     if source is None:
         return {"episodes": {}}
 
@@ -386,12 +395,25 @@ async def get_xmltv(request: Request, db: DbSession, username: str | None = None
     return Response(content=combined, media_type="application/xml", headers=validators)
 
 
-async def _resolve_and_redirect(db: AsyncSession, username: str, password: str, channel_id: int) -> RedirectResponse:
-    await _authenticate(db, username, password)
+async def _resolve_and_redirect(
+    db: AsyncSession, username: str, password: str, channel_id: int, ext: str, channel_type: ChannelType
+) -> RedirectResponse:
+    user = await _authenticate(db, username, password)
     pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel)])
     if pc is None or not pc.enabled:
         raise HTTPException(404, "Stream not found")
-    target = pc.manual_stream_url or (pc.source_channel.stream_url if pc.source_channel else None)
+    target = pc.manual_stream_url
+    if not target and pc.source_channel:
+        # A manual_stream_url is an admin-pinned absolute URL with no source of its own, so a
+        # per-user source override never applies to it - only to a channel actually tied to a
+        # SourceChannel. See XcUser.source_override_id's docstring for why this exists: one
+        # playlist, multiple accounts on the same upstream panel.
+        override = await db.get(Source, user.source_override_id) if user.source_override_id else None
+        if override:
+            builder = _live_url if channel_type == ChannelType.LIVE else _vod_url
+            target = builder(override.base_url, override.username, override.password, pc.source_channel.external_stream_id, ext)
+        else:
+            target = pc.source_channel.stream_url
     if not target:
         raise HTTPException(404, "Stream not found")
     return RedirectResponse(target, status_code=302)
@@ -399,12 +421,12 @@ async def _resolve_and_redirect(db: AsyncSession, username: str, password: str, 
 
 @router.get("/live/{username}/{password}/{channel_id}.{ext}")
 async def live_stream(username: str, password: str, channel_id: int, ext: str, db: DbSession):
-    return await _resolve_and_redirect(db, username, password, channel_id)
+    return await _resolve_and_redirect(db, username, password, channel_id, ext, ChannelType.LIVE)
 
 
 @router.get("/movie/{username}/{password}/{channel_id}.{ext}")
 async def vod_stream(username: str, password: str, channel_id: int, ext: str, db: DbSession):
-    return await _resolve_and_redirect(db, username, password, channel_id)
+    return await _resolve_and_redirect(db, username, password, channel_id, ext, ChannelType.VOD)
 
 
 @router.get("/series/passthrough/{composite_id}.{ext}")
@@ -417,7 +439,5 @@ async def series_episode_stream(composite_id: str, ext: str, db: DbSession):
     source = await db.get(Source, source_id)
     if source is None:
         raise HTTPException(404, "Source not found")
-    from app.services.xtream_client import _series_episode_url
-
     url = _series_episode_url(source.base_url, source.username, source.password, episode_id, ext)
     return RedirectResponse(url, status_code=302)
