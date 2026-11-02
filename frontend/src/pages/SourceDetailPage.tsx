@@ -1,12 +1,26 @@
 import { Fragment, useState } from "react";
-import { Badge, Button, Collapse, Group, Modal, Paper, Stack, Switch, Table, Text, TextInput, Title } from "@mantine/core";
+import {
+  Badge,
+  Button,
+  Collapse,
+  Group,
+  Modal,
+  Paper,
+  SegmentedControl,
+  Stack,
+  Switch,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from "@mantine/core";
 import { IconChevronDown, IconChevronRight, IconSearch } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDebounce } from "use-debounce";
 import { api } from "../api/client";
-import type { PaginatedSourceChannels, Source, SourceCategory } from "../api/types";
+import type { ChannelType, PaginatedSourceChannels, Source, SourceCategory } from "../api/types";
 import { EmptyState } from "../App";
 import {
   EpgAssignmentFields,
@@ -128,6 +142,7 @@ export default function SourceDetailPage() {
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState<number | null>(null);
   const [epgModalOpen, setEpgModalOpen] = useState(false);
+  const [activeType, setActiveType] = useState<ChannelType>("live");
 
   const { data: source } = useQuery<Source>({
     queryKey: ["sources", sourceId],
@@ -144,6 +159,8 @@ export default function SourceDetailPage() {
       api.patch(`/api/sources/categories/${id}`, null, { params: { enabled } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["source-categories", sourceId] }),
   });
+
+  const visibleCategories = (categories ?? []).filter((c) => c.channel_type === activeType);
 
   return (
     <Stack>
@@ -173,27 +190,44 @@ export default function SourceDetailPage() {
           <EmptyState text="No categories loaded yet. Go back and click the sync icon to load categories/channels." />
         )}
         {categories && categories.length > 0 && (
+          <>
+            <SegmentedControl
+              size="xs"
+              fullWidth
+              mb="sm"
+              value={activeType}
+              onChange={(v) => setActiveType((v as ChannelType) ?? "live")}
+              data={[
+                { value: "live", label: `Live TV (${categories.filter((c) => c.channel_type === "live").length})` },
+                { value: "vod", label: `Movies (${categories.filter((c) => c.channel_type === "vod").length})` },
+                { value: "series", label: `TV Shows (${categories.filter((c) => c.channel_type === "series").length})` },
+              ]}
+            />
+            {visibleCategories.length === 0 && (
+              <Text size="sm" c="dimmed" p="sm">
+                No categories of this type.
+              </Text>
+            )}
+          </>
+        )}
+        {visibleCategories.length > 0 && (
           <Table striped>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th />
                 <Table.Th>Category</Table.Th>
-                <Table.Th>Type</Table.Th>
                 <Table.Th>Channels</Table.Th>
                 <Table.Th>Enabled</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {categories.map((c) => (
+              {visibleCategories.map((c) => (
                 <Fragment key={c.id}>
                   <Table.Tr>
                     <Table.Td style={{ width: 30, cursor: "pointer" }} onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
                       {expanded === c.id ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />}
                     </Table.Td>
                     <Table.Td>{c.name}</Table.Td>
-                    <Table.Td>
-                      <Badge variant="light">{c.channel_type}</Badge>
-                    </Table.Td>
                     <Table.Td>{c.channel_count}</Table.Td>
                     <Table.Td>
                       <Switch
@@ -204,7 +238,7 @@ export default function SourceDetailPage() {
                   </Table.Tr>
                   {expanded === c.id && (
                     <Table.Tr>
-                      <Table.Td colSpan={5} p={0}>
+                      <Table.Td colSpan={4} p={0}>
                         <Collapse expanded>
                           <CategoryChannels categoryId={c.id} />
                         </Collapse>
