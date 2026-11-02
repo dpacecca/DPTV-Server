@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -376,14 +377,11 @@ async def _proxy_series_info(db: AsyncSession, series_id: int | None, user: XcUs
     # (same as live/VOD) the series' external_stream_id is valid there too. The resulting
     # composite "{source.id}_{episode_id}" id already carries whichever source was used here
     # through to series_episode_stream below, so nothing else needs to change for that part.
-    if user.source_override_id:
-        source = await db.get(Source, user.source_override_id)
-    else:
-        # Walk source_channel -> source_category -> source to get provider credentials.
-        from app.models.source import SourceCategory
-
-        category = await db.get(SourceCategory, sc.source_category_id)
-        source = await db.get(Source, category.source_id) if category else None
+    # (1.0.10) Only for a series from the override's own panel: one from another provider keeps its source.
+    source = await _channel_source(db, sc)
+    override = await db.get(Source, user.source_override_id) if user.source_override_id else None
+    if override is not None and source is not None and same_panel(override.base_url, source.base_url):
+        source = override
     if source is None:
         return {"episodes": {}}
 
@@ -442,6 +440,29 @@ async def get_xmltv(request: Request, db: DbSession, username: str | None = None
     return Response(content=combined, media_type="application/xml", headers=validators)
 
 
+def same_panel(a: str | None, b: str | None) -> bool:
+    """Whether two base URLs are the same Xtream panel: scheme, host and port, case aside (1.0.10)."""
+    if not a or not b:
+        return False
+    pa, pb = urlsplit(a.strip()), urlsplit(b.strip())
+
+    def port(p) -> int | None:
+        try:
+            return p.port or {"http": 80, "https": 443}.get(p.scheme.lower())
+        except ValueError:
+            return None
+
+    return (pa.hostname or "").lower() == (pb.hostname or "").lower() != "" and port(pa) == port(pb)
+
+
+async def _channel_source(db: AsyncSession, sc) -> Source | None:
+    """The Source a SourceChannel came from (source_channel -> source_category -> source)."""
+    from app.models.source import SourceCategory
+
+    category = await db.get(SourceCategory, sc.source_category_id)
+    return await db.get(Source, category.source_id) if category else None
+
+
 async def _resolve_and_redirect(
     db: AsyncSession, username: str, password: str, channel_id: int, ext: str, channel_type: ChannelType
 ) -> RedirectResponse:
@@ -456,6 +477,12 @@ async def _resolve_and_redirect(
         # SourceChannel. See XcUser.source_override_id's docstring for why this exists: one
         # playlist, multiple accounts on the same upstream panel.
         override = await db.get(Source, user.source_override_id) if user.source_override_id else None
+        # (1.0.10) Only for a channel from the override's own panel (its login is no good on
+        # another provider's): a playlist mixing providers keeps the others' channels working.
+        if override is not None:
+            channel_source = await _channel_source(db, pc.source_channel)
+            if channel_source is None or not same_panel(override.base_url, channel_source.base_url):
+                override = None
         if override:
             builder = _live_url if channel_type == ChannelType.LIVE else _vod_url
             target = builder(override.base_url, override.username, override.password, pc.source_channel.external_stream_id, ext)
