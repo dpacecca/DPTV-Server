@@ -39,6 +39,23 @@ class ParsedEpgProgram:
     is_new: bool
 
 
+def _split_desc_subtitle(desc_text: str) -> tuple[str | None, str]:
+    """Some providers don't send <sub-title> at all - instead a program's short "what's on"
+    label (e.g. "RLWC SF1: Kiwi Ferns v Samoa Hls", "PL: Brighton v Brentford") is the first line
+    of <desc>, with the real prose description starting on the line after it. Detected, not
+    assumed: only split when there's a line break and the first line is short relative to the
+    rest, so a normal multi-sentence description that happens to start with a short sentence
+    isn't mistaken for this. Returns (None, desc_text unchanged) when it doesn't look like this
+    shape at all."""
+    if "\n" not in desc_text:
+        return None, desc_text
+    first, rest = desc_text.split("\n", 1)
+    first, rest = first.strip(), rest.strip()
+    if not first or not rest or len(first) > 100 or len(first) >= len(rest):
+        return None, desc_text
+    return first, rest
+
+
 def format_episode_num(elems) -> str | None:
     """Picks one <episode-num> among however many a <programme> carries (a provider can repeat
     it once per numbering "system") and formats it for display. Prefers system="onscreen" -
@@ -112,6 +129,10 @@ def parse_xmltv(xml_bytes: bytes) -> tuple[list[ParsedEpgChannel], list[ParsedEp
                 desc_el = elem.find("desc")
                 cat_el = elem.find("category")
                 date_el = elem.find("date")
+                subtitle = (subtitle_el.text or None) if subtitle_el is not None else None
+                description = (desc_el.text or None) if desc_el is not None else None
+                if subtitle is None and description:
+                    subtitle, description = _split_desc_subtitle(description)
                 try:
                     programs.append(
                         ParsedEpgProgram(
@@ -119,8 +140,8 @@ def parse_xmltv(xml_bytes: bytes) -> tuple[list[ParsedEpgChannel], list[ParsedEp
                             start=_parse_xmltv_time(start_raw),
                             stop=_parse_xmltv_time(stop_raw),
                             title=(title_el.text or "").strip() if title_el is not None else "",
-                            subtitle=(subtitle_el.text or None) if subtitle_el is not None else None,
-                            description=(desc_el.text or None) if desc_el is not None else None,
+                            subtitle=subtitle,
+                            description=description,
                             category=(cat_el.text or None) if cat_el is not None else None,
                             episode_num=format_episode_num(elem.findall("episode-num")),
                             program_date=(date_el.text or None) if date_el is not None else None,

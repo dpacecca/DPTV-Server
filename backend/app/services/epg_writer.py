@@ -36,17 +36,23 @@ EPG_LAYOUT_TOKENS = (
 _SPORTS_CATEGORY_RE = re.compile(r"sport", re.IGNORECASE)
 
 
-def _is_sports(prog: EpgProgram) -> bool:
-    return bool(prog.category and _SPORTS_CATEGORY_RE.search(prog.category))
+def _is_sports(prog: EpgProgram, channel_hint: str | None) -> bool:
+    """Prefers the program's own <category> (precise - this one programme really is sports),
+    but falls back to the channel's own name/category (e.g. "Sky Sport 1") when a provider's
+    guide doesn't send <category> per-programme at all - common enough on dedicated sports
+    channels that SUBTITLE_SPORTS would otherwise just never fire for them."""
+    if prog.category and _SPORTS_CATEGORY_RE.search(prog.category):
+        return True
+    return bool(channel_hint and _SPORTS_CATEGORY_RE.search(channel_hint))
 
 
-def _layout_token_value(token: str, prog: EpgProgram) -> str:
+def _layout_token_value(token: str, prog: EpgProgram, channel_hint: str | None) -> str:
     if token == "title":
         return prog.title or ""
     if token == "subtitle_sports":
-        return (prog.subtitle or "") if _is_sports(prog) else ""
+        return (prog.subtitle or "") if _is_sports(prog, channel_hint) else ""
     if token == "subtitle_nonsports":
-        return (prog.subtitle or "") if not _is_sports(prog) else ""
+        return (prog.subtitle or "") if not _is_sports(prog, channel_hint) else ""
     if token == "description":
         return prog.description or ""
     if token == "episode_number":
@@ -69,10 +75,12 @@ def parse_layout(raw: str) -> list[str]:
     return [t for t in (tok.strip().lower() for tok in raw.split(",")) if t in EPG_LAYOUT_TOKENS]
 
 
-def compose_program_text(prog: EpgProgram) -> tuple[str, str]:
+def compose_program_text(prog: EpgProgram, channel_hint: str | None = None) -> tuple[str, str]:
     """The (title, description) every guide-facing surface actually shows for a real (non-dummy)
     EPG program - XMLTV output, the XC API's short-EPG action, and the admin UI's EPG preview all
     call this rather than reading prog.title/.description directly, so they can never disagree.
+    channel_hint (e.g. the channel's own name, "NZ: Sky Sport 1") is the sports-detection
+    fallback for a provider whose guide never sends <category> per-programme - see _is_sports.
     Assembled from the admin's configured EPG Layout (see config.py's epg_title_layout/
     epg_description_layout) - each token resolves to a piece of text (empty if this particular
     program doesn't have it, e.g. subtitle_sports on a non-sports program, or episode_number with
@@ -87,7 +95,7 @@ def compose_program_text(prog: EpgProgram) -> tuple[str, str]:
             if token == "next_line":
                 lines.append([])
                 continue
-            value = _layout_token_value(token, prog)
+            value = _layout_token_value(token, prog, channel_hint)
             if value:
                 lines[-1].append(value)
         return "\n".join(" ".join(line) for line in lines if line)
@@ -223,7 +231,7 @@ async def compute_channel_programs(
         if real_programs:
             preview_programs = []
             for p in real_programs:
-                title, description = compose_program_text(p)
+                title, description = compose_program_text(p, channel_hint=pc.name)
                 preview_programs.append(PreviewProgram(start=p.start, stop=p.stop, title=title, description=description))
             results.append(ChannelPrograms(channel=pc, programs=preview_programs))
             continue

@@ -350,7 +350,7 @@ async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) ->
     )
     listings = []
     for prog in result.scalars().all():
-        title, description = compose_program_text(prog)
+        title, description = compose_program_text(prog, channel_hint=pc.name)
         listings.append(
             {
                 "id": str(prog.id),
