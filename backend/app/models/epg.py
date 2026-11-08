@@ -51,5 +51,13 @@ class EpgProgram(Base):
     subtitle: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    episode_num: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    """Already formatted for display (e.g. "S2 E14") - see epg_parser.format_episode_num()."""
+    program_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    """Raw XMLTV <date> text (e.g. "2024" or "20240115") - a movie/program's original
+    release/air date, not this specific broadcast's. epg_writer pulls just the year out of it
+    for the MOVIE_YEAR layout component."""
+    is_new: Mapped[bool] = mapped_column(default=False)
+    """Whether the source XMLTV marked this showing with a bare <new/> element."""
 
     epg_channel: Mapped["EpgChannel"] = relationship(back_populates="programs")

@@ -47,11 +47,22 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_max_concurrency": ("Duplicate Scanning", "int"),
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
     "sync_notify_url": ("Integrations", "string"),
+    # "epg_layout", not "string" - the generic field editor skips these two (see SKIPPED_FROM_GENERIC_EDITOR
+    # below); the frontend's dedicated "EPG Layout" section renders and saves them instead.
+    "epg_title_layout": ("EPG Guide", "epg_layout"),
+    "epg_description_layout": ("EPG Guide", "epg_layout"),
 }
+
+# Rendered by a dedicated UI section instead of the generic field editor (still returned by GET
+# and still writable through the same PATCH - just not auto-rendered as a plain text input, since
+# a raw comma-separated token string isn't something an admin should be hand-editing directly).
+SKIPPED_FROM_GENERIC_EDITOR = {"epg_title_layout", "epg_description_layout"}
 
 # Fields whose auto-generated label (key title-cased) would read badly.
 FIELD_LABELS: dict[str, str] = {
     "sync_notify_url": "After a sync, notify URL",
+    "epg_title_layout": "Guide Title layout",
+    "epg_description_layout": "Guide Description layout",
 }
 
 FIELD_DESCRIPTIONS: dict[str, str] = {
@@ -80,6 +91,8 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "sync finishes - e.g. so a player can refresh straight away. Fire-and-forget with a short "
         "timeout; failures are only logged. Leave empty to turn off."
     ),
+    "epg_title_layout": "See the EPG Guide section below for the builder.",
+    "epg_description_layout": "See the EPG Guide section below for the builder.",
 }
 
 
@@ -141,6 +154,8 @@ class SettingsUpdate(BaseModel):
     scan_max_concurrency: int | None = None
     scan_default_timeout_seconds: float | None = None
     sync_notify_url: str | None = None
+    epg_title_layout: str | None = None
+    epg_description_layout: str | None = None
 
 
 @router.patch("")

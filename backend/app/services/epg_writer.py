@@ -7,6 +7,7 @@ from xml.sax.saxutils import escape
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.base import DummyEpgMode
 from app.models.epg import EpgProgram
 from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
@@ -16,6 +17,84 @@ from app.services.channel_logo import resolve_channel_logo
 logger = logging.getLogger("dptv.epg_writer")
 
 DEFAULT_WINDOW_HOURS = 24 * 3
+
+# Every token the EPG Layout settings (epg_title_layout/epg_description_layout, see config.py)
+# can be built from, mirroring IPTVBoss's own EPG layout editor. NEXT_LINE is a line break, not a
+# field - everything else resolves to a piece of text (possibly empty, if that program has none
+# of it) that compose_program_text() below joins together.
+EPG_LAYOUT_TOKENS = (
+    "title",
+    "subtitle_sports",
+    "subtitle_nonsports",
+    "description",
+    "episode_number",
+    "movie_year",
+    "new_tag",
+    "next_line",
+)
+
+_SPORTS_CATEGORY_RE = re.compile(r"sport", re.IGNORECASE)
+
+
+def _is_sports(prog: EpgProgram) -> bool:
+    return bool(prog.category and _SPORTS_CATEGORY_RE.search(prog.category))
+
+
+def _layout_token_value(token: str, prog: EpgProgram) -> str:
+    if token == "title":
+        return prog.title or ""
+    if token == "subtitle_sports":
+        return (prog.subtitle or "") if _is_sports(prog) else ""
+    if token == "subtitle_nonsports":
+        return (prog.subtitle or "") if not _is_sports(prog) else ""
+    if token == "description":
+        return prog.description or ""
+    if token == "episode_number":
+        return prog.episode_num or ""
+    if token == "movie_year":
+        # A <date> can be a bare year or a full YYYYMMDD - either way the year is its first 4
+        # digits. Not a year at all (too short, non-digit) just contributes nothing, same as a
+        # program with no <date> - this is a best-effort cosmetic, not a field worth failing over.
+        raw = (prog.program_date or "").strip()
+        return raw[:4] if len(raw) >= 4 and raw[:4].isdigit() else ""
+    if token == "new_tag":
+        return "NEW" if prog.is_new else ""
+    return ""
+
+
+def parse_layout(raw: str) -> list[str]:
+    """A stored epg_title_layout/epg_description_layout value (comma-separated) -> the tokens an
+    admin actually picked, lowercased and validated against EPG_LAYOUT_TOKENS so a hand-edited or
+    stale .env value can't inject something compose_program_text() doesn't recognize."""
+    return [t for t in (tok.strip().lower() for tok in raw.split(",")) if t in EPG_LAYOUT_TOKENS]
+
+
+def compose_program_text(prog: EpgProgram) -> tuple[str, str]:
+    """The (title, description) every guide-facing surface actually shows for a real (non-dummy)
+    EPG program - XMLTV output, the XC API's short-EPG action, and the admin UI's EPG preview all
+    call this rather than reading prog.title/.description directly, so they can never disagree.
+    Assembled from the admin's configured EPG Layout (see config.py's epg_title_layout/
+    epg_description_layout) - each token resolves to a piece of text (empty if this particular
+    program doesn't have it, e.g. subtitle_sports on a non-sports program, or episode_number with
+    no <episode-num> in the source guide), non-empty pieces on the same line join with a space,
+    and next_line starts a new line (collapsing away if either side of it turned out empty, so a
+    missing optional field never leaves a stray blank line)."""
+    settings = get_settings()
+
+    def build(raw_layout: str) -> str:
+        lines: list[list[str]] = [[]]
+        for token in parse_layout(raw_layout):
+            if token == "next_line":
+                lines.append([])
+                continue
+            value = _layout_token_value(token, prog)
+            if value:
+                lines[-1].append(value)
+        return "\n".join(" ".join(line) for line in lines if line)
+
+    title = build(settings.epg_title_layout) or prog.title or ""
+    description = build(settings.epg_description_layout)
+    return title, (description or None)
 
 
 def xmltv_channel_id(pc: PlaylistChannel) -> str:
@@ -142,15 +221,11 @@ async def compute_channel_programs(
     for pc in channels:
         real_programs = programs_by_epg_channel.get(pc.epg_channel_id) if pc.epg_channel_id else None
         if real_programs:
-            results.append(
-                ChannelPrograms(
-                    channel=pc,
-                    programs=[
-                        PreviewProgram(start=p.start, stop=p.stop, title=p.title, description=p.description)
-                        for p in real_programs
-                    ],
-                )
-            )
+            preview_programs = []
+            for p in real_programs:
+                title, description = compose_program_text(p)
+                preview_programs.append(PreviewProgram(start=p.start, stop=p.stop, title=title, description=description))
+            results.append(ChannelPrograms(channel=pc, programs=preview_programs))
             continue
 
         mode = resolve_dummy_mode(pc)

@@ -34,6 +34,45 @@ class ParsedEpgProgram:
     subtitle: str | None
     description: str | None
     category: str | None
+    episode_num: str | None
+    program_date: str | None
+    is_new: bool
+
+
+def format_episode_num(elems) -> str | None:
+    """Picks one <episode-num> among however many a <programme> carries (a provider can repeat
+    it once per numbering "system") and formats it for display. Prefers system="onscreen" -
+    already human-readable as the provider wrote it (e.g. "S2 E14") - over the far more common
+    system="xmltv_ns" (zero-based "season.episode.part", e.g. "1.13.0/1" for S2E14), which this
+    converts to the same "SxEy" shape onscreen uses. Any other/missing system's text is used
+    as-is; empty/whitespace-only text is skipped same as if the element weren't there."""
+    by_system: dict[str, str] = {}
+    fallback: str | None = None
+    for el in elems:
+        text = (el.text or "").strip()
+        if not text:
+            continue
+        system = (el.get("system") or "").strip().lower()
+        if system:
+            by_system[system] = text
+        elif fallback is None:
+            fallback = text
+
+    if "onscreen" in by_system:
+        return by_system["onscreen"]
+
+    ns = by_system.get("xmltv_ns")
+    if ns:
+        parts = ns.split(".")
+        if len(parts) >= 2:
+            season_raw, episode_raw = parts[0].strip(), parts[1].split("/")[0].strip()
+            if season_raw.isdigit() and episode_raw.isdigit():
+                return f"S{int(season_raw) + 1} E{int(episode_raw) + 1}"
+        return ns
+
+    if by_system:
+        return next(iter(by_system.values()))
+    return fallback
 
 
 def _parse_xmltv_time(value: str) -> datetime:
@@ -72,6 +111,7 @@ def parse_xmltv(xml_bytes: bytes) -> tuple[list[ParsedEpgChannel], list[ParsedEp
                 subtitle_el = elem.find("sub-title")
                 desc_el = elem.find("desc")
                 cat_el = elem.find("category")
+                date_el = elem.find("date")
                 try:
                     programs.append(
                         ParsedEpgProgram(
@@ -82,6 +122,9 @@ def parse_xmltv(xml_bytes: bytes) -> tuple[list[ParsedEpgChannel], list[ParsedEp
                             subtitle=(subtitle_el.text or None) if subtitle_el is not None else None,
                             description=(desc_el.text or None) if desc_el is not None else None,
                             category=(cat_el.text or None) if cat_el is not None else None,
+                            episode_num=format_episode_num(elem.findall("episode-num")),
+                            program_date=(date_el.text or None) if date_el is not None else None,
+                            is_new=elem.find("new") is not None,
                         )
                     )
                 except ValueError:

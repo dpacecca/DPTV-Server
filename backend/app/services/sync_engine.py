@@ -283,6 +283,9 @@ async def sync_epg_source(db: AsyncSession, epg_source: EpgSource) -> dict:
                 "subtitle": pp.subtitle,
                 "description": pp.description,
                 "category": pp.category,
+                "episode_num": pp.episode_num,
+                "program_date": pp.program_date,
+                "is_new": pp.is_new,
             }
         )
     if to_insert:

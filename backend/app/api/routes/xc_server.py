@@ -18,7 +18,7 @@ from app.models.playlist import Playlist, PlaylistCategory, PlaylistChannel
 from app.models.source import Source
 from app.models.xc_user import XcUser, XcUserPlaylist
 from app.services.channel_logo import resolve_channel_logo
-from app.services.epg_writer import build_xmltv, xmltv_channel_id
+from app.services.epg_writer import build_xmltv, compose_program_text, xmltv_channel_id
 from app.services import profile_store
 from app.services.m3u_writer import build_m3u
 from app.services.sync_status import Rev, compute_sync_status, last_modified_for, unix
@@ -350,12 +350,13 @@ async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) ->
     )
     listings = []
     for prog in result.scalars().all():
+        title, description = compose_program_text(prog)
         listings.append(
             {
                 "id": str(prog.id),
                 "epg_id": str(pc.epg_channel_id),
-                "title": prog.title,
-                "description": prog.description or "",
+                "title": title,
+                "description": description or "",
                 "start": prog.start.strftime("%Y-%m-%d %H:%M:%S"),
                 "end": prog.stop.strftime("%Y-%m-%d %H:%M:%S"),
                 "now_playing": 1 if prog.start <= now <= prog.stop else 0,
