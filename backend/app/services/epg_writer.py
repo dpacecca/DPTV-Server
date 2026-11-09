@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.base import DummyEpgMode
+from app.models.base import ChannelType, DummyEpgMode
 from app.models.epg import EpgProgram
 from app.models.playlist import DummyEpgRule, Playlist, PlaylistChannel
 from app.services import dummy_epg
@@ -29,6 +29,7 @@ EPG_LAYOUT_TOKENS = (
     "description",
     "episode_number",
     "movie_year",
+    "episode_or_year",
     "new_tag",
     "next_line",
 )
@@ -46,7 +47,15 @@ def _is_sports(prog: EpgProgram, channel_hint: str | None) -> bool:
     return bool(channel_hint and _SPORTS_CATEGORY_RE.search(channel_hint))
 
 
-def _layout_token_value(token: str, prog: EpgProgram, channel_hint: str | None) -> str:
+def _movie_year(prog: EpgProgram) -> str:
+    # A <date> can be a bare year or a full YYYYMMDD - either way the year is its first 4
+    # digits. Not a year at all (too short, non-digit) just contributes nothing, same as a
+    # program with no <date> - this is a best-effort cosmetic, not a field worth failing over.
+    raw = (prog.program_date or "").strip()
+    return raw[:4] if len(raw) >= 4 and raw[:4].isdigit() else ""
+
+
+def _layout_token_value(token: str, prog: EpgProgram, channel_hint: str | None, channel_type: ChannelType | None) -> str:
     if token == "title":
         return prog.title or ""
     if token == "subtitle_sports":
@@ -58,11 +67,16 @@ def _layout_token_value(token: str, prog: EpgProgram, channel_hint: str | None) 
     if token == "episode_number":
         return prog.episode_num or ""
     if token == "movie_year":
-        # A <date> can be a bare year or a full YYYYMMDD - either way the year is its first 4
-        # digits. Not a year at all (too short, non-digit) just contributes nothing, same as a
-        # program with no <date> - this is a best-effort cosmetic, not a field worth failing over.
-        raw = (prog.program_date or "").strip()
-        return raw[:4] if len(raw) >= 4 and raw[:4].isdigit() else ""
+        return _movie_year(prog)
+    if token == "episode_or_year":
+        # The one token that adapts to what it's actually labeling: a TV Shows channel's episode
+        # number ("S2 E14") matters far more than a release year that's rarely even present on a
+        # per-episode basis, while a Movies channel has no episode number at all - only a year.
+        # The plain, non-adaptive movie_number/episode_number tokens above are untouched by this
+        # - they always mean exactly what their name says, for an admin who wants that literally.
+        if channel_type == ChannelType.SERIES:
+            return prog.episode_num or ""
+        return _movie_year(prog)
     if token == "new_tag":
         return "NEW" if prog.is_new else ""
     return ""
@@ -75,12 +89,16 @@ def parse_layout(raw: str) -> list[str]:
     return [t for t in (tok.strip().lower() for tok in raw.split(",")) if t in EPG_LAYOUT_TOKENS]
 
 
-def compose_program_text(prog: EpgProgram, channel_hint: str | None = None) -> tuple[str, str]:
+def compose_program_text(
+    prog: EpgProgram, channel_hint: str | None = None, channel_type: ChannelType | None = None
+) -> tuple[str, str]:
     """The (title, description) every guide-facing surface actually shows for a real (non-dummy)
     EPG program - XMLTV output, the XC API's short-EPG action, and the admin UI's EPG preview all
     call this rather than reading prog.title/.description directly, so they can never disagree.
     channel_hint (e.g. the channel's own name, "NZ: Sky Sport 1") is the sports-detection
     fallback for a provider whose guide never sends <category> per-programme - see _is_sports.
+    channel_type decides what episode_or_year resolves to (see _layout_token_value) - omit it
+    (e.g. a caller with no channel/category in scope) and that token just falls back to year.
     Assembled from the admin's configured EPG Layout (see config.py's epg_title_layout/
     epg_description_layout) - each token resolves to a piece of text (empty if this particular
     program doesn't have it, e.g. subtitle_sports on a non-sports program, or episode_number with
@@ -95,7 +113,7 @@ def compose_program_text(prog: EpgProgram, channel_hint: str | None = None) -> t
             if token == "next_line":
                 lines.append([])
                 continue
-            value = _layout_token_value(token, prog, channel_hint)
+            value = _layout_token_value(token, prog, channel_hint, channel_type)
             if value:
                 lines[-1].append(value)
         return "\n".join(" ".join(line) for line in lines if line)
@@ -231,7 +249,9 @@ async def compute_channel_programs(
         if real_programs:
             preview_programs = []
             for p in real_programs:
-                title, description = compose_program_text(p, channel_hint=pc.name)
+                title, description = compose_program_text(
+                    p, channel_hint=pc.name, channel_type=pc.category.channel_type
+                )
                 preview_programs.append(PreviewProgram(start=p.start, stop=p.stop, title=title, description=description))
             results.append(ChannelPrograms(channel=pc, programs=preview_programs))
             continue

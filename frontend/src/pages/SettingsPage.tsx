@@ -39,6 +39,7 @@ const EPG_LAYOUT_TOKEN_LABELS: Record<string, string> = {
   description: "Description",
   episode_number: "Episode number",
   movie_year: "Year",
+  episode_or_year: "Year (Movies) / Episode (TV Shows)",
   new_tag: "“NEW” tag",
   next_line: "— line break —",
 };

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     scheduled or manual source/EPG sync finishes (see app/services/sync_notify.py), so a player
     such as DPTV-Player can refresh right away instead of waiting for its next poll. Empty = off."""
 
-    epg_title_layout: str = "title,new_tag,next_line,subtitle_sports,movie_year"
+    epg_title_layout: str = "title,new_tag,next_line,subtitle_sports,episode_or_year"
     epg_description_layout: str = "subtitle_nonsports,episode_number,next_line,description"
     """Comma-separated EPG_LAYOUT_TOKENS (see app/services/epg_writer.py) controlling how a real
     (non-dummy) EPG program's title/description are assembled for every surface that shows guide
