@@ -338,11 +338,7 @@ async def player_api_post(
 async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) -> dict:
     if stream_id is None:
         return {"epg_listings": []}
-    pc = await db.get(
-        PlaylistChannel,
-        stream_id,
-        options=[selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.category)],
-    )
+    pc = await db.get(PlaylistChannel, stream_id, options=[selectinload(PlaylistChannel.epg_channel)])
     if pc is None or not pc.epg_channel_id:
         return {"epg_listings": []}
     now = datetime.now(timezone.utc)
@@ -354,7 +350,7 @@ async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) ->
     )
     listings = []
     for prog in result.scalars().all():
-        title, description = compose_program_text(prog, channel_hint=pc.name, channel_type=pc.category.channel_type)
+        title, description = compose_program_text(prog, channel_hint=pc.name)
         listings.append(
             {
                 "id": str(prog.id),
