@@ -1,4 +1,4 @@
-import { AppShell, Badge, Burger, Group, NavLink, Text, Title, Tooltip, Button } from "@mantine/core";
+import { AppShell, Badge, Burger, Group, NavLink, Text, Tooltip, Button } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
   IconAntenna,
@@ -17,6 +17,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-
 import { api } from "./api/client";
 import type { VersionStatus } from "./api/types";
 import { useAuth } from "./auth/AuthContext";
+import Brand from "./components/Brand";
 import LoginPage from "./pages/LoginPage";
 import SourcesPage from "./pages/SourcesPage";
 import SourceDetailPage from "./pages/SourceDetailPage";
@@ -94,7 +95,7 @@ function Shell() {
         <Group h="100%" px="md" justify="space-between">
           <Group>
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
-            <Title order={4}>DPTV-Server</Title>
+            <Brand />
             <VersionBadge />
           </Group>
           <Button variant="subtle" size="xs" leftSection={<IconLogout size={14} />} onClick={logout}>

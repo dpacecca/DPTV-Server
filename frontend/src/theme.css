@@ -1,0 +1,25 @@
+/* DPTV family details Mantine's theme doesn't reach: page colours, titles in caps like DPTV-Player. */
+:root {
+  --dptv-accent: #6ccbff;
+  --dptv-accent-ink: #04192a;
+  --dptv-line: #223040;
+}
+[data-mantine-color-scheme="dark"] {
+  --mantine-color-body: #0b1015;
+  --mantine-color-default-border: var(--dptv-line);
+}
+h1, h2, h3, h4 { letter-spacing: 0.4px; text-transform: uppercase; }
+.mantine-AppShell-header, .mantine-AppShell-navbar { background: #111820; border-color: var(--dptv-line); }
+.mantine-Card-root, .mantine-Paper-root { background-color: #111820; }
+.mantine-NavLink-root { border-radius: 10px; font-family: 'Barlow Condensed', system-ui, sans-serif; font-size: 17px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+.mantine-NavLink-root[data-active] { background: var(--dptv-accent); color: var(--dptv-accent-ink); }
+.mantine-NavLink-root[data-active] .mantine-NavLink-label { color: var(--dptv-accent-ink); }
+.mantine-Table-th { font-family: 'Barlow Condensed', system-ui, sans-serif; font-size: 15px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: #a3b5c4; }
+
+/* The brand lockup: tile + "DPTV SERVER", SERVER in the accent (DPTV-Player's wordmark). */
+.dptv-brand { display: flex; align-items: center; gap: 10px; }
+.dptv-brand img { width: 30px; height: 30px; display: block; }
+.dptv-brand .word { font: 600 24px/1 'Barlow Condensed', system-ui, sans-serif; letter-spacing: 1px; text-transform: uppercase; color: #e8f1f8; }
+.dptv-brand .word span { color: var(--dptv-accent); }
+.dptv-brand.large img { width: 64px; height: 64px; }
+.dptv-brand.large .word { font-size: 36px; }
