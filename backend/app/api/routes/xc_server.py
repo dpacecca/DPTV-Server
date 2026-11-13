@@ -87,6 +87,10 @@ def _server_info() -> dict:
         "timezone": "UTC",
         "timestamp_now": int(datetime.now(timezone.utc).timestamp()),
         "time_now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        # DPTV's own field (other players ignore it): where this login's recordings are made. Only for a
+        # signed-in player - _server_info is never sent without user_info - and only when set.
+        # Read fresh, so a change saved in Settings applies without a restart.
+        **({"dptv_recorder_url": rec} if (rec := get_settings().recorder_url.strip().rstrip("/")) else {}),
     }
 
 
