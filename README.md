@@ -48,6 +48,12 @@ instead of local files.
   in the background. No setup needed. A logo set manually on a channel
   always takes priority.
 
+## Look (1.0.12)
+
+The web UI wears the DPTV family's look, shared with DPTV-Player, DPTV Web and DPTV Recorder: dark
+tiles, Barlow Condensed titles, IBM Plex Mono numbers, and the family's tile logo. Each app has its own
+accent; DPTV-Server's is light blue (Player green, Recorder amber). The logo is `frontend/public/favicon.svg`.
+
 ## Architecture
 
 - **Backend**: Python / FastAPI, SQLAlchemy 2.0 (async), PostgreSQL,

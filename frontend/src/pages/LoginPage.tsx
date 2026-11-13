@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Button, Card, Center, Container, PasswordInput, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Button, Card, Center, Container, PasswordInput, Stack, Text, TextInput } from "@mantine/core";
+import Brand from "../components/Brand";
 import { useAuth } from "../auth/AuthContext";
 
 export default function LoginPage() {
@@ -28,9 +29,9 @@ export default function LoginPage() {
         <Card withBorder shadow="sm" p="xl" radius="md">
           <form onSubmit={handleSubmit}>
             <Stack>
-              <Title order={2} ta="center">
-                DPTV-Server
-              </Title>
+              <Center>
+                <Brand large />
+              </Center>
               <Text c="dimmed" size="sm" ta="center">
                 Sign in to manage your playlists
               </Text>
