@@ -54,6 +54,14 @@ The web UI wears the DPTV family's look, shared with DPTV-Player, DPTV Web and D
 tiles, Barlow Condensed titles, IBM Plex Mono numbers, and the family's tile logo. Each app has its own
 accent; DPTV-Server's is light blue (Player green, Recorder amber). The logo is `frontend/public/favicon.svg`.
 
+## DPTV Web: straight in after Authentik (1.0.13)
+
+Set **Settings → Integrations → DPTV Web link key** to a long random key (24 characters or more) and give
+DPTV Web the same key (`DPTV_SERVER_LINK_KEY`). After someone signs in to DPTV Web through Authentik, it
+asks this server for the XC login whose username matches theirs (`GET /api/integrations/xc-login`, with
+the key as a Bearer token) and signs them in with it, so nobody types an XC login. Disabled and expired
+logins are never given. Anyone holding the key can read XC logins, so keep it secret; empty = off.
+
 ## Architecture
 
 - **Backend**: Python / FastAPI, SQLAlchemy 2.0 (async), PostgreSQL,
