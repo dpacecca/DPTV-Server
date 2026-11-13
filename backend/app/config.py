@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     scan_max_concurrency: int = 8
     scan_default_timeout_seconds: float = 8.0
 
+    recorder_url: str = ""
+    """The DPTV-Recorder players use for recordings, as they reach it (e.g. https://dptvr.example.com).
+    Handed to signed-in players with the XC login (server_info.dptv_recorder_url); a player with no
+    recorder of its own then signs in to it with the same XC login. Empty = players are not told one."""
+
     sync_notify_url: str = ""
     """If set, POSTed {"event": "sync_finished", "kind": "sources"|"epg", "at": <unix>} after every
     scheduled or manual source/EPG sync finishes (see app/services/sync_notify.py), so a player

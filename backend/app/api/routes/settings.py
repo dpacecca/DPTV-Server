@@ -46,6 +46,7 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_default_concurrency": ("Duplicate Scanning", "int"),
     "scan_max_concurrency": ("Duplicate Scanning", "int"),
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
+    "recorder_url": ("Integrations", "string"),
     "sync_notify_url": ("Integrations", "string"),
     # "epg_layout", not "string" - the generic field editor skips these two (see SKIPPED_FROM_GENERIC_EDITOR
     # below); the frontend's dedicated "EPG Layout" section renders and saves them instead.
@@ -61,6 +62,7 @@ SKIPPED_FROM_GENERIC_EDITOR = {"epg_title_layout", "epg_description_layout"}
 # Fields whose auto-generated label (key title-cased) would read badly.
 FIELD_LABELS: dict[str, str] = {
     "sync_notify_url": "After a sync, notify URL",
+    "recorder_url": "Recording server (DPTV-Recorder) URL",
     "epg_title_layout": "Guide Title layout",
     "epg_description_layout": "Guide Description layout",
 }
@@ -85,6 +87,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "scan_default_concurrency": "How many streams to probe at once by default during a duplicate scan.",
     "scan_max_concurrency": "Upper limit an admin can raise a scan's concurrency to.",
     "scan_default_timeout_seconds": "Default per-stream timeout (seconds) during a duplicate scan.",
+    "recorder_url": (
+        "The DPTV-Recorder your players record to, as they reach it - e.g. https://dptvr.example.com. "
+        "Signed-in players are told it with their XC login and sign in to it with that same login, "
+        "so no device needs a recorder address or API key typed in. DPTV-Recorder must trust this "
+        "server (its DPTV_SERVER_URL setting). Leave empty to tell players nothing."
+    ),
     "sync_notify_url": (
         "Optional http(s) URL that gets a POST with JSON {\"event\": \"sync_finished\", \"kind\": "
         "\"sources\" or \"epg\", \"at\": <unix seconds>} whenever a scheduled or manual source/EPG "
@@ -154,6 +162,7 @@ class SettingsUpdate(BaseModel):
     scan_max_concurrency: int | None = None
     scan_default_timeout_seconds: float | None = None
     sync_notify_url: str | None = None
+    recorder_url: str | None = None
     epg_title_layout: str | None = None
     epg_description_layout: str | None = None
 

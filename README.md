@@ -202,7 +202,7 @@ its playlist or guide only when something it would see has actually changed.
 
 ```json
 {
-  "server": "DPTV-Server", "version": "1.0.10",
+  "server": "DPTV-Server", "version": "1.0.11",
   "live":   {"rev": "3f1c9a0b5e27d4c8", "updated_at": 1761390000},
   "vod":    {"rev": "a90e1d22c4b7f513", "updated_at": 1761300000},
   "series": {"rev": "0c55e7a1b9d3f240", "updated_at": null},
@@ -225,6 +225,14 @@ its playlist or guide only when something it would see has actually changed.
 - `updated_at` values are the newest underlying timestamps (unix seconds,
   `null` when empty) — informational only, since a deletion changes `rev`
   without moving them.
+
+**Recording server for every login (1.0.11)** — set **Recording server (DPTV-Recorder) URL** in
+Settings → Integrations (or `DPTV_RECORDER_URL`) to the address players reach DPTV-Recorder at.
+A signed-in player then finds it in the XC login response, as `server_info.dptv_recorder_url`
+(only after a correct username and password), and signs in to the recorder with the same XC login,
+so no TV or browser needs a recorder address or API key typed in. DPTV-Recorder checks that login
+against this server (its `DPTV_SERVER_URL`) and creates the person's recorder account on first
+sign-in.
 
 **A panel line per login (1.0.10)** — DPTV-Server hands out streams by redirecting to the
 provider, so by default every XC login streams on the line of the source the channels came from,
