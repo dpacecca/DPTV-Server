@@ -15,7 +15,6 @@ from app.api.routes import (
     scheduler as scheduler_routes,
     settings as settings_routes,
     sources,
-    web_link,
     xc_server,
     xc_users,
 )
@@ -87,7 +86,6 @@ app.include_router(settings_routes.router)
 app.include_router(logo_cache.router)
 app.include_router(xc_server.router)
 app.include_router(logs.router)
-app.include_router(web_link.router)
 
 
 @app.get("/api/health")
