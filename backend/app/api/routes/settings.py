@@ -28,7 +28,7 @@ EXCLUDED_FIELDS: dict[str, str] = {
     ),
 }
 
-SECRET_FIELDS = {"secret_key"}
+SECRET_FIELDS = {"secret_key", "web_link_key"}
 
 # (group, type) per included field - hand-maintained (not introspected from the Settings model)
 # since a handful of fields need special handling anyway (secrets masked, display_timezone as a
@@ -47,6 +47,7 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_max_concurrency": ("Duplicate Scanning", "int"),
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
     "recorder_url": ("Integrations", "string"),
+    "web_link_key": ("Integrations", "secret"),
     "sync_notify_url": ("Integrations", "string"),
     # "epg_layout", not "string" - the generic field editor skips these two (see SKIPPED_FROM_GENERIC_EDITOR
     # below); the frontend's dedicated "EPG Layout" section renders and saves them instead.
@@ -92,6 +93,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Signed-in players are told it with their XC login and sign in to it with that same login, "
         "so no device needs a recorder address or API key typed in. DPTV-Recorder must trust this "
         "server (its DPTV_SERVER_URL setting). Leave empty to tell players nothing."
+    ),
+    "web_link_key": (
+        "A long random key (24 characters or more) also set on DPTV Web as DPTV_SERVER_LINK_KEY. "
+        "DPTV Web then signs a person in after Authentik with the XC login of the same username, "
+        "with nothing to type. Anyone holding the key can read XC logins, so keep it secret. "
+        "Leave empty to turn off."
     ),
     "sync_notify_url": (
         "Optional http(s) URL that gets a POST with JSON {\"event\": \"sync_finished\", \"kind\": "
@@ -163,6 +170,7 @@ class SettingsUpdate(BaseModel):
     scan_default_timeout_seconds: float | None = None
     sync_notify_url: str | None = None
     recorder_url: str | None = None
+    web_link_key: str | None = None
     epg_title_layout: str | None = None
     epg_description_layout: str | None = None
 

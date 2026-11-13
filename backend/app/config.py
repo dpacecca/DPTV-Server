@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     Handed to signed-in players with the XC login (server_info.dptv_recorder_url); a player with no
     recorder of its own then signs in to it with the same XC login. Empty = players are not told one."""
 
+    web_link_key: str = ""
+    """(1.0.13) Shared with DPTV Web (its DPTV_SERVER_LINK_KEY): lets it look up the XC login whose
+    username matches a person's single-sign-on username, so they aren't asked for it after signing in.
+    Empty, or under 24 characters, = off."""
+
     sync_notify_url: str = ""
     """If set, POSTed {"event": "sync_finished", "kind": "sources"|"epg", "at": <unix>} after every
     scheduled or manual source/EPG sync finishes (see app/services/sync_notify.py), so a player
