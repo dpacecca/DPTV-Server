@@ -1,4 +1,5 @@
 import gzip
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -56,13 +57,22 @@ def _split_desc_subtitle(desc_text: str) -> tuple[str | None, str]:
     return first, rest
 
 
+# <episode-num> systems that carry no episode at all: the airing's date or time, or a listings
+# id. Some providers also put the programme's start time ("20261114113439 +0000") in an
+# <episode-num> of no system; a value shaped like that is never an episode either.
+_NOT_EPISODE_SYSTEMS = {"original-air-date", "dd_progid"}
+_TIMESTAMP_VALUE = re.compile(r"^\d{8}(\d{6})?(\s*[+-]\d{4})?$")
+
+
 def format_episode_num(elems) -> str | None:
     """Picks one <episode-num> among however many a <programme> carries (a provider can repeat
     it once per numbering "system") and formats it for display. Prefers system="onscreen" -
     already human-readable as the provider wrote it (e.g. "S2 E14") - over the far more common
     system="xmltv_ns" (zero-based "season.episode.part", e.g. "1.13.0/1" for S2E14), which this
     converts to the same "SxEy" shape onscreen uses. Any other/missing system's text is used
-    as-is; empty/whitespace-only text is skipped same as if the element weren't there."""
+    as-is; empty/whitespace-only text is skipped same as if the element weren't there, and so is
+    an airing date/time or listings id (1.0.17: _NOT_EPISODE_SYSTEMS, _TIMESTAMP_VALUE), so a
+    programme without a real episode number shows its year (episode_or_year) or nothing."""
     by_system: dict[str, str] = {}
     fallback: str | None = None
     for el in elems:
@@ -70,6 +80,8 @@ def format_episode_num(elems) -> str | None:
         if not text:
             continue
         system = (el.get("system") or "").strip().lower()
+        if system in _NOT_EPISODE_SYSTEMS or _TIMESTAMP_VALUE.match(text):
+            continue
         if system:
             by_system[system] = text
         elif fallback is None:
