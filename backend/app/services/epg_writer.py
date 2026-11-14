@@ -51,7 +51,11 @@ def _movie_year(prog: EpgProgram) -> str:
     # A <date> can be a bare year or a full YYYYMMDD - either way the year is its first 4
     # digits. Not a year at all (too short, non-digit) just contributes nothing, same as a
     # program with no <date> - this is a best-effort cosmetic, not a field worth failing over.
+    # (1.0.17) A full XMLTV timestamp ("20261114113439 +0000") is the airing's time, not a
+    # release date, so it gives no year either.
     raw = (prog.program_date or "").strip()
+    if len(raw) >= 14 and raw[:14].isdigit():
+        return ""
     return raw[:4] if len(raw) >= 4 and raw[:4].isdigit() else ""
 
 
