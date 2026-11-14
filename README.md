@@ -54,6 +54,33 @@ The web UI wears the DPTV family's look, shared with DPTV-Player, DPTV Web and D
 tiles, Barlow Condensed titles, IBM Plex Mono numbers, and the family's tile logo. Each app has its own
 accent; DPTV-Server's is light blue (Player green, Recorder amber). The logo is `frontend/public/favicon.svg`.
 
+## Channel versions: backup playlists, checked nightly (1.0.15)
+
+Keep spare copies of your favourite channels in a playlist of their own (e.g. "Backup channels"), and
+on the **Playlists** page set its **Backup for** to your main playlist. From then on:
+
+- **Players don't see it as a playlist.** Its channels become *versions* of the main playlist's.
+- **Matching.** After each source sync, every main channel is matched with its copies: the same name
+  once the country prefix and quality tags are gone (but never two different countries: "ES| DAZN 1"
+  is not "AR| DAZN 1"), or the same guide id with one name's words all in the other's. A channel's
+  **Channel Settings** shows its **Versions**: add one by hand, remove a wrong match (it stays
+  removed), or **pin** the one to play.
+- **The nightly check** (Settings → Channel versions; 04:00 by default, the container's `TZ`) plays
+  20 s of every version, one at a time, through ffmpeg: `blackdetect`, `freezedetect` (frozen video
+  and static "unavailable" cards) and `silencedetect`, and the sample has to arrive at real speed. A
+  stream's own description can say 2160p while it shows black: the picture is what counts.
+- **Moving a channel.** The main channel plays from the best version that has **passed two checks in
+  a row**. A working version is only replaced by a **higher resolution** (not just a higher bitrate);
+  a failing one by the best that passes. A silent version only stands in for a silent channel. A
+  pinned channel never moves. Every move is kept in the channel's history with its reason, e.g.
+  "2160p 50 fps, passed 2 checks; it replaced a version that failed: black for 20 of 20 s".
+  Players need no change: the stream they ask for is sent to the chosen version.
+- **A line allowing one connection.** The check only runs while no stream has been asked for in the
+  last 15 minutes (Settings), and pauses as soon as one is, so it never takes the line from someone
+  watching or recording. **Check now** on a channel runs straight away.
+- **Players** get the versions with `player_api.php?action=dptv_versions&stream_id=` (best first,
+  each with its last check), to swap by hand or when a stream keeps buffering.
+
 ## Architecture
 
 - **Backend**: Python / FastAPI, SQLAlchemy 2.0 (async), PostgreSQL,

@@ -45,6 +45,11 @@ async def _post(url: str, payload: dict) -> None:
 
 def notify_sync_finished(kind: str) -> None:
     """Call after the sync's changes are committed. `kind` is "sources" or "epg"."""
+    if kind == "sources":
+        # (1.0.15) New and renamed channels: match the backup playlists' channels again.
+        from app.services.channel_versions import rematch_soon
+
+        rematch_soon()
     url = _target()
     if url is None:
         return

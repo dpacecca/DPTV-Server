@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     Handed to signed-in players with the XC login (server_info.dptv_recorder_url); a player with no
     recorder of its own then signs in to it with the same XC login. Empty = players are not told one."""
 
+    versions_check_time: str = "04:00"
+    """(1.0.15) When the nightly check of channel versions runs, HH:MM in the server's TZ. Empty = off."""
+    versions_sample_seconds: int = 20
+    """(1.0.15) Seconds of each version played to judge it."""
+    versions_idle_minutes: int = 15
+    """(1.0.15) The check waits until no stream has been asked for in this many minutes, and stops when
+    one is: a provider line allowing one connection is never taken from someone watching or recording."""
+
     sync_notify_url: str = ""
     """If set, POSTed {"event": "sync_finished", "kind": "sources"|"epg", "at": <unix>} after every
     scheduled or manual source/EPG sync finishes (see app/services/sync_notify.py), so a player

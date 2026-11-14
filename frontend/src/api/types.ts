@@ -109,6 +109,8 @@ export interface Playlist {
   epg_output_enabled: boolean;
   epg_filename: string;
   epg_days_to_keep: number | null;
+  /** (1.0.15) Set on a backup playlist: the main playlist its channels stand in for. */
+  backup_for_id: number | null;
   category_count: number;
   channel_count: number;
   categories?: PlaylistCategory[];

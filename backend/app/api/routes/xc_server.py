@@ -50,6 +50,8 @@ async def _enabled_playlists(db: AsyncSession, user: XcUser) -> list[Playlist]:
             XcUserPlaylist.enabled.is_(True),
             Playlist.enabled.is_(True),
             Playlist.xc_enabled.is_(True),
+            # (1.0.15) A backup playlist's channels reach players as versions, not as a playlist.
+            Playlist.backup_for_id.is_(None),
         )
         .options(
             selectinload(Playlist.categories)
@@ -245,6 +247,10 @@ async def player_api(
     if action in ("get_short_epg", "get_simple_data_table"):
         return await _short_epg(db, stream_id)
 
+    if action == "dptv_versions":
+        response.headers["Cache-Control"] = "no-store"
+        return await _versions_json(db, stream_id)
+
     kind = _LIST_ACTION_KINDS.get(action)
     if kind is None:
         raise HTTPException(400, f"Unsupported action: {action}")
@@ -337,6 +343,49 @@ async def player_api_post(
     except ValueError:
         raise HTTPException(413, "Profile too large")
     return {"revision": stored.revision, "updated_at": unix(stored.updated_at)}
+
+
+async def _versions_json(db: AsyncSession, stream_id: int | None) -> list[dict]:
+    """(1.0.15) The versions of a live channel, best first, with the server's last check of each: a
+    player lists them to swap by hand and skips the failed ones when it swaps by itself. Each plays
+    as an ordinary live stream id. Empty when the channel has no backups."""
+    from app.models.playlist import ChannelVersion
+
+    if not stream_id:
+        return []
+    main = await db.get(PlaylistChannel, stream_id)
+    if main is None:
+        return []
+    rows = (
+        await db.execute(
+            select(ChannelVersion)
+            .where(ChannelVersion.main_channel_id == main.id, ChannelVersion.excluded.is_(False))
+            .options(selectinload(ChannelVersion.candidate))
+        )
+    ).scalars().all()
+    if len(rows) < 2:
+        return []
+    active = main.active_version_id or main.id
+
+    def item(r) -> dict:
+        return {
+            "stream_id": r.candidate_channel_id,
+            "name": r.candidate.name,
+            "height": r.height,
+            "fps": r.fps,
+            "ok": r.ok,
+            "reason": r.reason,
+            "checked_at": int(r.checked_at.timestamp()) if r.checked_at else None,
+            "active": r.candidate_channel_id == active,
+            "main": r.candidate_channel_id == main.id,
+        }
+
+    # The one playing first; then the ones that passed, best picture first; then unchecked; failed last.
+    def order(r) -> tuple:
+        state = 0 if r.candidate_channel_id == active else 1 if r.ok else 2 if r.ok is None else 3
+        return (state, -(r.height or 0), -(r.fps or 0))
+
+    return [item(r) for r in sorted(rows, key=order) if r.candidate.enabled]
 
 
 async def _short_epg(db: AsyncSession, stream_id: int | None, limit: int = 4) -> dict:
@@ -475,6 +524,14 @@ async def _resolve_and_redirect(
     pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel)])
     if pc is None or not pc.enabled:
         raise HTTPException(404, "Stream not found")
+    from app.services.channel_versions import note_stream
+
+    note_stream()
+    # (1.0.15) A channel with versions plays from the one chosen by the check (or pinned).
+    if channel_type == ChannelType.LIVE and pc.active_version_id and pc.active_version_id != pc.id:
+        version = await db.get(PlaylistChannel, pc.active_version_id, options=[selectinload(PlaylistChannel.source_channel)])
+        if version is not None and version.enabled:
+            pc = version
     target = pc.manual_stream_url
     if not target and pc.source_channel:
         # A manual_stream_url is an admin-pinned absolute URL with no source of its own, so a
