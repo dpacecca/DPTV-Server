@@ -170,3 +170,64 @@ async def test_backup_rules(client, setup):
     # An update that doesn't mention it keeps it.
     r = await client.put(f"/api/playlists/{ids['backup']}", json={"name": "Backups"})
     assert r.json()["backup_for_id"] == ids["main"]
+
+
+# ---------------------------------------------------------------- one version per stream (1.0.16)
+
+
+async def _channel(db, playlist: Playlist, name: str, url: str) -> PlaylistChannel:
+    cat = PlaylistCategory(playlist_id=playlist.id, name=f"Cat {name}", channel_type=ChannelType.LIVE)
+    db.add(cat)
+    await db.flush()
+    pc = PlaylistChannel(playlist_category_id=cat.id, name=name, manual_stream_url=url)
+    db.add(pc)
+    await db.flush()
+    return pc
+
+
+async def test_copies_of_one_stream_are_one_version_checked_once(client, db, monkeypatch):
+    main = Playlist(name="Main")
+    b1 = Playlist(name="Backups A")
+    b2 = Playlist(name="Backups B")
+    db.add_all([main, b1, b2])
+    await db.flush()
+    f1 = await _channel(db, main, "Sky Sports F1", "http://p/main.ts")
+    same_as_main = await _channel(db, b1, "Sky Sports F1 HD", "http://p/main.ts")
+    a = await _channel(db, b1, "Sky Sports F1 4K", "http://p/4k.ts")
+    a_twin = await _channel(db, b2, "Sky Sports F1 UHD", "http://p/4k.ts")
+    other = await _channel(db, b2, "Sky Sports F1 FHD", "http://p/fhd.ts")
+    user = XcUser(username="alice", password="pw-a")
+    db.add(user)
+    await db.flush()
+    db.add(XcUserPlaylist(xc_user_id=user.id, playlist_id=main.id))
+    await db.commit()
+    for b in (b1, b2):
+        await client.put(f"/api/playlists/{b.id}", json={"name": b.name, "backup_for_id": main.id})
+    f1, a, other, same_as_main, a_twin = (
+        type("Ids", (), {"id": x})() for x in (f1.id, a.id, other.id, same_as_main.id, a_twin.id)
+    )
+
+    detail = (await client.get(f"/api/versions/channels/{f1.id}")).json()
+    ids = [v["channel_id"] for v in detail["versions"]]
+    assert sorted(ids) == sorted([f1.id, a.id, other.id]), "a copy of the main stream, and the 4K twin, are not versions"
+    four_k = next(v for v in detail["versions"] if v["channel_id"] == a.id)
+    assert four_k["also_in"] == ["Backups B"]
+    assert same_as_main.id not in ids and a_twin.id not in ids
+
+    # An admin adds the twin by hand anyway: still one entry for players, and one check of that stream.
+    await client.post(f"/api/versions/channels/{f1.id}/versions", json={"candidate_channel_id": a_twin.id})
+    played: list[str] = []
+
+    async def fake_check(url, sample_seconds, ffmpeg_path):
+        played.append(url)
+        return CheckResult(True, "1080p 25 fps", 1080, 25.0, None, False)
+
+    monkeypatch.setattr("app.services.stream_check.check_stream", fake_check)
+    db.expire_all()
+    await cv.check_channel(db, await db.get(PlaylistChannel, f1.id), sample_seconds=1, ffmpeg_path="ffmpeg")
+    await db.commit()
+    assert sorted(played) == ["http://p/4k.ts", "http://p/fhd.ts", "http://p/main.ts"], "each stream played once"
+    versions = (await client.get("/player_api.php", params={**ALICE, "action": "dptv_versions", "stream_id": f1.id})).json()
+    assert sorted(v["stream_id"] for v in versions) == sorted([f1.id, a.id, other.id])
+    detail = (await client.get(f"/api/versions/channels/{f1.id}")).json()
+    assert len(detail["versions"]) == 3 and "Backups B" in next(v for v in detail["versions"] if v["channel_id"] == a.id)["also_in"]

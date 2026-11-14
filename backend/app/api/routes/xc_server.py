@@ -360,12 +360,22 @@ async def _versions_json(db: AsyncSession, stream_id: int | None) -> list[dict]:
         await db.execute(
             select(ChannelVersion)
             .where(ChannelVersion.main_channel_id == main.id, ChannelVersion.excluded.is_(False))
-            .options(selectinload(ChannelVersion.candidate))
+            .options(selectinload(ChannelVersion.candidate).selectinload(PlaylistChannel.source_channel))
         )
     ).scalars().all()
+    active = main.active_version_id or main.id
+    # (1.0.16) One entry per stream: versions on the same stream address are one.
+    from app.services.channel_versions import same_stream_groups
+
+    groups = same_stream_groups(list(rows))
+    folded = {r.candidate_channel_id for others in groups.values() for r in others}
+    if active in folded:
+        folded.discard(active)
+        lead = next(k for k, others in groups.items() if any(r.candidate_channel_id == active for r in others))
+        folded.add(lead)
+    rows = [r for r in rows if r.candidate_channel_id not in folded]
     if len(rows) < 2:
         return []
-    active = main.active_version_id or main.id
 
     def item(r) -> dict:
         return {

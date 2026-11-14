@@ -65,6 +65,9 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   is not "AR| DAZN 1"), or the same guide id with one name's words all in the other's. A channel's
   **Channel Settings** shows its **Versions**: add one by hand, remove a wrong match (it stays
   removed), or **pin** the one to play.
+- **One version per stream (1.0.16).** Copies with the same stream address in two playlists are one
+  version, checked once and listed once ("also in Backups B (same stream)"); a copy of the main
+  channel's own stream isn't a backup and isn't listed.
 - **The nightly check** (Settings → Channel versions; 04:00 by default, the container's `TZ`) plays
   20 s of every version, one at a time, through ffmpeg: `blackdetect`, `freezedetect` (frozen video
   and static "unavailable" cards) and `silencedetect`, and the sample has to arrive at real speed. A
