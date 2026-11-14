@@ -13,7 +13,7 @@ from app.api.deps import AdminUser, DbSession
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models.playlist import ChannelVersion, Playlist, PlaylistCategory, PlaylistChannel, VersionSwap
-from app.services.channel_versions import Choice, apply_choice, check_channel, match_playlist
+from app.services.channel_versions import Choice, _url_of, apply_choice, check_channel, match_playlist, same_stream_groups
 
 router = APIRouter(prefix="/api/versions", tags=["versions"])
 logger = logging.getLogger(__name__)
@@ -79,13 +79,38 @@ async def channel_versions(channel_id: int, db: DbSession, _admin: AdminUser) ->
         await db.execute(
             select(ChannelVersion)
             .where(ChannelVersion.main_channel_id == main.id)
-            .options(selectinload(ChannelVersion.candidate))
+            .options(selectinload(ChannelVersion.candidate).selectinload(PlaylistChannel.source_channel))
         )
     ).scalars().all()
     playlists = {}
     for r in rows:
         pl = await _playlist_of(db, r.candidate)
         playlists[r.candidate_channel_id] = pl.name if pl else None
+    # (1.0.16) One entry per stream, naming every playlist that has it.
+    groups = same_stream_groups(list(rows))
+    folded = {r.candidate_channel_id for others in groups.values() for r in others}
+    also_in = {lead: [playlists.get(r.candidate_channel_id) for r in others] for lead, others in groups.items()}
+    main_pl = await _playlist_of(db, main)
+    if main_pl is not None:
+        backup_ids = (await db.execute(select(Playlist.id).where(Playlist.backup_for_id == main_pl.id))).scalars().all()
+        listed = {r.candidate_channel_id: _url_of(r.candidate) for r in rows if r.candidate_channel_id not in folded}
+        urls = {u for u in listed.values() if u}
+        if backup_ids and urls:
+            same = (
+                await db.execute(
+                    select(PlaylistChannel, Playlist.name)
+                    .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+                    .join(Playlist, PlaylistCategory.playlist_id == Playlist.id)
+                    .where(PlaylistCategory.playlist_id.in_(backup_ids))
+                    .options(selectinload(PlaylistChannel.source_channel))
+                )
+            ).all()
+            for pc, pl_name in same:
+                u = _url_of(pc)
+                for cid, cu in listed.items():
+                    if u and u == cu and pc.id != cid and pl_name not in also_in.setdefault(cid, []):
+                        also_in[cid].append(pl_name)
+    rows = [r for r in rows if r.candidate_channel_id not in folded]
     swaps = (
         await db.execute(select(VersionSwap).where(VersionSwap.main_channel_id == main.id).order_by(VersionSwap.created_at.desc()))
     ).scalars().all()
@@ -99,6 +124,7 @@ async def channel_versions(channel_id: int, db: DbSession, _admin: AdminUser) ->
                 "origin": r.origin, "excluded": r.excluded, "active": r.candidate_channel_id == active,
                 "ok": r.ok, "reason": r.reason, "height": r.height, "fps": r.fps, "silent": r.silent,
                 "pass_streak": r.pass_streak, "checked_at": _ts(r.checked_at),
+                "also_in": sorted({n for n in also_in.get(r.candidate_channel_id, []) if n and n != playlists.get(r.candidate_channel_id)}),
             }
             for r in sorted(rows, key=lambda r: (r.origin != "self", r.excluded, -(r.height or 0)))
         ],

@@ -64,7 +64,7 @@ async def _live_channels(db: AsyncSession, playlist_id: int) -> list[PlaylistCha
         select(PlaylistChannel)
         .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
         .where(PlaylistCategory.playlist_id == playlist_id, PlaylistCategory.channel_type == ChannelType.LIVE)
-        .options(selectinload(PlaylistChannel.epg_channel))
+        .options(selectinload(PlaylistChannel.epg_channel), selectinload(PlaylistChannel.source_channel))
     )
     return list(result.scalars().all())
 
@@ -98,7 +98,18 @@ async def match_playlist(db: AsyncSession, main: Playlist) -> dict:
     for m in mains:
         f = _facets_of(m)
         pool = {c.id: (c, cf) for c, cf in by_key.get(f.key, []) + (by_guide.get(f.guide, []) if f.guide else [])}
-        matched = {cid for cid, (c, cf) in pool.items() if same_channel(f, cf)}
+        # One version per stream: copies in two playlists with the same stream address are one version
+        # (the lowest id stands for them), and a copy of the main channel's own stream is no backup.
+        own_url = _url_of(m)
+        matched: set[int] = set()
+        seen_urls = {own_url} if own_url else set()
+        for cid in sorted(cid for cid, (c, cf) in pool.items() if same_channel(f, cf)):
+            url = _url_of(pool[cid][0])
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            matched.add(cid)
         for cid in matched:
             if (m.id, cid) not in rows:
                 row = ChannelVersion(main_channel_id=m.id, candidate_channel_id=cid, origin="auto", excluded=False, pass_streak=0)
@@ -230,6 +241,23 @@ def line_idle(minutes: float) -> bool:
     return time.monotonic() - _last_stream_at > minutes * 60
 
 
+def same_stream_groups(rows: list[ChannelVersion]) -> dict[int, list[ChannelVersion]]:
+    """For each row that stands for its stream, the other rows on the same stream (added by hand, or
+    from before 1.0.16): a listing shows one entry per stream. Rows need their candidate's
+    source_channel loaded. The channel's own row and the one playing win."""
+    first: dict[str, ChannelVersion] = {}
+    groups: dict[int, list[ChannelVersion]] = {}
+    for r in sorted(rows, key=lambda r: (r.origin != "self", r.excluded, r.candidate_channel_id)):
+        url = _url_of(r.candidate)
+        if url and url in first:
+            groups[first[url].candidate_channel_id].append(r)
+            continue
+        if url:
+            first[url] = r
+        groups[r.candidate_channel_id] = []
+    return groups
+
+
 # ---------------------------------------------------------------- checking
 
 
@@ -254,11 +282,18 @@ async def check_channel(db: AsyncSession, main: PlaylistChannel, *, sample_secon
     ).scalars().all()
     if len(rows) < 2:
         return "no versions to compare"
+    checked: dict[str, object] = {}
     for row in rows:
-        if idle_minutes is not None and not line_idle(idle_minutes):
-            return "stopped: a stream is in use"
         url = _url_of(row.candidate)
-        result = await check_stream(url, sample_seconds, ffmpeg_path) if url else None
+        if url in checked:
+            # The same stream under another name (e.g. added by hand): checked once, not twice.
+            result = checked[url]
+        else:
+            if idle_minutes is not None and not line_idle(idle_minutes):
+                return "stopped: a stream is in use"
+            result = await check_stream(url, sample_seconds, ffmpeg_path) if url else None
+            if url:
+                checked[url] = result
         row.checked_at = datetime.now(timezone.utc)
         if result is None:
             row.ok, row.reason, row.pass_streak = False, "no stream address", 0

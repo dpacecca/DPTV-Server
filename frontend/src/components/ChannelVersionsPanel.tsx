@@ -20,6 +20,8 @@ interface Version {
   silent: boolean | null;
   pass_streak: number;
   checked_at: number | null;
+  /** (1.0.16) Other playlists with this same stream: one version, checked once. */
+  also_in: string[];
 }
 interface VersionsResponse {
   channel: { id: number; name: string; active_id: number; pinned: boolean; checking: boolean };
@@ -135,6 +137,7 @@ export default function ChannelVersionsPanel({ channelId, playlistId }: { channe
                         <Text size="sm" fw={v.active ? 700 : 400}>{v.name}</Text>
                         <Text size="xs" c="dimmed">
                           {v.origin === "self" ? "this channel" : `${v.playlist ?? ""}${v.origin === "manual" ? " · added by hand" : ""}`}
+                          {v.also_in?.length ? ` · also in ${v.also_in.join(", ")} (same stream)` : ""}
                         </Text>
                       </div>
                     </Group>
