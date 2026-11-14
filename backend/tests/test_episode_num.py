@@ -34,3 +34,16 @@ def test_parser_leaves_no_episode_and_keeps_the_year():
     _, programs = parse_xmltv(xml)
     assert programs[0].episode_num is None
     assert programs[0].program_date == "1989"
+
+
+def test_movie_year_ignores_an_airing_timestamp():
+    from types import SimpleNamespace
+
+    from app.services.epg_writer import _layout_token_value
+
+    def prog(date, ep=None):
+        return SimpleNamespace(program_date=date, episode_num=ep)
+
+    assert _layout_token_value("episode_or_year", prog("20261114113439 +0000"), None) == ""
+    assert _layout_token_value("movie_year", prog("19890612"), None) == "1989"
+    assert _layout_token_value("episode_or_year", prog("1989"), None) == "1989"

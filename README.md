@@ -67,7 +67,8 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   removed), or **pin** the one to play.
 - **Guide episode numbers (1.0.17).** An `<episode-num>` that is only the airing's date or time
   (`original-air-date`, or a bare "20261114113439 +0000") or a listings id (`dd_progid`) is not an
-  episode: the guide shows the year or nothing there instead.
+  episode, and a full timestamp in `<date>` is not a movie year: the guide shows the real year or
+  nothing there instead.
 - **One version per stream (1.0.16).** Copies with the same stream address in two playlists are one
   version, checked once and listed once ("also in Backups B (same stream)"); a copy of the main
   channel's own stream isn't a backup and isn't listed.
