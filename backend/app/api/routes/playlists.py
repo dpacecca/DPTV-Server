@@ -111,6 +111,7 @@ def _serialize_playlist_base(pl: Playlist, category_count: int, channel_count: i
         "epg_output_enabled": pl.epg_output_enabled,
         "epg_filename": pl.epg_filename,
         "epg_days_to_keep": pl.epg_days_to_keep,
+        "backup_for_id": pl.backup_for_id,
         "category_count": category_count,
         "channel_count": channel_count,
     }
@@ -125,6 +126,24 @@ class PlaylistIn(BaseModel):
     epg_output_enabled: bool = True
     epg_filename: str = "epg.xml"
     epg_days_to_keep: int | None = None
+    backup_for_id: int | None = None
+    """(1.0.15) Makes this a backup playlist for another one; left as it is when not sent."""
+
+
+async def _check_backup_for(db, playlist_id: int | None, target_id: int | None) -> None:
+    if target_id is None:
+        return
+    if target_id == playlist_id:
+        raise HTTPException(400, "A playlist can't be a backup for itself")
+    target = await db.get(Playlist, target_id)
+    if target is None:
+        raise HTTPException(400, "That main playlist doesn't exist")
+    if target.backup_for_id is not None:
+        raise HTTPException(400, "A backup playlist can't have backups of its own")
+    if playlist_id is not None:
+        has_backups = (await db.execute(select(Playlist.id).where(Playlist.backup_for_id == playlist_id))).first()
+        if has_backups:
+            raise HTTPException(400, "This playlist has backups of its own, so it can't be a backup")
 
 
 @router.get("")
@@ -161,6 +180,7 @@ async def _get_playlist_with_category_summaries(db: DbSession, playlist_id: int)
 
 @router.post("")
 async def create_playlist(payload: PlaylistIn, db: DbSession, _admin: AdminUser) -> dict:
+    await _check_backup_for(db, None, payload.backup_for_id)
     pl = Playlist(**payload.model_dump())
     db.add(pl)
     await db.commit()
@@ -287,9 +307,25 @@ async def update_playlist(playlist_id: int, payload: PlaylistIn, db: DbSession, 
     pl = await db.get(Playlist, playlist_id)
     if pl is None:
         raise HTTPException(404, "Playlist not found")
-    for key, value in payload.model_dump().items():
+    data = payload.model_dump()
+    if "backup_for_id" not in payload.model_fields_set:
+        data.pop("backup_for_id")
+    else:
+        await _check_backup_for(db, playlist_id, data["backup_for_id"])
+    changed_backup = "backup_for_id" in data and data["backup_for_id"] != pl.backup_for_id
+    old_main = pl.backup_for_id
+    for key, value in data.items():
         setattr(pl, key, value)
     await db.commit()
+    if changed_backup:
+        # (1.0.15) Match its channels with the new main playlist's now (and let the old one drop them).
+        from app.services.channel_versions import match_playlist
+
+        for mid in {old_main, pl.backup_for_id} - {None}:
+            main = await db.get(Playlist, mid)
+            if main is not None:
+                await match_playlist(db, main)
+        await db.commit()
     return await _get_playlist_with_category_summaries(db, playlist_id)
 
 

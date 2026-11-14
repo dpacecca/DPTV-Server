@@ -53,6 +53,27 @@ export default function PlaylistsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["playlists"] }),
   });
 
+  // (1.0.15) A backup playlist's channels are versions of the main playlist's, not a playlist players see.
+  const backupMutation = useMutation({
+    mutationFn: ({ p, backupFor }: { p: Playlist; backupFor: number | null }) =>
+      api.put(`/api/playlists/${p.id}`, {
+        name: p.name, enabled: p.enabled, xc_enabled: p.xc_enabled, m3u_output_enabled: p.m3u_output_enabled,
+        m3u_filename: p.m3u_filename, epg_output_enabled: p.epg_output_enabled, epg_filename: p.epg_filename,
+        epg_days_to_keep: p.epg_days_to_keep, backup_for_id: backupFor,
+      }),
+    onSuccess: (_r, { backupFor }) => {
+      qc.invalidateQueries({ queryKey: ["playlists"] });
+      notifications.show({
+        message: backupFor ? "Backup playlist set: its channels were matched as versions" : "No longer a backup playlist",
+        color: "green",
+      });
+    },
+    onError: (err: unknown) => {
+      const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+      notifications.show({ message: detail || "Couldn't change it", color: "red" });
+    },
+  });
+
   const duplicateMutation = useMutation({
     mutationFn: (id: number) => api.post<Playlist>(`/api/playlists/${id}/duplicate`).then((r) => r.data),
     onSuccess: (data) => {
@@ -89,6 +110,7 @@ export default function PlaylistsPage() {
                 <Table.Th>Channels</Table.Th>
                 <Table.Th>Enabled</Table.Th>
                 <Table.Th>XC Server</Table.Th>
+                <Table.Th>Backup for</Table.Th>
                 <Table.Th />
               </Table.Tr>
             </Table.Thead>
@@ -105,6 +127,25 @@ export default function PlaylistsPage() {
                     <Badge color={p.xc_enabled ? "indigo" : "gray"} variant="light">
                       {p.xc_enabled ? "On" : "Off"}
                     </Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    <Tooltip
+                      label="Make this a backup playlist: its channels become versions of the main playlist's channels, checked nightly, and players don't see it as a playlist"
+                      multiline
+                      w={300}
+                    >
+                      <Select
+                        size="xs"
+                        w={170}
+                        placeholder="Not a backup"
+                        clearable
+                        value={p.backup_for_id ? String(p.backup_for_id) : null}
+                        data={playlists
+                          .filter((o) => o.id !== p.id && !o.backup_for_id)
+                          .map((o) => ({ value: String(o.id), label: o.name }))}
+                        onChange={(v) => backupMutation.mutate({ p, backupFor: v ? Number(v) : null })}
+                      />
+                    </Tooltip>
                   </Table.Td>
                   <Table.Td>
                     <Group gap={4} wrap="nowrap">

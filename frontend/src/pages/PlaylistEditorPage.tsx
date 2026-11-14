@@ -1,3 +1,4 @@
+import ChannelVersionsPanel from "../components/ChannelVersionsPanel";
 import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import {
   ActionIcon,
@@ -1114,6 +1115,13 @@ function ChannelRow({
     mutationFn: (enabled: boolean) => api.patch(`/api/playlists/${playlistId}/channels/${channel.id}`, { enabled }),
     onSuccess: onChanged,
   });
+  // (1.0.15) One request for the whole playlist, shared by every row through the query cache.
+  const { data: versionsSummary } = useQuery<Record<string, { versions: number; active_id: number; pinned: boolean; ok: boolean | null }>>({
+    queryKey: ["versions-summary", playlistId],
+    queryFn: () => api.get(`/api/versions/playlists/${playlistId}/summary`).then((r) => r.data),
+    staleTime: 30_000,
+  });
+  const versionInfo = versionsSummary?.[String(channel.id)];
   // `style.top` (a real CSS property, set by the virtualizer) is what positions every row,
   // dragged or not - dnd-kit's droppable measurement is transform-agnostic (it deliberately
   // reads each item's untransformed layout rect, so a mid-animation transform never gets
@@ -1168,6 +1176,15 @@ function ChannelRow({
         <Group gap={6}>
           {channel.name_locked ? <IconLock size={12} /> : null}
           <Text size="sm">{channel.name}</Text>
+          {versionInfo && (
+            <Tooltip
+              label={`${versionInfo.versions} versions · ${versionInfo.active_id === channel.id ? "plays its own" : "plays a backup"}${versionInfo.pinned ? " (pinned)" : ""}${versionInfo.ok === false ? " · last check failed" : ""}`}
+            >
+              <Badge size="xs" variant="light" color={versionInfo.ok === false ? "red" : versionInfo.active_id === channel.id ? "gray" : "sky"}>
+                {versionInfo.versions} versions
+              </Badge>
+            </Tooltip>
+          )}
         </Group>
       </Table.Td>
       <Table.Td w={44}>
@@ -1536,6 +1553,7 @@ function ChannelDetailModal({
             )}
           </Stack>
         )}
+        <ChannelVersionsPanel channelId={channelId} playlistId={playlistId} />
       </Stack>
 
       <DummyEpgRulesModal

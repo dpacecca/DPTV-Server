@@ -78,11 +78,49 @@ async def reload_schedules(db: AsyncSession) -> None:
     logger.info("Reloaded %d sync schedule(s)", len(scheduler.get_jobs()))
 
 
+async def _version_check_job() -> None:
+    """(1.0.15) The nightly check of channel versions (app.services.channel_versions)."""
+    from app.config import get_settings
+    from app.services.channel_versions import check_all
+
+    cfg = get_settings()
+    try:
+        await check_all(
+            SessionLocal, sample_seconds=cfg.versions_sample_seconds,
+            ffmpeg_path=cfg.ffprobe_path.replace("ffprobe", "ffmpeg") or "ffmpeg",
+            idle_minutes=cfg.versions_idle_minutes,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Version check failed")
+
+
+def _schedule_version_check() -> None:
+    import os
+    from zoneinfo import ZoneInfo
+
+    from app.config import get_settings
+
+    raw = get_settings().versions_check_time.strip()
+    if not raw:
+        return
+    try:
+        hour, minute = (int(x) for x in raw.split(":", 1))
+        tz = ZoneInfo(os.environ.get("TZ") or "UTC")
+    except Exception:  # noqa: BLE001
+        logger.warning("versions_check_time %r is not HH:MM; the version check is off", raw)
+        return
+    scheduler.add_job(
+        _version_check_job, trigger=CronTrigger(hour=hour, minute=minute, timezone=tz),
+        id="channel-version-check", replace_existing=True, max_instances=1, coalesce=True,
+    )
+
+
 async def start_scheduler() -> None:
     if not scheduler.running:
         scheduler.start()
     async with SessionLocal() as db:
         await reload_schedules(db)
+    _schedule_version_check()
     scheduler.add_job(
         _refresh_logo_cache_job,
         trigger=IntervalTrigger(hours=24),

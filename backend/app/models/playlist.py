@@ -28,6 +28,13 @@ class Playlist(Base, TimestampMixin):
     epg_filename: Mapped[str] = mapped_column(String(255), default="epg.xml")
     epg_days_to_keep: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    backup_for_id: Mapped[int | None] = mapped_column(
+        ForeignKey("playlists.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    """(1.0.15) Set on a backup playlist: the main playlist whose channels its channels stand in for.
+    A backup playlist is never shown to players; its channels are matched to the main playlist's as
+    versions of them (see ChannelVersion)."""
+
     categories: Mapped[list["PlaylistCategory"]] = relationship(
         back_populates="playlist", cascade="all, delete-orphan", order_by="PlaylistCategory.sort_order"
     )
@@ -151,6 +158,55 @@ class PlaylistChannel(Base, TimestampMixin):
     """Quality metrics from the last "scan for duplicates" ffprobe pass, if this channel has
     ever been scanned. Used both to rank duplicate candidates and to tag resolution into names."""
 
+    active_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("playlist_channels.id", ondelete="SET NULL"), nullable=True
+    )
+    """(1.0.15) The version this channel plays from: one of its backups, chosen by the version check or
+    pinned. None plays the channel itself."""
+    version_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    """(1.0.15) The admin chose the version: the check never changes it."""
+
     category: Mapped["PlaylistCategory"] = relationship(back_populates="channels")
     source_channel: Mapped["SourceChannel | None"] = relationship()
     epg_channel: Mapped["EpgChannel | None"] = relationship()
+
+
+class ChannelVersion(Base):
+    """(1.0.15) One version of a main playlist's channel: the channel itself or a channel from one of
+    its backup playlists. Matched automatically after a sync, or added by an admin; a removed match is
+    kept (excluded) so the next match doesn't bring it back. Holds the last check's findings."""
+
+    __tablename__ = "channel_versions"
+    __table_args__ = (UniqueConstraint("main_channel_id", "candidate_channel_id", name="uq_channel_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    main_channel_id: Mapped[int] = mapped_column(ForeignKey("playlist_channels.id", ondelete="CASCADE"), index=True)
+    candidate_channel_id: Mapped[int] = mapped_column(ForeignKey("playlist_channels.id", ondelete="CASCADE"), index=True)
+    origin: Mapped[str] = mapped_column(String(16), default="auto")
+    """"self", "auto" (matched) or "manual" (added by an admin)."""
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bitrate_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    silent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    pass_streak: Mapped[int] = mapped_column(Integer, default=0)
+    """Checks passed in a row; a version needs two before it can take over."""
+
+    candidate: Mapped["PlaylistChannel"] = relationship(foreign_keys=[candidate_channel_id])
+
+
+class VersionSwap(Base):
+    """(1.0.15) A change of the version a channel plays from, with why: the channel's history."""
+
+    __tablename__ = "version_swaps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    main_channel_id: Mapped[int] = mapped_column(ForeignKey("playlist_channels.id", ondelete="CASCADE"), index=True)
+    from_channel_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    to_channel_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

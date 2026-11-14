@@ -47,6 +47,9 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_max_concurrency": ("Duplicate Scanning", "int"),
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
     "recorder_url": ("Integrations", "string"),
+    "versions_check_time": ("Channel versions", "string"),
+    "versions_sample_seconds": ("Channel versions", "int"),
+    "versions_idle_minutes": ("Channel versions", "int"),
     "sync_notify_url": ("Integrations", "string"),
     # "epg_layout", not "string" - the generic field editor skips these two (see SKIPPED_FROM_GENERIC_EDITOR
     # below); the frontend's dedicated "EPG Layout" section renders and saves them instead.
@@ -92,6 +95,16 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Signed-in players are told it with their XC login and sign in to it with that same login, "
         "so no device needs a recorder address or API key typed in. DPTV-Recorder must trust this "
         "server (its DPTV_SERVER_URL setting). Leave empty to tell players nothing."
+    ),
+    "versions_check_time": (
+        "When the nightly check of channel versions runs (HH:MM, the server's time zone). It plays a "
+        "sample of each version of every channel that has backups, one at a time, and moves the channel "
+        "to the best version that really shows a picture. Leave empty to turn it off. Restart to apply."
+    ),
+    "versions_sample_seconds": "Seconds of each version played to check it for black, frozen or silent video and stalls.",
+    "versions_idle_minutes": (
+        "The check only runs while no stream has been asked for in this many minutes, and pauses when one "
+        "is, so a line allowing one connection is never taken from someone watching or recording."
     ),
     "sync_notify_url": (
         "Optional http(s) URL that gets a POST with JSON {\"event\": \"sync_finished\", \"kind\": "
@@ -163,6 +176,9 @@ class SettingsUpdate(BaseModel):
     scan_default_timeout_seconds: float | None = None
     sync_notify_url: str | None = None
     recorder_url: str | None = None
+    versions_check_time: str | None = None
+    versions_sample_seconds: int | None = None
+    versions_idle_minutes: int | None = None
     epg_title_layout: str | None = None
     epg_description_layout: str | None = None
 
