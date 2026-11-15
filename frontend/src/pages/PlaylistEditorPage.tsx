@@ -33,6 +33,7 @@ import {
   IconClock,
   IconCopy,
   IconDots,
+  IconStack2,
   IconDownload,
   IconEdit,
   IconEye,
@@ -281,6 +282,46 @@ export default function PlaylistEditorPage() {
     },
   });
 
+  // (1.0.18) Find Versions: match the selected channels with the backup playlists now, then check
+  // each one that has versions (one at a time, in the background); the button counts down meanwhile.
+  const { data: versionChecks } = useQuery<{ channels: number }>({
+    queryKey: ["versions-checking"],
+    queryFn: () => api.get("/api/versions/checking").then((r) => r.data),
+    refetchInterval: (q) => ((q.state.data?.channels ?? 0) > 0 ? 5000 : false),
+  });
+  const checkingVersions = versionChecks?.channels ?? 0;
+  const wasChecking = useRef(0);
+  useEffect(() => {
+    if (wasChecking.current > checkingVersions) qc.invalidateQueries({ queryKey: ["versions-summary", playlistId] });
+    if (wasChecking.current > 0 && checkingVersions === 0) {
+      notifications.show({ message: "Version check finished", color: "green" });
+    }
+    wasChecking.current = checkingVersions;
+  }, [checkingVersions, playlistId, qc]);
+
+  const findVersionsMutation = useMutation({
+    mutationFn: (ids: number[]) =>
+      api
+        .post<{ channels: number; added: number; removed: number; checking: number }>("/api/versions/scan", { channel_ids: ids })
+        .then((r) => r.data),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["versions-summary", playlistId] });
+      qc.invalidateQueries({ queryKey: ["versions-checking"] });
+      notifications.show({
+        message:
+          data.channels === 0
+            ? "No versions found in the backup playlists for the selected channels"
+            : `${data.channels} channel(s) have versions (${data.added} new); checking ${data.checking} now, one at a time`,
+        color: data.channels === 0 ? "yellow" : "green",
+      });
+    },
+    onError: (err) =>
+      notifications.show({
+        message: (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Finding versions failed",
+        color: "red",
+      }),
+  });
+
   function confirmIfLarge(count: number, verb: string) {
     if (count > LARGE_SELECTION_WARNING) {
       return confirm(`This will ${verb} ${count} channels in one request. Continue?`);
@@ -518,6 +559,19 @@ export default function PlaylistEditorPage() {
                     onClick={() => setScanSelectedIds([...selectedChannelIds])}
                   >
                     Scan Selected...
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconStack2 size={14} />}
+                    disabled={selectedChannelIds.size === 0}
+                    loading={findVersionsMutation.isPending}
+                    onClick={() => {
+                      if (!confirmIfLarge(selectedChannelIds.size, "find versions of")) return;
+                      findVersionsMutation.mutate([...selectedChannelIds]);
+                    }}
+                  >
+                    {checkingVersions > 0 ? `Find Versions (checking ${checkingVersions})` : "Find Versions"}
                   </Button>
                   <Button size="xs" variant="light" leftSection={<IconEye size={14} />} disabled={!activeCategory} onClick={() => setEpgPreviewOpen(true)}>
                     Preview EPG...

@@ -65,6 +65,9 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   is not "AR| DAZN 1"), or the same guide id with one name's words all in the other's. A channel's
   **Channel Settings** shows its **Versions**: add one by hand, remove a wrong match (it stays
   removed), or **pin** the one to play.
+- **Find versions for selected channels (1.0.18).** In a playlist's editor, select channels and press
+  **Find Versions**: they are matched with the backup playlists now, and each one that has versions is
+  checked with ffmpeg in the background, one at a time (the button counts down while it runs).
 - **Guide episode numbers (1.0.17).** An `<episode-num>` that is only the airing's date or time
   (`original-air-date`, or a bare "20261114113439 +0000") or a listings id (`dd_progid`) is not an
   episode, and a full timestamp in `<date>` is not a movie year: the guide shows the real year or
