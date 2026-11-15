@@ -231,3 +231,35 @@ async def test_copies_of_one_stream_are_one_version_checked_once(client, db, mon
     assert sorted(v["stream_id"] for v in versions) == sorted([f1.id, a.id, other.id])
     detail = (await client.get(f"/api/versions/channels/{f1.id}")).json()
     assert len(detail["versions"]) == 3 and "Backups B" in next(v for v in detail["versions"] if v["channel_id"] == a.id)["also_in"]
+
+
+async def test_find_versions_for_selected_channels(client, db, setup, monkeypatch):
+    """(1.0.18) The editor's Find Versions: matches only the selected channels, then queues a check
+    of each one that has versions."""
+    from sqlalchemy import delete, select
+
+    from app.api.routes import versions as routes
+
+    ids = setup
+    await client.put(f"/api/playlists/{ids['backup']}", json={"name": "Backup channels", "backup_for_id": ids["main"]})
+    await db.execute(delete(ChannelVersion))
+    await db.commit()
+    queued: list[int] = []
+    monkeypatch.setattr(routes, "_start_check", queued.append)
+
+    # A backup playlist's channel alone: nothing to match from, nothing to check.
+    r = (await client.post("/api/versions/scan", json={"channel_ids": [ids["f1_4k"]]})).json()
+    assert r == {"channels": 0, "added": 0, "removed": 0, "checking": 0} and queued == []
+
+    r = (await client.post("/api/versions/scan", json={"channel_ids": [ids["news"]]})).json()
+    assert r["channels"] == 0 and queued == [], "Sky News has no versions"
+    assert (await db.execute(select(ChannelVersion))).scalars().all() == [], "only the selected channel was matched"
+
+    r = (await client.post("/api/versions/scan", json={"channel_ids": [ids["f1"], ids["news"]]})).json()
+    assert r["channels"] == 1 and r["added"] == 1 and r["checking"] == 1
+    assert queued == [ids["f1"]]
+    detail = (await client.get(f"/api/versions/channels/{ids['f1']}")).json()
+    assert {v["channel_id"] for v in detail["versions"]} == {ids["f1"], ids["f1_4k"]}
+
+    assert (await client.post("/api/versions/scan", json={"channel_ids": []})).status_code == 400
+    assert (await client.get("/api/versions/checking")).json() == {"channels": 0}

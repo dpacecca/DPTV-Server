@@ -73,12 +73,15 @@ def _facets_of(pc: PlaylistChannel) -> Facets:
     return facets(pc.name, pc.epg_channel.epg_channel_id if pc.epg_channel else None)
 
 
-async def match_playlist(db: AsyncSession, main: Playlist) -> dict:
+async def match_playlist(db: AsyncSession, main: Playlist, only_ids: set[int] | None = None) -> dict:
     """Matches the main playlist's live channels with its backup playlists' ones. Keeps admin-added
     and admin-removed versions as they are; adds new matches and drops automatic ones that no longer
-    match. Returns counts. The caller commits."""
+    match. [only_ids] (1.0.18, the editor's Find Versions) limits it to those channels. Returns
+    counts. The caller commits."""
     backups = (await db.execute(select(Playlist).where(Playlist.backup_for_id == main.id))).scalars().all()
     mains = await _live_channels(db, main.id)
+    if only_ids is not None:
+        mains = [m for m in mains if m.id in only_ids]
     candidates: list[PlaylistChannel] = []
     for b in backups:
         candidates.extend(await _live_channels(db, b.id))

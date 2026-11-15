@@ -242,17 +242,66 @@ async def pin(channel_id: int, payload: PinIn, db: DbSession, _admin: AdminUser)
     return {"ok": True}
 
 
-@router.post("/channels/{channel_id}/check")
-async def check_now(channel_id: int, db: DbSession, _admin: AdminUser) -> dict:
-    """Checks every version of the channel now, in the background, one at a time. Uses the line even
-    if someone is watching: the admin asked for it."""
-    main = await _main_channel(db, channel_id)
-    if main.id in _checking:
-        return {"started": False, "checking": True}
-    cfg = get_settings()
-    _checking.add(main.id)
+class ScanIn(BaseModel):
+    channel_ids: list[int]
 
-    async def run(mid: int) -> None:
+
+@router.post("/scan")
+async def scan_selected(payload: ScanIn, db: DbSession, _admin: AdminUser) -> dict:
+    """(1.0.18) The editor's Find Versions: matches the selected channels with their playlist's backup
+    playlists now, then checks every one that has versions, one at a time in the background (the
+    line may allow a single connection). Channels of a backup playlist, or not live, are skipped."""
+    ids = set(payload.channel_ids)
+    if not ids:
+        raise HTTPException(400, "Select some channels")
+    rows = (
+        await db.execute(
+            select(PlaylistChannel.id, PlaylistCategory.playlist_id)
+            .join(PlaylistCategory, PlaylistChannel.playlist_category_id == PlaylistCategory.id)
+            .where(PlaylistChannel.id.in_(ids))
+        )
+    ).all()
+    by_playlist: dict[int, set[int]] = {}
+    for cid, pid in rows:
+        by_playlist.setdefault(pid, set()).add(cid)
+    added = removed = 0
+    for pid, chosen in by_playlist.items():
+        pl = await db.get(Playlist, pid)
+        if pl is None or pl.backup_for_id is not None:
+            continue
+        counts = await match_playlist(db, pl, only_ids=chosen)
+        added += counts["added"]
+        removed += counts["removed"]
+    await db.commit()
+    with_versions = (
+        await db.execute(
+            select(ChannelVersion.main_channel_id)
+            .where(
+                ChannelVersion.main_channel_id.in_(ids),
+                ChannelVersion.origin != "self",
+                ChannelVersion.excluded.is_(False),
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    queued = [mid for mid in sorted(with_versions) if mid not in _checking]
+    for mid in queued:
+        _start_check(mid)
+    return {"channels": len(with_versions), "added": added, "removed": removed, "checking": len(queued)}
+
+
+@router.get("/checking")
+async def checking(_admin: AdminUser) -> dict:
+    """(1.0.18) How many channels are still waiting for, or in, a version check started here."""
+    return {"channels": len(_checking)}
+
+
+def _start_check(mid: int) -> None:
+    """Queues a check of [mid]'s versions; checks run one at a time under [_check_lock]."""
+    cfg = get_settings()
+    _checking.add(mid)
+
+    async def run() -> None:
         try:
             async with _check_lock, SessionLocal() as session:
                 pc = await session.get(PlaylistChannel, mid)
@@ -267,7 +316,17 @@ async def check_now(channel_id: int, db: DbSession, _admin: AdminUser) -> dict:
         finally:
             _checking.discard(mid)
 
-    task = asyncio.get_running_loop().create_task(run(main.id))
+    task = asyncio.get_running_loop().create_task(run())
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+
+
+@router.post("/channels/{channel_id}/check")
+async def check_now(channel_id: int, db: DbSession, _admin: AdminUser) -> dict:
+    """Checks every version of the channel now, in the background, one at a time. Uses the line even
+    if someone is watching: the admin asked for it."""
+    main = await _main_channel(db, channel_id)
+    if main.id in _checking:
+        return {"started": False, "checking": True}
+    _start_check(main.id)
     return {"started": True, "at": int(datetime.now(timezone.utc).timestamp())}
