@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     """The DPTV-Recorder players use for recordings, as they reach it (e.g. https://dptvr.example.com).
     Handed to signed-in players with the XC login (server_info.dptv_recorder_url); a player with no
     recorder of its own then signs in to it with the same XC login. Empty = players are not told one."""
+    recorder_local_url: str = ""
+    """(1.0.21) The same DPTV-Recorder as players reach it on the home network (e.g. http://192.168.1.10:3000).
+    Handed to players beside recorder_url (server_info.dptv_recorder_local_url); DPTV-Player uses it while it
+    answers and the public recorder_url when it doesn't (away from home). Empty = recorder_url only."""
 
     versions_check_time: str = "04:00"
     """(1.0.15) When the nightly check of channel versions runs, HH:MM in the server's TZ. Empty = off."""
