@@ -68,6 +68,10 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
 - **Recorder at home and away (1.0.21).** Settings → Integrations → **Recording server URL on the home
   network** (e.g. `http://192.168.1.10:3000`) is handed to players beside the public **Recording server
   URL**: DPTV-Player uses the home address while it answers and the public one away from home.
+- **Source override covers fixed addresses (1.0.22).** A channel pinned to a fixed stream address (an
+  M3U entry that matched no source channel, or one added by URL) now plays on the login's override line
+  too, when the address is on that line's panel. One the server can't move to the line is refused
+  instead of playing on the line it was saved with.
 - **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
   arrived as season 1), in episode order, with the provider's series details, season list and
   episode details.
