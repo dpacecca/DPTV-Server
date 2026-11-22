@@ -65,6 +65,9 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   is not "AR| DAZN 1"), or the same guide id with one name's words all in the other's. A channel's
   **Channel Settings** shows its **Versions**: add one by hand, remove a wrong match (it stays
   removed), or **pin** the one to play.
+- **Recorder at home and away (1.0.21).** Settings → Integrations → **Recording server URL on the home
+  network** (e.g. `http://192.168.1.10:3000`) is handed to players beside the public **Recording server
+  URL**: DPTV-Player uses the home address while it answers and the public one away from home.
 - **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
   arrived as season 1), in episode order, with the provider's series details, season list and
   episode details.

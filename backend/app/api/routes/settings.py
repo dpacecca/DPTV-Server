@@ -47,6 +47,7 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_max_concurrency": ("Duplicate Scanning", "int"),
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
     "recorder_url": ("Integrations", "string"),
+    "recorder_local_url": ("Integrations", "string"),
     "versions_check_time": ("Channel versions", "string"),
     "versions_sample_seconds": ("Channel versions", "int"),
     "versions_idle_minutes": ("Channel versions", "int"),
@@ -66,6 +67,7 @@ SKIPPED_FROM_GENERIC_EDITOR = {"epg_title_layout", "epg_description_layout"}
 FIELD_LABELS: dict[str, str] = {
     "sync_notify_url": "After a sync, notify URL",
     "recorder_url": "Recording server (DPTV-Recorder) URL",
+    "recorder_local_url": "Recording server URL on the home network",
     "epg_title_layout": "Guide Title layout",
     "epg_description_layout": "Guide Description layout",
 }
@@ -90,6 +92,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "scan_default_concurrency": "How many streams to probe at once by default during a duplicate scan.",
     "scan_max_concurrency": "Upper limit an admin can raise a scan's concurrency to.",
     "scan_default_timeout_seconds": "Default per-stream timeout (seconds) during a duplicate scan.",
+    "recorder_local_url": (
+        "The same DPTV-Recorder as devices reach it at home, e.g. http://192.168.1.10:3000. DPTV-Player "
+        "uses this address while it answers and the Recording server URL above when it doesn't (away "
+        "from home), so recordings at home don't go out through the internet. Leave empty to always use "
+        "the Recording server URL."
+    ),
     "recorder_url": (
         "The DPTV-Recorder your players record to, as they reach it - e.g. https://dptvr.example.com. "
         "Signed-in players are told it with their XC login and sign in to it with that same login, "
@@ -176,6 +184,7 @@ class SettingsUpdate(BaseModel):
     scan_default_timeout_seconds: float | None = None
     sync_notify_url: str | None = None
     recorder_url: str | None = None
+    recorder_local_url: str | None = None
     versions_check_time: str | None = None
     versions_sample_seconds: int | None = None
     versions_idle_minutes: int | None = None

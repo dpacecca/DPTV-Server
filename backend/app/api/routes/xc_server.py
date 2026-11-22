@@ -93,6 +93,8 @@ def _server_info() -> dict:
         # signed-in player - _server_info is never sent without user_info - and only when set.
         # Read fresh, so a change saved in Settings applies without a restart.
         **({"dptv_recorder_url": rec} if (rec := get_settings().recorder_url.strip().rstrip("/")) else {}),
+        # (1.0.21) The same recorder on the home network, tried first by DPTV-Player.
+        **({"dptv_recorder_local_url": loc} if (loc := get_settings().recorder_local_url.strip().rstrip("/")) else {}),
     }
 
 
