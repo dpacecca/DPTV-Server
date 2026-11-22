@@ -65,6 +65,9 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   is not "AR| DAZN 1"), or the same guide id with one name's words all in the other's. A channel's
   **Channel Settings** shows its **Versions**: add one by hand, remove a wrong match (it stays
   removed), or **pin** the one to play.
+- **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
+  arrived as season 1), in episode order, with the provider's series details, season list and
+  episode details.
 - **nginx pinned (1.0.19).** The web front end is built on `nginx:1.31-alpine` and refuses to build on
   anything older than 1.31.9, which fixes the NGINX2Root flaws. Update with
   `docker compose build --pull frontend && docker compose up -d frontend`.
