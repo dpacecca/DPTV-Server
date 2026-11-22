@@ -132,27 +132,58 @@ class XtreamClient:
             return _vod_url(base, user, pw, stream_id, ext)
         return _series_episode_url(base, user, pw, stream_id, ext)
 
-    async def fetch_series_episodes(self, series_id: str) -> list[ChannelData]:
-        """Only used when Source.use_api_for_series is enabled."""
+    async def fetch_series_info(self, series_id: str) -> dict:
+        """The provider's whole get_series_info answer: info, seasons and episodes by season."""
         async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
             data = await self._get_json(client, "get_series_info", {"series_id": series_id})
-            channels: list[ChannelData] = []
-            for _season, episodes in (data.get("episodes") or {}).items():
-                for ep in episodes:
-                    ext = ep.get("container_extension", "mp4")
-                    episode_id = str(ep.get("id"))
-                    channels.append(
-                        ChannelData(
-                            category_external_id="",
-                            external_stream_id=episode_id,
-                            name=ep.get("title", f"Episode {episode_id}"),
-                            stream_type=ChannelType.SERIES,
-                            container_extension=ext,
-                            stream_url=self._build_url(ChannelType.SERIES, episode_id, ext),
-                            extra=ep,
-                        )
+        return data if isinstance(data, dict) else {}
+
+    def series_episodes(self, data: dict) -> list[ChannelData]:
+        """Episodes of a get_series_info answer. Each keeps its season (1.0.20): the episode's own
+        `season`, else the key it was listed under, in extra["season"]."""
+        channels: list[ChannelData] = []
+        episodes_by_season = data.get("episodes") or {}
+        # A panel's season map arrives as a list of lists when its seasons run 0, 1, 2… (a show with
+        # specials): the position is the season, as the player reads it.
+        if isinstance(episodes_by_season, list):
+            episodes_by_season = {str(i): eps for i, eps in enumerate(episodes_by_season)}
+        for season_key, episodes in episodes_by_season.items():
+            for ep in episodes or []:
+                if not isinstance(ep, dict):
+                    continue
+                ext = ep.get("container_extension", "mp4")
+                episode_id = str(ep.get("id"))
+                extra = dict(ep)
+                extra["season"] = season_number(ep.get("season"), season_key)
+                channels.append(
+                    ChannelData(
+                        category_external_id="",
+                        external_stream_id=episode_id,
+                        name=ep.get("title", f"Episode {episode_id}"),
+                        stream_type=ChannelType.SERIES,
+                        container_extension=ext,
+                        stream_url=self._build_url(ChannelType.SERIES, episode_id, ext),
+                        extra=extra,
                     )
-            return channels
+                )
+        return channels
+
+    async def fetch_series_episodes(self, series_id: str) -> list[ChannelData]:
+        """Only used when Source.use_api_for_series is enabled."""
+        return self.series_episodes(await self.fetch_series_info(series_id))
+
+
+def season_number(own, key) -> int:
+    """An episode's season: its own `season` field when it is a number, else the key it was listed
+    under, else 1."""
+    for value in (own, key):
+        try:
+            n = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if n >= 0:
+            return n
+    return 1
 
 
 async def detect_builtin_epg_url(

@@ -450,21 +450,47 @@ async def _proxy_series_info(db: AsyncSession, series_id: int | None, user: XcUs
         return {"episodes": {}}
 
     client = XtreamClient(source)
-    episodes = await client.fetch_series_episodes(sc.external_stream_id)
-    episodes_by_season: dict[str, list[dict]] = {"1": []}
+    data = await client.fetch_series_info(sc.external_stream_id)
+    return series_info_answer(data, client.series_episodes(data), source.id)
+
+
+def series_info_answer(data: dict, episodes: list, source_id: int) -> dict:
+    """(1.0.20) The get_series_info answer players get: the provider's info and seasons, and each
+    episode under its own season (it used to put every episode under season 1) with its number,
+    details and our own stream id and passthrough address."""
+    by_season: dict[int, list[dict]] = {}
     for ep in episodes:
-        episodes_by_season["1"].append(
-            {
-                "id": f"{source.id}_{ep.external_stream_id}",
-                "title": ep.name,
-                "container_extension": ep.container_extension,
-                "direct_source": (
-                    f"{settings.public_base_url.rstrip('/')}/series/passthrough/"
-                    f"{source.id}_{ep.external_stream_id}.{ep.container_extension}"
-                ),
-            }
-        )
-    return {"episodes": episodes_by_season}
+        extra = ep.extra or {}
+        season = extra.get("season") if isinstance(extra.get("season"), int) else 1
+        out = {
+            "id": f"{source_id}_{ep.external_stream_id}",
+            "episode_num": extra.get("episode_num"),
+            "title": ep.name,
+            "container_extension": ep.container_extension,
+            "season": season,
+            "info": extra.get("info") if isinstance(extra.get("info"), dict) else {},
+            "custom_sid": extra.get("custom_sid") or "",
+            "added": extra.get("added") or "",
+            "direct_source": (
+                f"{settings.public_base_url.rstrip('/')}/series/passthrough/"
+                f"{source_id}_{ep.external_stream_id}.{ep.container_extension}"
+            ),
+        }
+        by_season.setdefault(season, []).append(out)
+
+    def episode_order(e: dict) -> tuple:
+        try:
+            return (0, int(str(e["episode_num"])))
+        except (TypeError, ValueError):
+            return (1, 0)
+
+    episodes_by_season = {str(s): sorted(eps, key=episode_order) for s, eps in sorted(by_season.items())}
+    answer: dict = {"episodes": episodes_by_season}
+    if isinstance(data.get("info"), dict):
+        answer["info"] = data["info"]
+    if isinstance(data.get("seasons"), list):
+        answer["seasons"] = data["seasons"]
+    return answer
 
 
 @router.api_route("/get.php", methods=["GET", "HEAD"])
