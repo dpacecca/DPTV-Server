@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from app.api.routes.xc_server import same_panel
+from app.api.routes.xc_server import same_panel, with_line
 from app.main import app
 from app.models.base import ChannelType, SourceType
 from app.models.playlist import Playlist, PlaylistCategory, PlaylistChannel
@@ -53,14 +53,19 @@ async def seeded(db):
     await db.flush()
     pc_sky = PlaylistChannel(playlist_category_id=pcat.id, source_channel_id=sky.id, name="Sky Sport 2")
     pc_news = PlaylistChannel(playlist_category_id=pcat.id, source_channel_id=news.id, name="News")
-    db.add_all([pc_sky, pc_news])
+    # (1.0.22) Channels pinned to a fixed address, as an M3U import leaves the ones it couldn't match.
+    pc_fixed = PlaylistChannel(playlist_category_id=pcat.id, name="Fixed", manual_stream_url="http://panel.example:8080/live/server/srv/4242.m3u8")
+    pc_bare = PlaylistChannel(playlist_category_id=pcat.id, name="Bare", manual_stream_url="http://panel.example:8080/server/srv/4343")
+    pc_odd = PlaylistChannel(playlist_category_id=pcat.id, name="Odd", manual_stream_url="http://panel.example:8080/play/abc.m3u8")
+    pc_away = PlaylistChannel(playlist_category_id=pcat.id, name="Away", manual_stream_url="http://other.example/live/o/op/77.ts")
+    db.add_all([pc_sky, pc_news, pc_fixed, pc_bare, pc_odd, pc_away])
     shared = XcUser(username="damian", password="pw-d")
     own = XcUser(username="emidio", password="pw-e", source_override_id=line.id)
     db.add_all([shared, own])
     await db.flush()
     db.add_all([XcUserPlaylist(xc_user_id=shared.id, playlist_id=pl.id), XcUserPlaylist(xc_user_id=own.id, playlist_id=pl.id)])
     await db.commit()
-    return {"sky": pc_sky.id, "news": pc_news.id}
+    return {"sky": pc_sky.id, "news": pc_news.id, "fixed": pc_fixed.id, "bare": pc_bare.id, "odd": pc_odd.id, "away": pc_away.id}
 
 
 async def _target(client, creds, channel_id, ext="ts"):
@@ -89,3 +94,28 @@ def test_same_panel_compares_scheme_host_and_port():
     assert not same_panel("http://panel.example:8080", "http://panel.example:8081")
     assert not same_panel("http://panel.example", "http://other.example")
     assert not same_panel(None, "http://panel.example")
+
+
+async def test_a_fixed_address_on_the_overrides_panel_plays_on_this_logins_line(client, seeded):
+    assert (await _target(client, OWN, seeded["fixed"])).lower() == "http://panel.example:8080/live/emidio-line/el/4242.m3u8"
+    assert (await _target(client, OWN, seeded["bare"])).lower() == "http://panel.example:8080/emidio-line/el/4343"
+
+
+async def test_a_fixed_address_keeps_its_login_without_an_override(client, seeded):
+    assert await _target(client, SHARED, seeded["fixed"]) == "http://panel.example:8080/live/server/srv/4242.m3u8"
+
+
+async def test_a_fixed_address_on_another_panel_is_left_alone(client, seeded):
+    assert await _target(client, OWN, seeded["away"]) == "http://other.example/live/o/op/77.ts"
+
+
+async def test_a_fixed_address_that_cant_take_the_line_is_refused_not_played_on_another(client, seeded):
+    r = await client.get(f"/live/{OWN['username']}/{OWN['password']}/{seeded['odd']}.ts")
+    assert r.status_code == 404
+
+
+def test_with_line_swaps_only_the_login():
+    assert with_line("http://p:80/movie/a/b/9.mkv?x=1", "http://p:80/", "u", "w") == "http://p:80/movie/u/w/9.mkv?x=1"
+    assert with_line("http://p/a/b/9", "http://p", "u", "w") == "http://p/u/w/9"
+    assert with_line("http://p/hls/9.m3u8", "http://p", "u", "w") is None
+    assert with_line("http://p/live//b/9.ts", "http://p", "u", "w") is None

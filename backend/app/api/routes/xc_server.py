@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from urllib.parse import urlsplit
@@ -26,6 +27,7 @@ from app.services.version import get_current_version
 from app.services.xtream_client import XtreamClient, _live_url, _series_episode_url, _vod_url
 
 router = APIRouter(tags=["xc-server"])
+log = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -547,6 +549,22 @@ def same_panel(a: str | None, b: str | None) -> bool:
     return (pa.hostname or "").lower() == (pb.hostname or "").lower() != "" and port(pa) == port(pb)
 
 
+def with_line(url: str, base_url: str, username: str, password: str) -> str | None:
+    """(1.0.22) An Xtream stream address put on another login of the same panel: the login in
+    ".../live|movie|series/{user}/{pass}/{id}.{ext}" or ".../{user}/{pass}/{id}" swapped for this
+    one, on the line's own address. None when the address is not one of those shapes."""
+    parts = urlsplit(url.strip())
+    segs = parts.path.split("/")[1:]
+    if len(segs) == 4 and segs[0].lower() in ("live", "movie", "series") and all(segs):
+        rest = [segs[0], username, password, segs[3]]
+    elif len(segs) == 3 and all(segs):
+        rest = [username, password, segs[2]]
+    else:
+        return None
+    out = f"{base_url.strip().rstrip('/')}/{'/'.join(rest)}"
+    return f"{out}?{parts.query}" if parts.query else out
+
+
 async def _channel_source(db: AsyncSession, sc) -> Source | None:
     """The Source a SourceChannel came from (source_channel -> source_category -> source)."""
     from app.models.source import SourceCategory
@@ -571,12 +589,22 @@ async def _resolve_and_redirect(
         if version is not None and version.enabled:
             pc = version
     target = pc.manual_stream_url
+    override_line = await db.get(Source, user.source_override_id) if user.source_override_id else None
+    if target and override_line is not None and same_panel(override_line.base_url, target):
+        # (1.0.22) A channel pinned to a fixed address (an M3U entry that matched no source channel,
+        # or one added by URL) carries the login it was saved with. On the override's own panel that
+        # is the wrong line for this user, so it plays on theirs; an address that can't be moved is
+        # refused rather than played on someone else's line.
+        target = with_line(target, override_line.base_url, override_line.username, override_line.password)
+        if target is None:
+            log.warning("channel %s: fixed stream address on the override's panel can't take this login's line", pc.id)
+            raise HTTPException(404, "Stream not found")
     if not target and pc.source_channel:
         # A manual_stream_url is an admin-pinned absolute URL with no source of its own, so a
         # per-user source override never applies to it - only to a channel actually tied to a
         # SourceChannel. See XcUser.source_override_id's docstring for why this exists: one
         # playlist, multiple accounts on the same upstream panel.
-        override = await db.get(Source, user.source_override_id) if user.source_override_id else None
+        override = override_line
         # (1.0.10) Only for a channel from the override's own panel (its login is no good on
         # another provider's): a playlist mixing providers keeps the others' channels working.
         if override is not None:
