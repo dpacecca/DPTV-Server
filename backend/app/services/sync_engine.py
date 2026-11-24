@@ -105,6 +105,8 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
                 logo_url=ch.logo_url,
                 container_extension=ch.container_extension,
                 stream_url=ch.stream_url,
+                tv_archive=ch.archive[0],
+                tv_archive_duration=ch.archive[1],
                 first_seen_at=run_started,
                 last_seen_at=run_started,
             )
@@ -123,6 +125,8 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
             existing.tvg_id = ch.tvg_id or existing.tvg_id
             existing.logo_url = ch.logo_url or existing.logo_url
             existing.stream_url = ch.stream_url or existing.stream_url
+            # (1.0.23) Catch-up as the provider reports it now; a player shows it beside the channel.
+            existing.tv_archive, existing.tv_archive_duration = ch.archive
             if existing.removed_at is not None:
                 existing.removed_at = None
             # Pure bookkeeping (last_seen_at changes on every run, sort_order isn't shown to

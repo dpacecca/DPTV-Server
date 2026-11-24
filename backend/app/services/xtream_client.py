@@ -41,6 +41,18 @@ class ChannelData:
     stream_url: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def archive(self) -> tuple[bool, int]:
+        """(1.0.23) The provider's catch-up for this channel: (kept, days), from Xtream's
+        `tv_archive` and `tv_archive_duration`. (False, 0) when absent or unreadable."""
+        def number(v) -> int:
+            try:
+                return int(str(v).strip() or 0)
+            except (TypeError, ValueError):
+                return 0
+        kept = number(self.extra.get("tv_archive")) > 0
+        return kept, max(number(self.extra.get("tv_archive_duration")), 0) if kept else 0
+
 
 class XtreamClientError(Exception):
     pass

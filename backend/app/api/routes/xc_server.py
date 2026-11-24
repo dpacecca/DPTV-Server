@@ -110,9 +110,16 @@ def _live_stream_json(cat: PlaylistCategory, pc: PlaylistChannel) -> dict:
         "epg_channel_id": xmltv_channel_id(pc),
         "category_id": str(cat.id),
         "custom_sid": "",
-        "tv_archive": 0,
+        # (1.0.23) The provider's catch-up, played through /timeshift/ below.
+        **_archive_json(pc),
         "direct_source": "",
     }
+
+
+def _archive_json(pc: PlaylistChannel) -> dict:
+    sc = pc.source_channel
+    kept = bool(sc is not None and not pc.manual_stream_url and sc.tv_archive)
+    return {"tv_archive": 1 if kept else 0, "tv_archive_duration": sc.tv_archive_duration if kept else 0}
 
 
 def _vod_stream_json(cat: PlaylistCategory, pc: PlaylistChannel) -> dict:
@@ -624,6 +631,53 @@ async def _resolve_and_redirect(
 @router.get("/live/{username}/{password}/{channel_id}.{ext}")
 async def live_stream(username: str, password: str, channel_id: int, ext: str, db: DbSession):
     return await _resolve_and_redirect(db, username, password, channel_id, ext, ChannelType.LIVE)
+
+
+async def _resolve_timeshift(
+    db: AsyncSession, username: str, password: str, channel_id: int, minutes: str, start: str, ext: str
+) -> RedirectResponse:
+    """(1.0.23) A past programme from the provider's catch-up, on this login's line (its source
+    override when the channel is on that panel), with the start moved into the panel's time zone."""
+    from app.services import catchup
+
+    user = await _authenticate(db, username, password)
+    pc = await db.get(PlaylistChannel, channel_id, options=[selectinload(PlaylistChannel.source_channel)])
+    if pc is None or not pc.enabled or pc.source_channel is None or pc.manual_stream_url:
+        raise HTTPException(404, "Stream not found")
+    sc = pc.source_channel
+    begins = catchup.parse_start(start)
+    try:
+        length = int(minutes)
+    except ValueError:
+        length = 0
+    if begins is None or length <= 0:
+        raise HTTPException(400, "Invalid catch-up request")
+    source = await _channel_source(db, sc)
+    override = await db.get(Source, user.source_override_id) if user.source_override_id else None
+    if override is not None and source is not None and same_panel(override.base_url, source.base_url):
+        source = override
+    if source is None or not source.username:
+        raise HTTPException(404, "Stream not found")
+    target = catchup.timeshift_url(
+        source.base_url, source.username, source.password, length, begins, sc.external_stream_id,
+        ext or "ts", await catchup.provider_zone(source),
+    )
+    return RedirectResponse(target, status_code=302)
+
+
+@router.get("/timeshift/{username}/{password}/{minutes}/{start}/{channel_id}.{ext}")
+async def timeshift_stream(username: str, password: str, minutes: str, start: str, channel_id: int, ext: str, db: DbSession):
+    return await _resolve_timeshift(db, username, password, channel_id, minutes, start, ext)
+
+
+@router.get("/streaming/timeshift.php")
+async def timeshift_php(
+    db: DbSession, username: str | None = None, password: str | None = None, stream: int | None = None,
+    start: str = "", duration: str = "",
+):
+    if stream is None:
+        raise HTTPException(400, "stream is required")
+    return await _resolve_timeshift(db, username or "", password or "", stream, duration, start, "ts")
 
 
 @router.get("/movie/{username}/{password}/{channel_id}.{ext}")
