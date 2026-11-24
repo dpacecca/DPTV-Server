@@ -72,6 +72,11 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   M3U entry that matched no source channel, or one added by URL) now plays on the login's override line
   too, when the address is on that line's panel. One the server can't move to the line is refused
   instead of playing on the line it was saved with.
+- **Catch-up passed through (1.0.23).** Live channels carry the provider's catch-up (`tv_archive`,
+  `tv_archive_duration`, refreshed on every sync), and `/timeshift/…` and `/streaming/timeshift.php`
+  send a player to the provider's archive on the login's own line, with the start moved from UTC into
+  the panel's time zone. Leave DPTV-Player's catch-up time zone on Automatic. Channels pinned to a fixed
+  address have no catch-up.
 - **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
   arrived as season 1), in episode order, with the provider's series details, season list and
   episode details.

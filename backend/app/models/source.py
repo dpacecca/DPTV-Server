@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -102,6 +102,10 @@ class SourceChannel(Base, TimestampMixin):
     container_extension: Mapped[str | None] = mapped_column(String(20), nullable=True)
     stream_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     """Fully-formed playable URL as returned by provider, used for pass-through redirects."""
+    tv_archive: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    """(1.0.23) The provider keeps catch-up for this live channel (Xtream `tv_archive`)."""
+    tv_archive_duration: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    """(1.0.23) Days of catch-up the provider keeps (Xtream `tv_archive_duration`)."""
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
