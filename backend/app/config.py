@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     Handed to players beside recorder_url (server_info.dptv_recorder_local_url); DPTV-Player uses it while it
     answers and the public recorder_url when it doesn't (away from home). Empty = recorder_url only."""
 
+    tmdb_api_key: str = ""
+    """(1.0.24) TMDB API key (v3) or read access token (v4), for the movie categories' genres, release
+    dates, ratings and this week's trending films. Empty = provider details and title years only."""
+    smart_categories_exclude: str = "For Adults"
+    """(1.0.24) Comma-separated words: films in a playlist category whose name contains one are left out
+    of the movie categories."""
+    smart_new_release_days: int = 90
+    """(1.0.24) How far back "New releases" reaches, in days."""
+
     versions_check_time: str = "04:00"
     """(1.0.15) When the nightly check of channel versions runs, HH:MM in the server's TZ. Empty = off."""
     versions_sample_seconds: int = 20

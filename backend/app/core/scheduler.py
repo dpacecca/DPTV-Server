@@ -37,6 +37,23 @@ async def _refresh_iptvboss_logo_index_job() -> None:
         logger.exception("Failed to refresh iptvboss logo index")
 
 
+async def _movie_info_job() -> None:
+    """(1.0.24) TMDB details and trending for the movie categories."""
+    from app.services.movie_info import run_movie_info
+
+    try:
+        async with SessionLocal() as db:
+            await run_movie_info(db)
+    except Exception:  # noqa: BLE001 - best-effort background job
+        logger.exception("Movie info lookup failed")
+
+
+def queue_movie_info() -> None:
+    """Look up new films soon (after a source sync), without holding up the caller."""
+    if scheduler.running:
+        scheduler.add_job(_movie_info_job, trigger=DateTrigger(), id="movie-info-now", replace_existing=True)
+
+
 async def _run_scheduled_sync(schedule_id: int) -> None:
     async with SessionLocal() as db:
         schedule = await db.get(SyncSchedule, schedule_id)
@@ -53,6 +70,7 @@ async def _run_scheduled_sync(schedule_id: int) -> None:
             await db.commit()
             if schedule.sync_sources:
                 notify_sync_finished("sources")
+                queue_movie_info()
             if schedule.sync_epg:
                 notify_sync_finished("epg")
         except Exception:  # noqa: BLE001
@@ -126,6 +144,15 @@ async def start_scheduler() -> None:
         trigger=IntervalTrigger(hours=24),
         id="iptv-org-logo-cache-refresh",
         replace_existing=True,
+    )
+    scheduler.add_job(
+        _movie_info_job, trigger=CronTrigger(hour=5, minute=30), id="movie-info-nightly", replace_existing=True,
+    )
+    from datetime import datetime, timedelta, timezone
+
+    scheduler.add_job(
+        _movie_info_job, trigger=DateTrigger(run_date=datetime.now(timezone.utc) + timedelta(minutes=2)),
+        id="movie-info-startup", replace_existing=True,
     )
     scheduler.add_job(
         _refresh_iptvboss_logo_index_job,

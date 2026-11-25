@@ -117,5 +117,8 @@ async def trigger_manual_sync(db: DbSession, _admin: AdminUser) -> dict:
     run = await run_full_sync(db, SyncTrigger.MANUAL)
     await db.commit()
     notify_sync_finished("sources")
+    from app.core.scheduler import queue_movie_info
+
+    queue_movie_info()
     notify_sync_finished("epg")
     return {"id": run.id, "status": run.status, "summary": run.summary}

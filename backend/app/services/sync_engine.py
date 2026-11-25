@@ -107,6 +107,8 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
                 stream_url=ch.stream_url,
                 tv_archive=ch.archive[0],
                 tv_archive_duration=ch.archive[1],
+                **(dict(zip(("provider_release", "provider_tmdb_id", "provider_rating"), ch.film))
+                   if ch.stream_type == ChannelType.VOD else {}),
                 first_seen_at=run_started,
                 last_seen_at=run_started,
             )
@@ -127,6 +129,9 @@ async def sync_source(db: AsyncSession, source: Source) -> dict:
             existing.stream_url = ch.stream_url or existing.stream_url
             # (1.0.23) Catch-up as the provider reports it now; a player shows it beside the channel.
             existing.tv_archive, existing.tv_archive_duration = ch.archive
+            if ch.stream_type == ChannelType.VOD:
+                # (1.0.24) The provider's own release date, TMDB id and rating, for the movie categories.
+                existing.provider_release, existing.provider_tmdb_id, existing.provider_rating = ch.film
             if existing.removed_at is not None:
                 existing.removed_at = None
             # Pure bookkeeping (last_seen_at changes on every run, sort_order isn't shown to

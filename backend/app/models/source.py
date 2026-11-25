@@ -106,6 +106,12 @@ class SourceChannel(Base, TimestampMixin):
     """(1.0.23) The provider keeps catch-up for this live channel (Xtream `tv_archive`)."""
     tv_archive_duration: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     """(1.0.23) Days of catch-up the provider keeps (Xtream `tv_archive_duration`)."""
+    provider_release: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    """(1.0.24) A film's release date as the provider lists it, "YYYY-MM-DD" (or "YYYY")."""
+    provider_tmdb_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    """(1.0.24) The provider's TMDB id for a film, when its list carries one."""
+    provider_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    """(1.0.24) The provider's rating for a film (0-10)."""
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

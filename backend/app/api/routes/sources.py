@@ -244,6 +244,9 @@ async def sync_all(db: DbSession, _admin: AdminUser) -> dict:
     summary = await sync_all_sources(db)
     await db.commit()
     notify_sync_finished("sources")
+    from app.core.scheduler import queue_movie_info
+
+    queue_movie_info()
     return summary
 
 
@@ -259,6 +262,9 @@ async def trigger_source_sync(source_id: int, db: DbSession, _admin: AdminUser) 
         await db.rollback()
         raise HTTPException(502, f"Sync failed: {exc}") from exc
     notify_sync_finished("sources")
+    from app.core.scheduler import queue_movie_info
+
+    queue_movie_info()
     return summary
 
 
