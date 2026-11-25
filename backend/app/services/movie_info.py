@@ -80,6 +80,7 @@ def clean_title(name: str) -> str:
         if stripped == t:
             break
         t = stripped
+    t = re.sub(r"^\d{1,3}\.\s+", "", t)  # a list position: "33. Parasite"
     t = re.split(r"\s*[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]", t)[0]
     t = re.sub(r"\s-\s(?:19|20)\d{2}\s*$", "", t)
     t = re.sub(r"\s*[\(\[][^\)\]]{1,12}[\)\]]\s*$", "", t)
@@ -122,13 +123,15 @@ async def _genres(client: httpx.AsyncClient, key: str) -> dict[int, str]:
     return _genre_names
 
 
-async def _lookup(client: httpx.AsyncClient, key: str, sc: SourceChannel) -> dict | None:
-    """TMDB's film for this channel: by the provider's TMDB id, else the first search result."""
-    if sc.provider_tmdb_id:
-        found = await _tmdb_get(client, key, f"/movie/{sc.provider_tmdb_id}", language="en-US")
+async def _lookup(client: httpx.AsyncClient, key: str, sc: SourceChannel, known_id: int | None = None) -> dict | None:
+    """TMDB's film for this channel: by the provider's TMDB id (or the one an earlier run matched),
+    else the first search result."""
+    tmdb_id = sc.provider_tmdb_id or known_id
+    if tmdb_id:
+        found = await _tmdb_get(client, key, f"/movie/{tmdb_id}", language="en-US")
         if found:
             return {
-                "id": found.get("id"), "release_date": found.get("release_date"),
+                "id": found.get("id"), "title": found.get("title"), "release_date": found.get("release_date"),
                 "vote_average": found.get("vote_average"), "vote_count": found.get("vote_count"),
                 "popularity": found.get("popularity"), "genres": [g.get("name") for g in found.get("genres", [])],
             }
@@ -147,7 +150,7 @@ async def _lookup(client: httpx.AsyncClient, key: str, sc: SourceChannel) -> dic
     best = results[0]
     names = await _genres(client, key)
     return {
-        "id": best.get("id"), "release_date": best.get("release_date"),
+        "id": best.get("id"), "title": best.get("title"), "release_date": best.get("release_date"),
         "vote_average": best.get("vote_average"), "vote_count": best.get("vote_count"),
         "popularity": best.get("popularity"), "genres": [names[g] for g in best.get("genre_ids", []) if g in names],
     }
@@ -162,6 +165,7 @@ def _info_from(sc: SourceChannel, found: dict | None, checked: bool, now: dateti
     return {
         "source_channel_id": sc.id,
         "tmdb_id": (found or {}).get("id"),
+        "title": ((found or {}).get("title") or "").strip()[:300] or None,
         "release_date": release,
         "rating": tmdb_rating or sc.provider_rating,
         "popularity": (found or {}).get("popularity"),
@@ -238,13 +242,15 @@ async def run_movie_info(db: AsyncSession, max_batches: int = 1000) -> dict:
                     log.warning("TMDB trending failed: %s", type(exc).__name__)
             sem = asyncio.Semaphore(_CONCURRENCY)
 
+            known: dict[int, int] = {}
+
             async def one(sc: SourceChannel) -> dict:
                 now = datetime.now(timezone.utc)
                 if not key:
                     return _info_from(sc, None, False, now)
                 async with sem:
                     try:
-                        return _info_from(sc, await _lookup(client, key, sc), True, now)
+                        return _info_from(sc, await _lookup(client, key, sc, known.get(sc.id)), True, now)
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code == 401:
                             raise
@@ -264,6 +270,11 @@ async def run_movie_info(db: AsyncSession, max_batches: int = 1000) -> dict:
                 if not batch:
                     break
                 last_id = batch[-1].id
+                # (1.0.26) A film matched before is asked for by its id again (no new search).
+                ids = [sc.id for sc in batch]
+                known = {r.source_channel_id: r.tmdb_id for r in (await db.execute(
+                    select(MovieInfo).where(MovieInfo.source_channel_id.in_(ids), MovieInfo.tmdb_id.is_not(None))
+                )).scalars().all()}
                 try:
                     rows = await asyncio.gather(*(one(sc) for sc in batch))
                 except httpx.HTTPStatusError:
@@ -284,6 +295,13 @@ async def run_movie_info(db: AsyncSession, max_batches: int = 1000) -> dict:
 
 # --- the categories ----------------------------------------------------------------------------
 
+def _quality(name: str) -> int:
+    n = (name or "").upper()
+    if any(t in n for t in ("4K", "UHD", "2160")):
+        return 2
+    return 1 if any(t in n for t in ("FHD", "1080")) else 0
+
+
 def _excluded(category_name: str, words: list[str]) -> bool:
     name = (category_name or "").casefold()
     return any(w and w in name for w in words)
@@ -291,7 +309,8 @@ def _excluded(category_name: str, words: list[str]) -> bool:
 
 async def build_categories(db: AsyncSession, playlists: list[Playlist]) -> dict:
     """The movie categories for these playlists (a login's enabled ones), as players get them:
-    {"categories": [{"id", "name", "kind", "streams": [stream ids]}], "films": {stream id: [release, rating]}}."""
+    {"categories": [{"id", "name", "kind", "streams": [stream ids]}],
+     "films": {stream id: [release, rating, "Title (year)", [the same film's other stream ids]]}}."""
     settings = get_settings()
     words = [w.strip().casefold() for w in settings.smart_categories_exclude.split(",") if w.strip()]
     films: dict[int, SourceChannel] = {}
@@ -318,26 +337,45 @@ async def build_categories(db: AsyncSession, playlists: list[Playlist]) -> dict:
 
     today = datetime.now(timezone.utc).date()
     since = (today - timedelta(days=max(settings.smart_new_release_days, 1))).isoformat()
-    out_films: dict[str, list] = {}
-    new, trending = [], []
-    genres: dict[str, list] = defaultdict(list)
-    decades: dict[int, list] = defaultdict(list)
-    for stream_id, sc in films.items():
+
+    # (1.0.26) One film, however many copies the provider lists ("TOP - …", "4K-TOP - …", "4K-D+ - …"):
+    # copies are the same TMDB film, or, unmatched, the same cleaned title and year. The best copy
+    # (4K, then FHD, then the first listed) stands for the film; the others are its other sources.
+    def facts(sc: SourceChannel) -> tuple:
         info = infos.get(sc.id)
         # The provider's full date always wins, even over one looked up before the sync that brought it.
         full = sc.provider_release if sc.provider_release and len(sc.provider_release) == 10 else None
         release = full or (info.release_date if info else None) or sc.provider_release or (
             str(title_year(sc.name)) if title_year(sc.name) else None)
+        return info, release
+
+    groups: dict[tuple, list[int]] = {}
+    for stream_id, sc in films.items():
+        info, release = facts(sc)
+        key = ("tmdb", info.tmdb_id) if info and info.tmdb_id else ("title", clean_title(sc.name).casefold(), year_of(release))
+        groups.setdefault(key, []).append(stream_id)
+
+    out_films: dict[str, list] = {}
+    new, trending = [], []
+    genres: dict[str, list] = defaultdict(list)
+    decades: dict[int, list] = defaultdict(list)
+    for members in groups.values():
+        stream_id = max(members, key=lambda m: (_quality(films[m].name), -members.index(m)))
+        sc = films[stream_id]
+        info, release = facts(sc)
         rating = (info.rating if info else None) or sc.provider_rating
         popularity = (info.popularity if info else None) or 0.0
-        out_films[str(stream_id)] = [release, round(rating, 1) if rating else None]
+        year = year_of(release)
+        base = (info.title if info and info.title else None) or clean_title(sc.name) or sc.name
+        title = f"{base} ({year})" if year else base
+        others = [m for m in members if m != stream_id]
+        out_films[str(stream_id)] = [release, round(rating, 1) if rating else None, title, others]
         if release and len(release) == 10 and since <= release <= today.isoformat():
             new.append((release, stream_id))
         if info and info.tmdb_id in trending_rank:
             trending.append((trending_rank[info.tmdb_id], stream_id))
         for g in json.loads(info.genres) if info and info.genres else []:
             genres[g].append((-popularity, stream_id))
-        year = year_of(release)
         if year and 1900 <= year <= today.year + 1:
             decades[year // 10 * 10].append((release, stream_id))
 

@@ -16,6 +16,8 @@ class MovieInfo(Base):
         ForeignKey("source_channels.id", ondelete="CASCADE"), primary_key=True
     )
     tmdb_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    """(1.0.26) TMDB's title, shown to players as "Title (year)"."""
     release_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     """"YYYY-MM-DD" (or "YYYY" when only the year is known): the provider's, else TMDB's, else the title's year."""
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
