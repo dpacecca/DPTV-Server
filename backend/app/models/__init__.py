@@ -7,6 +7,7 @@ from app.models.playlist import (
     PlaylistChannel,
     VersionSwap,
 )
+from app.models.movie_info import MovieInfo, TmdbTrending
 from app.models.source import Source, SourceCategory, SourceChannel
 from app.models.sync import SyncRun, SyncSchedule
 from app.models.xc_user import AdminUser, XcUser, XcUserPlaylist, XcUserProfile
@@ -22,6 +23,8 @@ __all__ = [
     "PlaylistCategory",
     "PlaylistCategorySourceLink",
     "PlaylistChannel",
+    "MovieInfo",
+    "TmdbTrending",
     "Source",
     "SourceCategory",
     "SourceChannel",

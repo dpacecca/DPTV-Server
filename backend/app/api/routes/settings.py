@@ -28,7 +28,7 @@ EXCLUDED_FIELDS: dict[str, str] = {
     ),
 }
 
-SECRET_FIELDS = {"secret_key"}
+SECRET_FIELDS = {"secret_key", "tmdb_api_key"}
 
 # (group, type) per included field - hand-maintained (not introspected from the Settings model)
 # since a handful of fields need special handling anyway (secrets masked, display_timezone as a
@@ -48,6 +48,9 @@ FIELD_META: dict[str, tuple[str, str]] = {
     "scan_default_timeout_seconds": ("Duplicate Scanning", "float"),
     "recorder_url": ("Integrations", "string"),
     "recorder_local_url": ("Integrations", "string"),
+    "tmdb_api_key": ("Movie categories", "secret"),
+    "smart_categories_exclude": ("Movie categories", "string"),
+    "smart_new_release_days": ("Movie categories", "int"),
     "versions_check_time": ("Channel versions", "string"),
     "versions_sample_seconds": ("Channel versions", "int"),
     "versions_idle_minutes": ("Channel versions", "int"),
@@ -68,6 +71,9 @@ FIELD_LABELS: dict[str, str] = {
     "sync_notify_url": "After a sync, notify URL",
     "recorder_url": "Recording server (DPTV-Recorder) URL",
     "recorder_local_url": "Recording server URL on the home network",
+    "tmdb_api_key": "TMDB API key",
+    "smart_categories_exclude": "Leave out categories named",
+    "smart_new_release_days": "New releases: days back",
     "epg_title_layout": "Guide Title layout",
     "epg_description_layout": "Guide Description layout",
 }
@@ -109,6 +115,17 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "sample of each version of every channel that has backups, one at a time, and moves the channel "
         "to the best version that really shows a picture. Leave empty to turn it off. Restart to apply."
     ),
+    "tmdb_api_key": (
+        "Your TMDB API key (v3) or read access token (v4), from themoviedb.org → Settings → API. Players get "
+        "movie categories - Trending this week, New releases, one per genre and one per decade - built from "
+        "your provider's films; TMDB supplies the genres, ratings and trending films, and the release date "
+        "where the provider gives none. Films are looked up after each sync and every night at 05:30 UTC."
+    ),
+    "smart_categories_exclude": (
+        "Comma-separated words. Films in a playlist category whose name contains one of them (any case) "
+        "are left out of the movie categories, e.g. For Adults."
+    ),
+    "smart_new_release_days": "How many days back New releases reaches, by release date.",
     "versions_sample_seconds": "Seconds of each version played to check it for black, frozen or silent video and stalls.",
     "versions_idle_minutes": (
         "The check only runs while no stream has been asked for in this many minutes, and pauses when one "
@@ -185,6 +202,9 @@ class SettingsUpdate(BaseModel):
     sync_notify_url: str | None = None
     recorder_url: str | None = None
     recorder_local_url: str | None = None
+    tmdb_api_key: str | None = None
+    smart_categories_exclude: str | None = None
+    smart_new_release_days: int | None = None
     versions_check_time: str | None = None
     versions_sample_seconds: int | None = None
     versions_idle_minutes: int | None = None
@@ -205,5 +225,10 @@ async def update_settings(payload: SettingsUpdate, _admin: AdminUser) -> dict:
 
     env_file.write_env_updates(env_updates)
     get_settings.cache_clear()
+    if "tmdb_api_key" in changes:
+        # (1.0.24) A new TMDB key fills in the films' genres and trending straight away.
+        from app.core.scheduler import queue_movie_info
+
+        queue_movie_info()
 
     return {"ok": True}

@@ -53,6 +53,21 @@ class ChannelData:
         kept = number(self.extra.get("tv_archive")) > 0
         return kept, max(number(self.extra.get("tv_archive_duration")), 0) if kept else 0
 
+    @property
+    def film(self) -> tuple[str | None, str | None, float | None]:
+        """(1.0.24) A film's (release date, TMDB id, rating) as the provider's list gives them;
+        None for each one it doesn't. The release date is "YYYY-MM-DD", or "YYYY" for a year alone."""
+        from app.services.movie_info import provider_release
+
+        e = self.extra
+        release = provider_release(e.get("releaseDate") or e.get("release_date") or e.get("releasedate") or e.get("year"))
+        tmdb = str(e.get("tmdb") or e.get("tmdb_id") or "").strip()
+        try:
+            rating = float(str(e.get("rating") or "").strip() or "nan")
+        except ValueError:
+            rating = float("nan")
+        return release, tmdb if tmdb.isdigit() and tmdb != "0" else None, rating if 0 < rating <= 10 else None
+
 
 class XtreamClientError(Exception):
     pass

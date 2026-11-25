@@ -258,6 +258,13 @@ async def player_api(
     if action in ("get_short_epg", "get_simple_data_table"):
         return await _short_epg(db, stream_id)
 
+    if action == "dptv_smart_categories":
+        # (1.0.24) Movie categories: Trending this week, New releases, genres and decades.
+        from app.services.movie_info import build_categories
+
+        response.headers["Cache-Control"] = "no-store"
+        return await build_categories(db, await _enabled_playlists(db, user))
+
     if action == "dptv_versions":
         response.headers["Cache-Control"] = "no-store"
         return await _versions_json(db, stream_id)

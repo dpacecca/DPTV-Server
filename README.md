@@ -77,6 +77,12 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   send a player to the provider's archive on the login's own line, with the start moved from UTC into
   the panel's time zone. Leave DPTV-Player's catch-up time zone on Automatic. Channels pinned to a fixed
   address have no catch-up.
+- **Movie categories (1.0.24).** Settings → Movie categories: a **TMDB API key**, the words of
+  categories to leave out (default "For Adults") and how far back New releases reaches (90 days).
+  DPTV-Player shows Trending this week, New releases, one category per genre and one per decade,
+  built from the provider's films: the provider's release date first, else TMDB's, else the title's
+  year; genres, ratings and trending from TMDB. Films are looked up after each source sync, every night
+  at 05:30 UTC and when the key changes (`player_api.php?action=dptv_smart_categories`).
 - **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
   arrived as season 1), in episode order, with the provider's series details, season list and
   episode details.
