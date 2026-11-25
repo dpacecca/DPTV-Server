@@ -35,6 +35,7 @@ def test_titles_are_cleaned_for_the_search():
     assert movie_info.clean_title("4K-NF - Gordon (2026) (AR)") == "Gordon"
     assert movie_info.clean_title("|EN| Madden (2026)") == "Madden"
     assert movie_info.clean_title("Ali G: Who Iz I? (2026)") == "Ali G: Who Iz I?"
+    assert movie_info.clean_title("EN-TOP - 33. Parasite (2019)") == "Parasite"
     assert movie_info.title_year("4K-AMZ - Elf Me (2023)") == 2023
     assert movie_info.title_year("Heat - 1995") == 1995
     assert movie_info.title_year("Heat") is None
@@ -111,7 +112,7 @@ async def test_players_get_the_categories(client, seeded):
     assert cats["new"]["streams"] == [seeded["new"]]
     assert cats["genre:drama"]["streams"] == [seeded["new"], seeded["old"]]  # most popular first
     assert cats["decade:1990"]["name"] == "1990s"
-    assert body["films"][str(seeded["old"])] == ["1995-12-15", 8.3]
+    assert body["films"][str(seeded["old"])] == ["1995-12-15", 8.3, "Heat (1995)", []]
     assert str(seeded["adult"]) not in body["films"]  # "For Adults" is left out
 
 
@@ -132,7 +133,7 @@ async def test_run_with_a_key_fills_in_tmdb(db, seeded, monkeypatch):
     await db.execute(MovieInfo.__table__.delete())
     await db.commit()
 
-    async def fake_lookup(client, key, sc):
+    async def fake_lookup(client, key, sc, known_id=None):
         return None if "Late" in sc.name else {
             "id": 99, "release_date": "1995-12-15", "vote_average": 8.0, "vote_count": 100, "popularity": 9.0, "genres": ["Crime"],
         }
@@ -166,3 +167,27 @@ async def test_a_run_reports_its_progress(db, seeded, monkeypatch, caplog):
     assert lines[0].startswith("movie info: starting, 3 films to look up")
     assert "movie info: 2 of 3 looked up, 0 found on TMDB" in lines
     assert lines[-1] == "movie info: 3 films looked up, 0 found on TMDB, 0 trending"
+
+
+async def test_copies_of_a_film_are_one_film_with_its_other_sources(client, db, seeded):
+    from sqlalchemy import select as sel
+
+    pl_cat = (await db.execute(sel(PlaylistCategory).where(PlaylistCategory.name == "Amazon Movies"))).scalar_one()
+    scat = (await db.execute(sel(SourceCategory))).scalars().first()
+    copy = SourceChannel(source_category_id=scat.id, external_stream_id="9", name="TOP - Madden (2026)",
+                         stream_type=ChannelType.VOD, first_seen_at=NOW, last_seen_at=NOW)
+    db.add(copy)
+    await db.flush()
+    db.add(MovieInfo(source_channel_id=copy.id, tmdb_id=10, title="Madden", release_date=RECENT, rating=6.7,
+                     popularity=50, genres=json.dumps(["Drama"]), tmdb_checked=True, looked_up_at=NOW))
+    pc_copy = PlaylistChannel(playlist_category_id=pl_cat.id, source_channel_id=copy.id, name="4K Madden")
+    db.add(pc_copy)
+    await db.commit()
+
+    r = await client.get("/player_api.php", params={"username": "damian", "password": "pw", "action": "dptv_smart_categories"})
+    body = r.json()
+    drama = next(c for c in body["categories"] if c["id"] == "genre:drama")
+    # The 4K copy stands for the film; the other copy is its other source, listed nowhere else.
+    assert drama["streams"] == [seeded["new"], seeded["old"]]
+    assert body["films"][str(seeded["new"])][2:] == ["Madden (" + RECENT[:4] + ")", [pc_copy.id]]
+    assert str(pc_copy.id) not in body["films"]

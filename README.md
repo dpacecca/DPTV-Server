@@ -86,6 +86,11 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
 - **Movie lookup progress (1.0.25).** A run logs "movie info: starting, N films to look up", then
   "movie info: X of N looked up, Y found on TMDB" every 1000 films, then its summary
   (`journalctl -u dptv-backend | grep "movie info"`).
+- **One film per title (1.0.26).** Copies of a film the provider lists more than once ("TOP - …",
+  "4K-TOP - …", "4K-D+ - …") are one film in the movie categories: the same TMDB film, or, unmatched,
+  the same cleaned title and year. The 4K copy (then FHD, then the first listed) stands for it, and the
+  others are its other sources. Films are named "Title (year)" from TMDB's title (else the cleaned
+  provider name). Films matched before 1.0.26 are looked up again once, by their TMDB id, for the title.
 - **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
   arrived as season 1), in episode order, with the provider's series details, season list and
   episode details.
