@@ -17,7 +17,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -32,6 +32,7 @@ TMDB = "https://api.themoviedb.org/3"
 _BATCH = 200
 _CONCURRENCY = 6
 _RETRY_NOT_FOUND = timedelta(days=14)
+_PROGRESS_EVERY = 1000
 _lock = asyncio.Lock()
 _genre_names: dict[int, str] = {}
 
@@ -170,22 +171,30 @@ def _info_from(sc: SourceChannel, found: dict | None, checked: bool, now: dateti
     }
 
 
-async def _pending(db: AsyncSession, with_key: bool, limit: int, after_id: int = 0) -> list[SourceChannel]:
+def _pending_filter(q, with_key: bool, after_id: int = 0):
     retry_before = datetime.now(timezone.utc) - _RETRY_NOT_FOUND
     q = (
-        select(SourceChannel)
-        .outerjoin(MovieInfo, MovieInfo.source_channel_id == SourceChannel.id)
+        q.outerjoin(MovieInfo, MovieInfo.source_channel_id == SourceChannel.id)
         .where(SourceChannel.stream_type == ChannelType.VOD, SourceChannel.removed_at.is_(None), SourceChannel.id > after_id)
     )
     if with_key:
-        q = q.where(or_(
+        return q.where(or_(
             MovieInfo.source_channel_id.is_(None),
             MovieInfo.tmdb_checked.is_(False),
             and_(MovieInfo.tmdb_id.is_(None), MovieInfo.looked_up_at < retry_before),
         ))
-    else:
-        q = q.where(MovieInfo.source_channel_id.is_(None))
+    return q.where(MovieInfo.source_channel_id.is_(None))
+
+
+async def _pending(db: AsyncSession, with_key: bool, limit: int, after_id: int = 0) -> list[SourceChannel]:
+    q = _pending_filter(select(SourceChannel), with_key, after_id)
     return list((await db.execute(q.order_by(SourceChannel.id).limit(limit))).scalars().all())
+
+
+async def _pending_count(db: AsyncSession, with_key: bool) -> int:
+    """(1.0.25) How many films a run has ahead of it, for its progress lines."""
+    q = _pending_filter(select(func.count(SourceChannel.id)).select_from(SourceChannel), with_key)
+    return int((await db.execute(q)).scalar() or 0)
 
 
 async def _save(db: AsyncSession, rows: list[dict]) -> None:
@@ -243,6 +252,12 @@ async def run_movie_info(db: AsyncSession, max_batches: int = 1000) -> dict:
                     except Exception:  # noqa: BLE001 - one film never stops the run
                         return _info_from(sc, None, False, now)
 
+            total = await _pending_count(db, bool(key))
+            if total:
+                # (1.0.25) Progress in the journal: a start line, then one every 1000 films.
+                log.info("movie info: starting, %d films to look up (%s)", total,
+                         "with TMDB" if key else "no TMDB key: provider details and title years only")
+            next_report = _PROGRESS_EVERY
             last_id = 0  # each film once per run, even one TMDB failed on
             for _ in range(max_batches):
                 batch = await _pending(db, bool(key), _BATCH, last_id)
@@ -258,6 +273,9 @@ async def run_movie_info(db: AsyncSession, max_batches: int = 1000) -> dict:
                 await _save(db, rows)
                 done += len(rows)
                 found += sum(1 for r in rows if r["tmdb_id"])
+                if done >= next_report and done < total:
+                    log.info("movie info: %d of %d looked up, %d found on TMDB", done, total, found)
+                    next_report = (done // _PROGRESS_EVERY + 1) * _PROGRESS_EVERY
                 if all(not r["tmdb_checked"] for r in rows) and key:
                     break  # TMDB answering nothing at all: try again on the next run
         log.info("movie info: %d films looked up, %d found on TMDB, %d trending", done, found, trending)

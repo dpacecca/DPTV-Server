@@ -149,3 +149,20 @@ async def test_run_with_a_key_fills_in_tmdb(db, seeded, monkeypatch):
     assert json.loads(new.genres) == ["Crime"] and new.rating == 8.0
     # Nothing left to look up on a second run.
     assert (await movie_info.run_movie_info(db))["looked_up"] == 0
+
+
+async def test_a_run_reports_its_progress(db, seeded, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(get_settings(), "tmdb_api_key", "")
+    monkeypatch.setattr(movie_info, "_PROGRESS_EVERY", 2)
+    monkeypatch.setattr(movie_info, "_BATCH", 2)
+    await db.execute(MovieInfo.__table__.delete())
+    await db.commit()
+    assert await movie_info._pending_count(db, False) == 3
+    with caplog.at_level(logging.INFO, logger="dptv.movie_info"):
+        await movie_info.run_movie_info(db)
+    lines = [r.getMessage() for r in caplog.records if r.name == "dptv.movie_info"]
+    assert lines[0].startswith("movie info: starting, 3 films to look up")
+    assert "movie info: 2 of 3 looked up, 0 found on TMDB" in lines
+    assert lines[-1] == "movie info: 3 films looked up, 0 found on TMDB, 0 trending"

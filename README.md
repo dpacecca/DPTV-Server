@@ -83,6 +83,9 @@ on the **Playlists** page set its **Backup for** to your main playlist. From the
   built from the provider's films: the provider's release date first, else TMDB's, else the title's
   year; genres, ratings and trending from TMDB. Films are looked up after each source sync, every night
   at 05:30 UTC and when the key changes (`player_api.php?action=dptv_smart_categories`).
+- **Movie lookup progress (1.0.25).** A run logs "movie info: starting, N films to look up", then
+  "movie info: X of N looked up, Y found on TMDB" every 1000 films, then its summary
+  (`journalctl -u dptv-backend | grep "movie info"`).
 - **Series seasons (1.0.20).** A series' episodes reach players under their own seasons (they all
   arrived as season 1), in episode order, with the provider's series details, season list and
   episode details.
